@@ -15,29 +15,80 @@ if TYPE_CHECKING:
 
 
 class ReAct(Module):
-    def __init__(self, signature: type["Signature"], tools: list[Callable], max_iters: int = 20):
-        """
-        ReAct stands for "Reasoning and Acting," a popular paradigm for building tool-using agents.
-        In this approach, the language model is iteratively provided with a list of tools and has
-        to reason about the current situation. The model decides whether to call a tool to gather more
-        information or to finish the task based on its reasoning process. The DSPy version of ReAct is
-        generalized to work over any signature, thanks to signature polymorphism.
+    """Reasoning-and-Acting agent that iteratively calls tools to solve a task.
 
-        Args:
-            signature: The signature of the module, which defines the input and output of the react module.
-            tools (list[Callable]): A list of functions, callable objects, or `dspy.Tool` instances.
-            max_iters (Optional[int]): The maximum number of iterations to run. Defaults to 10.
+    ``ReAct`` implements the *Reasoning and Acting* paradigm: the language model
+    is given a set of tools and repeatedly reasons about the current situation,
+    decides whether to call a tool for more information, and finally produces the
+    output fields defined by the signature. Thanks to DSPy's signature
+    polymorphism, ``ReAct`` works over any input/output signature.
 
-        Example:
+    At each iteration the model produces a *thought*, selects a *tool*, and
+    provides *tool arguments*. The tool is executed, the observation is appended
+    to the trajectory, and the loop continues until the model calls the built-in
+    ``finish`` tool or ``max_iters`` is reached. A ``ChainOfThought`` fallback
+    then extracts the final output fields from the accumulated trajectory.
+
+    Example:
 
         ```python
+        import dspy
+
+        dspy.configure(lm=dspy.LM("groq/moonshotai/kimi-k2-instruct"))
+
         def get_weather(city: str) -> str:
+            \"\"\"Get the current weather for a city.\"\"\"
             return f"The weather in {city} is sunny."
 
-        react = dspy.ReAct(signature="question->answer", tools=[get_weather])
-        pred = react(question="What is the weather in Tokyo?")
+        react = dspy.ReAct("question -> answer", tools=[get_weather])
+        result = react(question="What is the weather in Tokyo?")
+        print(result.answer)
         ```
-        """
+
+        Using multiple tools:
+
+        ```python
+        def search(query: str) -> str:
+            \"\"\"Search the web.\"\"\"
+            return f"Result for {query}: ..."
+
+        def calculator(expression: str) -> str:
+            \"\"\"Evaluate a math expression.\"\"\"
+            return str(eval(expression))
+
+        react = dspy.ReAct("question -> answer", tools=[search, calculator])
+        ```
+
+    Args:
+        signature: The input/output signature describing the task. Can be a
+            shorthand string like ``"question -> answer"`` or a ``dspy.Signature``
+            class.
+        tools: A list of functions, callable objects, or ``dspy.Tool`` instances
+            that the agent can invoke. Each tool's name, description, and argument
+            schema are automatically extracted.
+        max_iters: Maximum number of think-act iterations before the agent is
+            forced to produce a final answer. Defaults to ``20``. Can also be
+            overridden per-call by passing ``max_iters`` as a keyword argument.
+
+    Note:
+        **Built-in ``finish`` tool:** A ``finish`` tool is automatically added.
+        The agent calls it to signal that it has gathered enough information to
+        produce the final output.
+
+        **Trajectory truncation:** If the accumulated trajectory exceeds the
+        context window, ``ReAct`` automatically truncates the oldest tool-call
+        entries (up to 3 attempts) before raising an error.
+
+        **Async support:** Use ``await react.acall(...)`` for asynchronous
+        execution. Tool functions can be sync or async — async tools are awaited
+        automatically.
+
+        **Optimiser-friendly:** ``ReAct`` contains ``dspy.Predict`` and
+        ``dspy.ChainOfThought`` sub-modules, so it is fully compatible with
+        DSPy optimisers.
+    """
+
+    def __init__(self, signature: type["Signature"], tools: list[Callable], max_iters: int = 20):
         super().__init__()
         self.signature = signature = ensure_signature(signature)
         self.max_iters = max_iters

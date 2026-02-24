@@ -5,6 +5,53 @@ from dspy.signatures.signature import ensure_signature
 
 
 class MultiChainComparison(Module):
+    """Compare multiple chain-of-thought attempts and produce a refined answer.
+
+    ``MultiChainComparison`` takes ``M`` candidate reasoning attempts (typically
+    from ``dspy.ChainOfThought`` with ``n=M``) and presents them all to the
+    language model. The model then synthesises a final, corrected answer by
+    holistically evaluating the different reasoning paths.
+
+    This is useful as a simple self-consistency / refinement strategy: generate
+    several diverse reasoning chains, then let the model pick and merge the best
+    parts.
+
+    Example:
+
+        ```python
+        import dspy
+
+        dspy.configure(lm=dspy.LM("groq/moonshotai/kimi-k2-instruct"))
+
+        cot = dspy.ChainOfThought("question -> answer", n=3, temperature=0.7)
+        compare = dspy.MultiChainComparison("question -> answer", M=3)
+
+        completions = cot(question="What is 18 * 7?").completions
+        result = compare(completions, question="What is 18 * 7?")
+        print(result.answer)
+        ```
+
+    Args:
+        signature: The input/output signature describing the task. Can be a
+            shorthand string or a ``dspy.Signature`` class.
+        M: The number of reasoning attempts to compare. Must match the ``n``
+            parameter used when generating candidates. Defaults to ``3``.
+        temperature: Sampling temperature for the comparison call.
+            Defaults to ``0.7``.
+        **config: Additional keyword arguments forwarded to the underlying
+            ``dspy.Predict`` instance.
+
+    Note:
+        **Input format:** The ``forward`` method expects a ``completions`` object
+        (as returned by ``prediction.completions``) containing ``M`` entries, each
+        with either a ``rationale`` or ``reasoning`` field and the final output field.
+
+        **How it works:** Each candidate's reasoning and answer are formatted into
+        numbered "Student Attempt" input fields. A ``rationale`` output field is
+        prepended so the model first produces corrected reasoning before the final
+        answer.
+    """
+
     def __init__(self, signature, M=3, temperature=0.7, **config):  # noqa: N803
         super().__init__()
 
