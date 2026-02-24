@@ -38,18 +38,70 @@ def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
 
 
 class Predict(Module, Parameter):
-    """Basic DSPy module that maps inputs to outputs using a language model.
+    """The fundamental DSPy module that maps input fields to output fields using a language model.
+
+    ``Predict`` is the core building block of every DSPy program. It takes a
+    *signature* — a declarative specification of input and output fields — and
+    calls the configured language model to produce the outputs. All other DSPy
+    modules (``ChainOfThought``, ``ReAct``, etc.) are built on top of ``Predict``.
+
+    Example:
+
+        Basic usage with a string signature:
+
+        ```python
+        import dspy
+
+        dspy.configure(lm=dspy.LM("groq/moonshotai/kimi-k2-instruct"))
+
+        predict = dspy.Predict("question -> answer")
+        result = predict(question="What is the capital of France?")
+        print(result.answer)
+        ```
+
+        With a typed ``dspy.Signature`` class:
+
+        ```python
+        class Translate(dspy.Signature):
+            \"\"\"Translate the sentence to French.\"\"\"
+            sentence: str = dspy.InputField()
+            translation: str = dspy.OutputField()
+
+        translate = dspy.Predict(Translate)
+        result = translate(sentence="Hello, world!")
+        print(result.translation)
+        ```
+
+        Overriding LM config per-call:
+
+        ```python
+        predict = dspy.Predict("question -> answer", temperature=0.0)
+        result = predict(question="What is 2+2?", config={"temperature": 0.9})
+        ```
 
     Args:
-        signature: The input/output signature describing the task.
-        callbacks: Optional list of callbacks for instrumentation.
-        **config: Default keyword arguments forwarded to the underlying
-            language model. These values can be overridden for a single
-            invocation by passing a ``config`` dictionary when calling the
-            module. For example::
+        signature: The input/output signature describing the task. Can be a
+            shorthand string like ``"question -> answer"`` or a ``dspy.Signature``
+            class.
+        callbacks: Optional list of callbacks for instrumentation and monitoring.
+        **config: Default keyword arguments forwarded to the underlying language
+            model (e.g. ``temperature``, ``n``, ``rollout_id``). These can be
+            overridden per-call by passing a ``config`` dictionary.
 
-                predict = dspy.Predict("q -> a", rollout_id=1, temperature=1.0)
-                predict(q="What is 1 + 52?", config={"rollout_id": 2, "temperature": 1.0})
+    Note:
+        **Demos and few-shot learning:** ``Predict`` stores a list of ``demos``
+        (few-shot examples) that are included in the prompt. These are typically
+        populated by DSPy optimisers like ``BootstrapFewShot``.
+
+        **Multiple completions:** Set ``n > 1`` in ``config`` to request multiple
+        completions. Access them via ``result.completions``.
+
+        **Async support:** Use ``await predict.acall(...)`` for asynchronous
+        execution.
+
+        **LM override:** Pass ``lm=`` as a keyword argument to use a different
+        language model for a single call, or call ``predict.set_lm(lm)`` to change
+        it permanently.
     """
 
     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):
