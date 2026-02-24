@@ -5,6 +5,55 @@ from dspy.predict.predict import Module, Prediction
 
 
 class BestOfN(Module):
+    """Run a module up to *N* times and return the best prediction.
+
+    ``BestOfN`` is an inference-time scaling strategy. It executes the wrapped
+    module multiple times (each with a distinct ``rollout_id`` at
+    ``temperature=1.0``) and keeps the prediction with the highest reward. If any
+    attempt meets or exceeds the ``threshold``, execution stops early.
+
+    Example:
+
+        ```python
+        import dspy
+
+        dspy.configure(lm=dspy.LM("groq/moonshotai/kimi-k2-instruct"))
+
+        qa = dspy.ChainOfThought("question -> answer")
+
+        def one_word_answer(args, pred):
+            return 1.0 if len(pred.answer.split()) == 1 else 0.0
+
+        best_of_3 = dspy.BestOfN(
+            module=qa, N=3, reward_fn=one_word_answer, threshold=1.0,
+        )
+
+        result = best_of_3(question="What is the capital of Belgium?")
+        print(result.answer)
+        ```
+
+    Args:
+        module: The DSPy module to run repeatedly.
+        N: Maximum number of attempts.
+        reward_fn: A callable ``(kwargs, prediction) -> float`` that scores each
+            prediction. Higher is better.
+        threshold: If a prediction's reward meets or exceeds this value, return
+            it immediately without remaining attempts.
+        fail_count: Maximum tolerated exceptions before re-raising. Defaults to
+            ``N`` when not provided.
+
+    Note:
+        **Rollout IDs:** Each attempt uses a different ``rollout_id`` passed to the
+        underlying LM, ensuring diverse outputs even with the same prompt.
+
+        **Early stopping:** Execution stops as soon as any prediction reaches the
+        ``threshold``, which can save significant compute.
+
+        **Comparison with Refine:** ``BestOfN`` generates candidates independently.
+        ``dspy.Refine`` goes further by generating feedback after each failed
+        attempt and injecting it as a hint into the next try.
+    """
+
     def __init__(
         self,
         module: Module,
@@ -13,39 +62,6 @@ class BestOfN(Module):
         threshold: float,
         fail_count: int | None = None,
     ):
-        """
-        Runs a module up to `N` times with different rollout IDs at `temperature=1.0` and
-        returns the best prediction out of `N` attempts or the first prediction that passes the
-        `threshold`.
-
-        Args:
-            module (Module): The module to run.
-            N (int): The number of times to run the module.
-            reward_fn (Callable[[dict, Prediction], float]): The reward function which takes in the args passed to the module, the resulting prediction, and returns a scalar reward.
-            threshold (float): The threshold for the reward function.
-            fail_count (Optional[int], optional): The number of times the module can fail before raising an error. Defaults to N if not provided.
-
-        Example:
-            ```python
-            import dspy
-
-            dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
-
-            # Define a QA module with chain of thought
-            qa = dspy.ChainOfThought("question -> answer")
-
-            # Define a reward function that checks for one-word answers
-            def one_word_answer(args, pred):
-                return 1.0 if len(pred.answer.split()) == 1 else 0.0
-
-            # Create a refined module that tries up to 3 times
-            best_of_3 = dspy.BestOfN(module=qa, N=3, reward_fn=one_word_answer, threshold=1.0)
-
-            # Use the refined module
-            result = best_of_3(question="What is the capital of Belgium?").answer
-            # Returns: Brussels
-            ```
-        """
         self.module = module
         self.reward_fn = lambda *args: reward_fn(*args)  # to prevent this from becoming a parameter
         self.threshold = threshold

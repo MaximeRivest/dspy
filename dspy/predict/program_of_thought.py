@@ -12,28 +12,55 @@ logger = logging.getLogger(__name__)
 
 
 class ProgramOfThought(Module):
-    """
-    A DSPy module that runs Python programs to solve a problem.
-    This module requires deno to be installed. Please install deno following https://docs.deno.com/runtime/getting_started/installation/
+    """Solve a task by generating and executing Python code.
+
+    ``ProgramOfThought`` prompts the language model to write Python code that
+    computes the answer programmatically. The generated code is executed in a
+    sandboxed ``PythonInterpreter`` (backed by Deno). If execution fails, the
+    module automatically retries — feeding the error message back to the model —
+    up to ``max_iters`` times.
+
+    .. note::
+
+        This module requires **Deno** to be installed for the sandboxed Python
+        interpreter. See https://docs.deno.com/runtime/getting_started/installation/
 
     Example:
-    ```
-    import dspy
 
-    lm = dspy.LM('openai/gpt-4o-mini')
-    dspy.configure(lm=lm)
-    pot = dspy.ProgramOfThought("question -> answer")
-    pot(question="what is 1+1?")
-    ```
+        ```python
+        import dspy
+
+        dspy.configure(lm=dspy.LM("groq/moonshotai/kimi-k2-instruct"))
+
+        pot = dspy.ProgramOfThought("question -> answer")
+        result = pot(question="What is 15 * 7?")
+        print(result.answer)
+        ```
+
+    Args:
+        signature: The input/output signature describing the task. Can be a
+            shorthand string like ``"question -> answer"`` or a ``dspy.Signature``
+            class.
+        max_iters: Maximum number of code-generation-and-execution attempts.
+            After each failed execution the error is fed back to the model for a
+            corrected attempt. Defaults to ``3``.
+        interpreter: A ``PythonInterpreter`` instance to use. If ``None``, a new
+            one is instantiated automatically.
+
+    Note:
+        **How it works:** The module internally uses three sub-modules:
+        ``code_generate`` (initial code generation), ``code_regenerate`` (retry
+        with error feedback), and ``generate_output`` (extract the final answer
+        from the code output). All three are ``ChainOfThought`` modules.
+
+        **Code submission:** The generated code must call a preloaded ``SUBMIT()``
+        function with a dict mapping output field names to their values.
+
+        **Interpreter lifecycle:** The interpreter is shut down after ``forward``
+        completes (whether successfully or after exhausting retries).
     """
 
     def __init__(self, signature: str | type[Signature], max_iters: int = 3, interpreter: PythonInterpreter | None = None):
-        """
-        Args:
-            signature: The signature of the module.
-            max_iters: The maximum number of iterations to retry code generation and execution.
-            interpreter: PythonInterpreter instance to use. If None, a new one is instantiated.
-        """
         super().__init__()
         self.signature = signature = ensure_signature(signature)
         self.max_iters = max_iters

@@ -39,6 +39,58 @@ class OfferFeedback(Signature):
 
 
 class Refine(Module):
+    """Run a module up to *N* times with automatic feedback between attempts.
+
+    ``Refine`` extends the ``BestOfN`` strategy by adding a *feedback loop*. After
+    each attempt that falls below the ``threshold``, it analyses the full execution
+    trace, assigns blame to individual sub-modules, and generates concrete advice
+    that is injected as a hint into the next attempt. This makes each retry more
+    informed than the last.
+
+    Example:
+
+        ```python
+        import dspy
+
+        dspy.configure(lm=dspy.LM("groq/moonshotai/kimi-k2-instruct"))
+
+        qa = dspy.ChainOfThought("question -> answer")
+
+        def one_word_answer(args, pred):
+            return 1.0 if len(pred.answer.split()) == 1 else 0.0
+
+        refine = dspy.Refine(
+            module=qa, N=3, reward_fn=one_word_answer, threshold=1.0,
+        )
+
+        result = refine(question="What is the capital of Belgium?")
+        print(result.answer)
+        ```
+
+    Args:
+        module: The DSPy module to refine.
+        N: Maximum number of attempts.
+        reward_fn: A callable ``(kwargs, prediction) -> float`` that scores each
+            prediction. Higher is better.
+        threshold: If a prediction's reward meets or exceeds this value, return
+            it immediately without remaining attempts.
+        fail_count: Maximum tolerated exceptions before re-raising. Defaults to
+            ``N`` when not provided.
+
+    Note:
+        **Feedback mechanism:** After a below-threshold attempt, ``Refine`` calls an
+        internal ``OfferFeedback`` signature that inspects the program source code,
+        execution trajectory, and reward function to produce per-module advice. This
+        advice is injected as an extra ``hint_`` input field on the next attempt.
+
+        **Comparison with BestOfN:** ``dspy.BestOfN`` generates candidates
+        independently (no feedback). ``Refine`` is more compute-intensive per
+        attempt but can converge faster because each retry is guided.
+
+        **Rollout IDs:** Like ``BestOfN``, each attempt uses a different
+        ``rollout_id`` at ``temperature=1.0`` for diversity.
+    """
+
     def __init__(
         self,
         module: Module,
@@ -47,43 +99,6 @@ class Refine(Module):
         threshold: float,
         fail_count: int | None = None,
     ):
-        """
-        Refines a module by running it up to N times with different rollout IDs at `temperature=1.0`
-        and returns the best prediction.
-
-        This module runs the provided module multiple times with varying rollout identifiers and selects
-        either the first prediction that exceeds the specified threshold or the one with the highest reward.
-        If no prediction meets the threshold, it automatically generates feedback to improve future predictions.
-
-
-        Args:
-            module (Module): The module to refine.
-            N (int): The number of times to run the module. must
-            reward_fn (Callable): The reward function.
-            threshold (float): The threshold for the reward function.
-            fail_count (Optional[int], optional): The number of times the module can fail before raising an error
-
-        Example:
-            ```python
-            import dspy
-
-            dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
-
-            # Define a QA module with chain of thought
-            qa = dspy.ChainOfThought("question -> answer")
-
-            # Define a reward function that checks for one-word answers
-            def one_word_answer(args, pred):
-                return 1.0 if len(pred.answer.split()) == 1 else 0.0
-
-            # Create a refined module that tries up to 3 times
-            best_of_3 = dspy.Refine(module=qa, N=3, reward_fn=one_word_answer, threshold=1.0)
-
-            # Use the refined module
-            result = best_of_3(question="What is the capital of Belgium?").answer
-            # Returns: Brussels
-            ```
-        """
         self.module = module
         self.reward_fn = lambda *args: reward_fn(*args)  # to prevent this from becoming a parameter
         self.threshold = threshold
