@@ -1,3 +1,10 @@
+"""Prompt a language model with named inputs and get named outputs back.
+
+`Predict` pairs a signature (which declares input and output fields)
+with a language model.  `ChainOfThought`, `ReAct`, and other modules
+build on top of `Predict`.
+"""
+
 import logging
 import random
 
@@ -20,6 +27,7 @@ UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
 
 
 def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
+    """Strip sensitive keys from a serialized LM config unless explicitly allowed."""
     if allow_unsafe_lm_state:
         return lm_state
 
@@ -38,18 +46,58 @@ def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
 
 
 class Predict(Module, Parameter):
-    """Basic DSPy module that maps inputs to outputs using a language model.
+    """Prompt a language model with named inputs and get named outputs back.
+
+    Supply a signature — either a string like `"question -> answer"`
+    or a `dspy.Signature` class — then call the module with your
+    inputs as keyword arguments.  Returns a `Prediction` whose
+    attributes are the output fields declared in the signature.
 
     Args:
-        signature: The input/output signature describing the task.
-        callbacks: Optional list of callbacks for instrumentation.
-        **config: Default keyword arguments forwarded to the underlying
-            language model. These values can be overridden for a single
-            invocation by passing a ``config`` dictionary when calling the
-            module. For example::
+        signature: A string (e.g. `"question -> answer"`) or a
+            `dspy.Signature` subclass that declares input and output
+            fields.
+        callbacks: Optional callback handlers for instrumentation.
+        **config: LM parameters such as `temperature` or
+            `max_tokens`, applied to every call.  Override for a
+            single call by passing `config={...}` at call time.
 
-                predict = dspy.Predict("q -> a", rollout_id=1, temperature=1.0)
-                predict(q="What is 1 + 52?", config={"rollout_id": 2, "temperature": 1.0})
+    Returns:
+        (Prediction): Attributes correspond to the signature's output
+            fields.  For example, if the signature declares an
+            `answer` output field, access it with `result.answer`.
+
+    Examples:
+        String signature:
+
+        >>> import dspy
+        >>> dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))  # doctest: +SKIP
+        >>> predict = dspy.Predict("question -> answer")
+        >>> result = predict(question="What is the capital of France?")  # doctest: +SKIP
+        >>> result.answer  # doctest: +SKIP
+        'Paris'
+
+        Class-based signature (the docstring becomes the instruction):
+
+        >>> class Translate(dspy.Signature):
+        ...     '''Translate the text to the target language.'''
+        ...     text: str = dspy.InputField()
+        ...     language: str = dspy.InputField()
+        ...     translation: str = dspy.OutputField()
+        >>> translate = dspy.Predict(Translate)
+        >>> translate(text="Hello", language="French")  # doctest: +SKIP
+        Prediction(translation='Bonjour')
+
+    See Also:
+        [`dspy.ChainOfThought`][dspy.ChainOfThought]: Adds a reasoning
+            step before the output.
+        
+        [`dspy.ReAct`][dspy.ReAct]: Interleaves reasoning with tool use.
+
+        [`dspy.Signature`][dspy.Signature]: Declare input and output
+            fields.
+        
+        [`dspy.LM`][dspy.LM]: Configure the language model.
     """
 
     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):
@@ -60,12 +108,37 @@ class Predict(Module, Parameter):
         self.reset()
 
     def reset(self):
+        """Clear demos, traces, train data, and the per-instance LM."""
         self.lm = None
         self.traces = []
         self.train = []
         self.demos = []
 
     def dump_state(self, json_mode=True):
+        """Serialize this module's learnable state to a dict.
+
+        Captures demos, traces, train data, the signature state, and
+        the LM configuration.  Restore later with `load_state`.
+
+        Args:
+            json_mode: If `True`, convert demo `Example` objects
+                to plain dicts for JSON serialization.
+
+        Returns:
+            (dict): A JSON-serializable snapshot of the module.
+
+        Examples:
+            Save state, then restore it later (or on another machine):
+
+            >>> import dspy
+            >>> predict = dspy.Predict("question -> answer")
+            >>> state = predict.dump_state()
+            >>> predict.load_state(state)  # doctest: +ELLIPSIS
+            Predict(...)
+
+            See the [saving tutorial](https://dspy.ai/tutorials/saving/)
+            for full save/load workflows.
+        """
         state_keys = ["traces", "train"]
         state = {k: getattr(self, k) for k in state_keys}
 
@@ -87,15 +160,19 @@ class Predict(Module, Parameter):
         return state
 
     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> "Predict":
-        """Load the saved state of a `Predict` object.
+        """Restore state from a dict produced by `dump_state`.
+
+        By default, sensitive LM keys (`api_base`, `base_url`,
+        `model_list`) are stripped for safety.  Pass
+        `allow_unsafe_lm_state=True` only when loading trusted files.
 
         Args:
-            state: The saved state of a `Predict` object.
-            allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from
-                serialized LM state. Enable only when loading trusted files.
+            state: Dict previously returned by `dump_state`.
+            allow_unsafe_lm_state: If `True`, preserve sensitive LM
+                config keys.  Only use with trusted data.
 
         Returns:
-            Self to allow method chaining.
+            (Predict): `self`, for method chaining.
         """
         excluded_keys = ["signature", "extended_signature", "lm"]
         for name, value in state.items():
@@ -121,6 +198,11 @@ class Predict(Module, Parameter):
         )
 
     def __call__(self, *args, **kwargs):
+        """Call the predictor with keyword arguments matching the input fields.
+
+        Pass one keyword argument for each input field in the signature.
+        Returns a `Prediction` whose attributes match the output fields.
+        """
         if args:
             raise ValueError(self._get_positional_args_error_message())
 
@@ -209,6 +291,20 @@ class Predict(Module, Parameter):
         return should_stream
 
     def forward(self, **kwargs):
+        """Execute the LM call.  Override this in subclasses.
+
+        Most callers should use `predict(...)` (i.e. `__call__`)
+        rather than calling `forward` directly.
+
+        Three reserved kwargs receive special treatment:
+
+        - **signature** – a replacement signature for this call only.
+        - **demos** – replacement few-shot demos for this call only.
+        - **config** – dict of LM overrides (e.g. `{"temperature": 0.9}`).
+
+        Returns:
+            (Prediction): Attributes match the signature's output fields.
+        """
         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
 
         adapter = settings.adapter or ChatAdapter()
@@ -223,6 +319,7 @@ class Predict(Module, Parameter):
         return self._forward_postprocess(completions, signature, **kwargs)
 
     async def aforward(self, **kwargs):
+        """Async version of `forward`. Same arguments and return type."""
         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
 
         adapter = settings.adapter or ChatAdapter()
@@ -236,9 +333,20 @@ class Predict(Module, Parameter):
         return self._forward_postprocess(completions, signature, **kwargs)
 
     def update_config(self, **kwargs):
+        """Merge keyword arguments into the default LM config.
+
+        Existing keys are overwritten; new keys are added.
+
+        Examples:
+            >>> predict = Predict("q -> a", temperature=0.5)
+            >>> predict.update_config(temperature=0.9, max_tokens=100)
+            >>> predict.get_config()
+            {'temperature': 0.9, 'max_tokens': 100}
+        """
         self.config = {**self.config, **kwargs}
 
     def get_config(self):
+        """Return the current default LM config dict."""
         return self.config
 
     def __repr__(self):
@@ -246,9 +354,26 @@ class Predict(Module, Parameter):
 
 
 def serialize_object(obj):
-    """
-    Recursively serialize a given object into a JSON-compatible format.
-    Supports Pydantic models, lists, dicts, and primitive types.
+    """Recursively convert an object to a JSON-serializable form.
+
+    Pydantic models are dumped with `model_dump(mode="json")`.
+    Lists, tuples, and dicts are traversed recursively.  Primitives
+    pass through unchanged.
+
+    Args:
+        obj: Any Python object.
+
+    Returns:
+        A JSON-serializable equivalent of *obj*.
+
+    Examples:
+        >>> from pydantic import BaseModel
+        >>> class User(BaseModel):
+        ...     name: str
+        >>> serialize_object(User(name="Ada"))
+        {'name': 'Ada'}
+        >>> serialize_object([1, {"key": User(name="Bob")}])
+        [1, {'key': {'name': 'Bob'}}]
     """
     if isinstance(obj, BaseModel):
         # Use model_dump with mode="json" to ensure all fields (including HttpUrl, datetime, etc.)
