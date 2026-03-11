@@ -197,32 +197,79 @@ class Predict(Module, Parameter):
             f"`predict({input_fields[0]}=input_value, ...)`."
         )
 
-    def __call__(self, *args, **kwargs):
+    def __call__(
+        self,
+        *args,
+        config: dict | None = None,
+        signature: str | type[Signature] | None = None,
+        demos: list | None = None,
+        lm: BaseLM | None = None,
+        **inputs,
+    ):
         """Call the predictor with keyword arguments matching the input fields.
 
         Pass one keyword argument for each input field in the signature.
-        Returns a `Prediction` whose attributes match the output fields.
+        Use `config`, `signature`, `demos`, or `lm` to override this
+        predictor for one call. Returns a `Prediction` whose
+        attributes match the output fields.
         """
         if args:
             raise ValueError(self._get_positional_args_error_message())
 
-        return super().__call__(**kwargs)
+        call_kwargs = dict(inputs)
+        if config is not None:
+            call_kwargs["config"] = config
+        if signature is not None:
+            call_kwargs["signature"] = signature
+        if demos is not None:
+            call_kwargs["demos"] = demos
+        if lm is not None:
+            call_kwargs["lm"] = lm
 
-    async def acall(self, *args, **kwargs):
+        return super().__call__(**call_kwargs)
+
+    async def acall(
+        self,
+        *args,
+        config: dict | None = None,
+        signature: str | type[Signature] | None = None,
+        demos: list | None = None,
+        lm: BaseLM | None = None,
+        **inputs,
+    ):
         if args:
             raise ValueError(self._get_positional_args_error_message())
 
-        return await super().acall(**kwargs)
+        call_kwargs = dict(inputs)
+        if config is not None:
+            call_kwargs["config"] = config
+        if signature is not None:
+            call_kwargs["signature"] = signature
+        if demos is not None:
+            call_kwargs["demos"] = demos
+        if lm is not None:
+            call_kwargs["lm"] = lm
 
-    def _forward_preprocess(self, **kwargs):
-        # Extract the three privileged keyword arguments.
-        assert "new_signature" not in kwargs, "new_signature is no longer a valid keyword argument."
-        signature = ensure_signature(kwargs.pop("signature", self.signature))
-        demos = kwargs.pop("demos", self.demos)
-        config = {**self.config, **kwargs.pop("config", {})}
+        return await super().acall(**call_kwargs)
+
+    def _forward_preprocess(
+        self,
+        *,
+        config: dict | None = None,
+        signature: str | type[Signature] | None = None,
+        demos: list | None = None,
+        lm: BaseLM | None = None,
+        **inputs,
+    ):
+        # Extract the privileged keyword arguments.
+        assert "new_signature" not in inputs, "new_signature is no longer a valid keyword argument."
+        signature = ensure_signature(self.signature if signature is None else signature)
+        demos = self.demos if demos is None else demos
+        config = {**self.config, **({} if config is None else config)}
 
         # Get the right LM to use.
-        lm = kwargs.pop("lm", self.lm) or settings.lm
+        lm = self.lm if lm is None else lm
+        lm = lm or settings.lm
 
         if lm is None:
             raise ValueError(
@@ -247,31 +294,31 @@ class Predict(Module, Parameter):
         if (temperature is None or temperature <= 0.15) and num_generations > 1:
             config["temperature"] = 0.7
 
-        if "prediction" in kwargs:
+        if "prediction" in inputs:
             if (
-                isinstance(kwargs["prediction"], dict)
-                and kwargs["prediction"].get("type") == "content"
-                and "content" in kwargs["prediction"]
+                isinstance(inputs["prediction"], dict)
+                and inputs["prediction"].get("type") == "content"
+                and "content" in inputs["prediction"]
             ):
                 # If the `prediction` is the standard predicted outputs format
                 # (https://platform.openai.com/docs/guides/predicted-outputs), we remove it from input kwargs and add it
                 # to the lm kwargs.
-                config["prediction"] = kwargs.pop("prediction")
+                config["prediction"] = inputs.pop("prediction")
 
         # Populate default values for missing input fields.
         for k, v in signature.input_fields.items():
-            if k not in kwargs and v.default is not PydanticUndefined:
-                kwargs[k] = v.default
+            if k not in inputs and v.default is not PydanticUndefined:
+                inputs[k] = v.default
 
-        if not all(k in kwargs for k in signature.input_fields):
-            present = [k for k in signature.input_fields if k in kwargs]
-            missing = [k for k in signature.input_fields if k not in kwargs]
+        if not all(k in inputs for k in signature.input_fields):
+            present = [k for k in signature.input_fields if k in inputs]
+            missing = [k for k in signature.input_fields if k not in inputs]
             logger.warning(
                 "Not all input fields were provided to module. Present: %s. Missing: %s.",
                 present,
                 missing,
             )
-        return lm, config, signature, demos, kwargs
+        return lm, config, signature, demos, inputs
 
     def _forward_postprocess(self, completions, signature, **kwargs):
         pred = Prediction.from_completions(completions, signature=signature)
@@ -290,47 +337,76 @@ class Predict(Module, Parameter):
 
         return should_stream
 
-    def forward(self, **kwargs):
-        """Execute the LM call.  Override this in subclasses.
+    def forward(
+        self,
+        *,
+        config: dict | None = None,
+        signature: str | type[Signature] | None = None,
+        demos: list | None = None,
+        lm: BaseLM | None = None,
+        **inputs,
+    ):
+        """Execute the LM call. Override this in subclasses.
 
-        Most callers should use `predict(...)` (i.e. `__call__`)
+        Most callers should use `predict(...)` (that is, `__call__`)
         rather than calling `forward` directly.
 
-        Three reserved kwargs receive special treatment:
+        Four reserved keyword arguments receive special treatment:
 
-        - **signature** – a replacement signature for this call only.
-        - **demos** – replacement few-shot demos for this call only.
-        - **config** – dict of LM overrides (e.g. `{"temperature": 0.9}`).
+        - `signature`: Replace this predictor's signature for one call.
+        - `demos`: Replace the few-shot demos for one call.
+        - `config`: Override LM settings such as `temperature`.
+        - `lm`: Use a different language model for one call.
 
         Returns:
             (Prediction): Attributes match the signature's output fields.
         """
-        lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+        lm, config, signature, demos, inputs = self._forward_preprocess(
+            config=config,
+            signature=signature,
+            demos=demos,
+            lm=lm,
+            **inputs,
+        )
 
         adapter = settings.adapter or ChatAdapter()
 
         if self._should_stream():
             with settings.context(caller_predict=self):
-                completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+                completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=inputs)
         else:
             with settings.context(send_stream=None):
-                completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+                completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=inputs)
 
-        return self._forward_postprocess(completions, signature, **kwargs)
+        return self._forward_postprocess(completions, signature, **inputs)
 
-    async def aforward(self, **kwargs):
+    async def aforward(
+        self,
+        *,
+        config: dict | None = None,
+        signature: str | type[Signature] | None = None,
+        demos: list | None = None,
+        lm: BaseLM | None = None,
+        **inputs,
+    ):
         """Async version of `forward`. Same arguments and return type."""
-        lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+        lm, config, signature, demos, inputs = self._forward_preprocess(
+            config=config,
+            signature=signature,
+            demos=demos,
+            lm=lm,
+            **inputs,
+        )
 
         adapter = settings.adapter or ChatAdapter()
         if self._should_stream():
             with settings.context(caller_predict=self):
-                completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+                completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=inputs)
         else:
             with settings.context(send_stream=None):
-                completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+                completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=inputs)
 
-        return self._forward_postprocess(completions, signature, **kwargs)
+        return self._forward_postprocess(completions, signature, **inputs)
 
     def update_config(self, **kwargs):
         """Merge keyword arguments into the default LM config.

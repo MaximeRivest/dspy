@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import enum
+import inspect
 import time
 import types
 from datetime import datetime
@@ -809,6 +810,42 @@ def test_positional_arguments():
         "Positional arguments are not allowed when calling `dspy.Predict`, must use keyword arguments that match "
         "your signature input fields: 'question'. For example: `predict(question=input_value, ...)`."
     )
+
+
+def test_call_signature_includes_reserved_kwargs():
+    program = Predict("question -> answer")
+    params = inspect.signature(program).parameters
+
+    assert params["config"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["config"].default is None
+    assert params["signature"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["demos"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["lm"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["inputs"].kind is inspect.Parameter.VAR_KEYWORD
+
+
+def test_per_call_lm_and_config_overrides_still_work():
+    program = Predict("question -> answer")
+    dspy.configure(lm=dspy.LM("openai/gpt-3.5-turbo", cache=False))
+    override_lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+
+    with patch(
+        "dspy.clients.lm.litellm_completion",
+        return_value=ModelResponse(
+            choices=[{"message": {"content": "[[ ## answer ## ]]\nParis"}}],
+            usage={"total_tokens": 10},
+        ),
+    ) as completion_mock:
+        result = program(
+            question="What is the capital of France?",
+            lm=override_lm,
+            config={"temperature": 0.9},
+        )
+
+    assert result.answer == "Paris"
+    request = completion_mock.call_args.kwargs["request"]
+    assert request["model"] == "openai/gpt-4o-mini"
+    assert request["temperature"] == 0.9
 
 
 def test_error_message_on_invalid_lm_setup():
