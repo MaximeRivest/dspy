@@ -76,12 +76,91 @@ def _warn_deprecated_field_args(**kwargs):
             warnings.warn(message, DeprecationWarning, stacklevel=3)
 
 
-def InputField(**kwargs): # noqa: N802
+def InputField(**kwargs):  # noqa: N802
+    """Declare an input field on a `dspy.Signature`.
+
+    Both the type hint and `desc` are optional.  When provided,
+    adapters pass them to the language model for additional context.
+
+    Args:
+        desc: Plain-language description of the field.  Adapters
+            include this when describing the field to the language model.
+            Optimizers do not optimize this string.
+        **kwargs: Any additional `pydantic.Field` keyword argument.
+
+    Returns:
+        (FieldInfo): A field marked as a DSPy input.
+
+    Examples:
+        >>> import dspy
+        >>> class Summarize(dspy.Signature):
+        ...     text: str = dspy.InputField(desc="text to summarize")
+        ...     summary: str = dspy.OutputField(desc="a one-sentence summary")
+        >>> summarizer = dspy.Predict(Summarize)
+
+        You can also append an input field to an existing signature
+        programmatically:
+
+        >>> WithContext = Summarize.append(
+        ...     "context", dspy.InputField(desc="background info"), type_=str
+        ... )
+        >>> list(WithContext.input_fields.keys())
+        ['text', 'context']
+
+    See Also:
+        [`dspy.OutputField`][dspy.OutputField],
+        [`dspy.Signature`][dspy.Signature],
+        [`dspy.Adapter`][dspy.Adapter]
+    """
     _warn_deprecated_field_args(**kwargs)
     return pydantic.Field(**move_kwargs(**kwargs, __dspy_field_type="input"))
 
 
-def OutputField(**kwargs): # noqa: N802
+def OutputField(**kwargs):  # noqa: N802
+    """Declare an output field on a `dspy.Signature`.
+
+    Both the type hint and `desc` are optional.  When provided,
+    adapters pass them to the language model for additional context.
+    Type hints are recommended for output fields so the language model
+    knows what to produce and adapters can parse the response.
+    Constraints like `ge`, `le`, `min_length`, and `max_length` are
+    described to the language model in the prompt and validated against
+    its response.
+
+    Args:
+        desc: Plain-language description of the field.  Adapters
+            include this when describing the field to the language model.
+            Optimizers do not optimize this string.
+        **kwargs: Any additional `pydantic.Field` keyword argument.
+            Constraints like `gt`, `ge`, `lt`, `le`, `min_length`,
+            `max_length`, and `multiple_of` are both described to the
+            language model and validated on the parsed output.
+
+    Returns:
+        (FieldInfo): A field marked as a DSPy output.
+
+    Examples:
+        >>> import dspy
+        >>> class Review(dspy.Signature):
+        ...     text: str = dspy.InputField(desc="product review text")
+        ...     summary: str = dspy.OutputField(desc="a one-sentence summary")
+        ...     rating: float = dspy.OutputField(desc="rating", ge=0, le=5)
+        >>> reviewer = dspy.Predict(Review)
+
+        You can also append an output field to an existing signature
+        programmatically:
+
+        >>> WithConfidence = Review.append(
+        ...     "confidence", dspy.OutputField(desc="confidence score"), type_=float
+        ... )
+        >>> list(WithConfidence.output_fields.keys())
+        ['summary', 'rating', 'confidence']
+
+    See Also:
+        [`dspy.InputField`][dspy.InputField],
+        [`dspy.Signature`][dspy.Signature],
+        [`dspy.Adapter`][dspy.Adapter]
+    """
     _warn_deprecated_field_args(**kwargs)
     return pydantic.Field(**move_kwargs(**kwargs, __dspy_field_type="output"))
 
@@ -95,7 +174,7 @@ def new_to_old_field(field):
 
 
 class OldField:
-    """A more ergonomic datatype that infers prefix and desc if omitted."""
+    """Legacy field type.  Use `InputField` or `OutputField` instead."""
 
     def __init__(self, *, prefix=None, desc=None, input, format=None):
         self.prefix = prefix  # This can be None initially and set later
