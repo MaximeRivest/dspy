@@ -1,52 +1,39 @@
-"""Document type for DSPy signatures — for citation-enabled LM responses."""
+"""Document type for DSPy — delegates to lm15.Part.document."""
 
 from typing import Any, Literal
 
 import pydantic
 
 from dspy.adapters.types.base_type import Type
-from dspy.utils.annotation import experimental
+
+try:
+    from lm15.types import Part as _Part
+    _HAS_LM15 = True
+except ImportError:
+    _HAS_LM15 = False
 
 
-@experimental(version="3.0.4")
 class Document(Type):
-    """A document that can be cited by language models."""
-
     data: str
     title: str | None = None
     media_type: Literal["text/plain", "application/pdf"] = "text/plain"
-    context: str | None = None
 
-    def format(self) -> list[dict[str, Any]]:
-        block = {
-            "type": "document",
-            "source": {"type": "text", "media_type": self.media_type, "data": self.data},
-            "citations": {"enabled": True},
-        }
+    def format(self):
+        d = {"type": "document", "source": {"type": "text", "media_type": self.media_type, "data": self.data}, "citations": {"enabled": True}}
         if self.title:
-            block["title"] = self.title
-        if self.context:
-            block["context"] = self.context
-        return [block]
+            d["title"] = self.title
+        return [d]
 
     def to_lm15_part(self):
-        try:
-            from lm15.types import Part
-        except ImportError:
-            return None
-        return Part.document(data=self.data, media_type=self.media_type)
+        return _Part.document(data=self.data, media_type=self.media_type) if _HAS_LM15 else None
 
     @pydantic.model_validator(mode="before")
     @classmethod
     def validate_input(cls, data: Any):
-        if isinstance(data, cls):
-            return data
-        if isinstance(data, str):
-            return {"data": data}
-        if isinstance(data, dict):
-            return data
-        raise ValueError(f"Invalid Document value: {data}")
+        if isinstance(data, cls): return data
+        if isinstance(data, str): return {"data": data}
+        if isinstance(data, dict): return data
+        raise ValueError(f"Invalid Document: {data}")
 
     def __str__(self):
-        title = f"'{self.title}': " if self.title else ""
-        return f"Document({title}{len(self.data)} chars)"
+        return f"Document({self.title + ': ' if self.title else ''}{len(self.data)} chars)"

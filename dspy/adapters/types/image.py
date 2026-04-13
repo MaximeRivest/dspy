@@ -1,6 +1,5 @@
-"""Image type for DSPy signatures — thin wrapper over lm15.Part.image."""
+"""Image type for DSPy signatures — delegates to lm15.Part.image."""
 
-import io
 import os
 import warnings
 from typing import Any
@@ -10,10 +9,10 @@ import pydantic
 from dspy.adapters.types.base_type import Type
 
 try:
-    from PIL import Image as PILImage
-    PIL_AVAILABLE = True
+    from lm15.types import Part as _Part
+    _HAS_LM15 = True
 except ImportError:
-    PIL_AVAILABLE = False
+    _HAS_LM15 = False
 
 
 class Image(Type):
@@ -21,118 +20,69 @@ class Image(Type):
 
     model_config = pydantic.ConfigDict(frozen=True, str_strip_whitespace=True, extra="forbid")
 
-    def __init__(self, url: Any = None, *, download: bool = False, verify: bool = True, **data):
+    def __init__(self, url: Any = None, *, download: bool = False, **data):
         if url is not None and "url" not in data:
-            if isinstance(url, dict) and set(url.keys()) == {"url"}:
+            if isinstance(url, dict) and "url" in url:
                 data["url"] = url["url"]
             else:
-                data["url"] = url
-        if "url" in data:
-            data["url"] = _normalize(data["url"], download=download, verify=verify)
+                data["url"] = _to_str(url, download)
+        elif "url" in data:
+            data["url"] = _to_str(data["url"], download)
         super().__init__(**data)
 
-    def format(self) -> list[dict[str, Any]]:
+    def format(self):
         return [{"type": "image_url", "image_url": {"url": self.url}}]
 
     def to_lm15_part(self):
-        """Return an lm15 ImagePart for direct use with lm15 Messages."""
-        try:
-            from lm15.types import Part
-        except ImportError:
+        if not _HAS_LM15:
             return None
-        if self.url.startswith("data:"):
-            import re
-            m = re.match(r"data:([^;]+);base64,(.+)", self.url)
-            if m:
-                return Part.image(data=m.group(2), media_type=m.group(1))
-        return Part.image(url=self.url)
-
-    @classmethod
-    def from_url(cls, url, download=False):
-        warnings.warn("Image.from_url is deprecated; use Image(url) instead.", DeprecationWarning, stacklevel=2)
-        return cls(url, download=download)
-
-    @classmethod
-    def from_file(cls, file_path):
-        warnings.warn("Image.from_file is deprecated; use Image(file_path) instead.", DeprecationWarning, stacklevel=2)
-        return cls(file_path)
-
-    @classmethod
-    def from_PIL(cls, pil_image):
-        warnings.warn("Image.from_PIL is deprecated; use Image(pil_image) instead.", DeprecationWarning, stacklevel=2)
-        return cls(pil_image)
-
-    def __str__(self):
-        return self.serialize_model()
+        import re
+        m = re.match(r"data:([^;]+);base64,(.+)", self.url, re.DOTALL)
+        if m:
+            return _Part.image(data=m.group(2), media_type=m.group(1))
+        return _Part.image(url=self.url)
 
     def __repr__(self):
         if "base64" in self.url:
-            n = len(self.url.split("base64,")[1])
-            t = self.url.split(";")[0].split("/")[-1]
-            return f"Image(url=data:image/{t};base64,<BASE64({n})>)"
+            return f"Image(<base64 {len(self.url)} chars>)"
         return f"Image(url='{self.url}')"
 
 
-# ---- Encoding helpers (kept for backward compat, but simpler) ----
-
-def _normalize(image: Any, download: bool = False, verify: bool = True) -> str:
-    if isinstance(image, str):
-        if image.startswith("data:"):
-            return image
-        if os.path.isfile(image):
-            return _file_to_data_uri(image)
-        if image.startswith(("http://", "https://", "gs://")):
-            return _url_to_data_uri(image, verify) if download else image
-        raise ValueError(f"Unrecognized image string: {image}")
-    if isinstance(image, dict) and "url" in image:
-        return image["url"]
-    if PIL_AVAILABLE and isinstance(image, PILImage.Image):
-        return _pil_to_data_uri(image)
-    if isinstance(image, bytes):
-        if not PIL_AVAILABLE:
-            raise ImportError("Pillow is required to process image bytes.")
-        return _pil_to_data_uri(PILImage.open(io.BytesIO(image)))
-    if isinstance(image, Image):
-        return image.url
-    raise ValueError(f"Unsupported image type: {type(image)}")
-
-
-def _file_to_data_uri(path: str) -> str:
-    import base64, mimetypes
-    mime, _ = mimetypes.guess_type(path)
-    if not mime:
-        raise ValueError(f"Cannot determine MIME type: {path}")
-    with open(path, "rb") as f:
-        return f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
+def _to_str(v: Any, download: bool = False) -> str:
+    """Normalize any input to a URL or data URI string."""
+    if isinstance(v, str):
+        if v.startswith("data:") or v.startswith(("http://", "https://", "gs://")):
+            return v
+        if os.path.isfile(v):
+            import base64, mimetypes
+            mime = mimetypes.guess_type(v)[0] or "application/octet-stream"
+            with open(v, "rb") as f:
+                return f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
+        raise ValueError(f"Not a file or URL: {v}")
+    if isinstance(v, bytes):
+        import base64
+        return f"data:image/png;base64,{base64.b64encode(v).decode()}"
+    try:
+        from PIL import Image as PILImage
+        if isinstance(v, PILImage.Image):
+            import base64, io
+            buf = io.BytesIO()
+            v.save(buf, format=v.format or "PNG")
+            return f"data:image/{(v.format or 'png').lower()};base64,{base64.b64encode(buf.getvalue()).decode()}"
+    except ImportError:
+        pass
+    raise ValueError(f"Unsupported image type: {type(v)}")
 
 
-def _url_to_data_uri(url: str, verify: bool = True) -> str:
-    import base64, requests
-    resp = requests.get(url, verify=verify)
-    resp.raise_for_status()
-    mime = resp.headers.get("Content-Type", "image/png")
-    return f"data:{mime};base64,{base64.b64encode(resp.content).decode()}"
+# Backward compat
+def encode_image(image, download_images=False, verify=True):
+    return _to_str(image, download=download_images)
 
-
-def _pil_to_data_uri(img) -> str:
-    import base64, mimetypes
-    buf = io.BytesIO()
-    fmt = img.format or "PNG"
-    img.save(buf, format=fmt)
-    mime, _ = mimetypes.guess_type(f"x.{fmt.lower()}")
-    if not mime:
-        mime = f"image/{fmt.lower()}"
-    return f"data:{mime};base64,{base64.b64encode(buf.getvalue()).decode()}"
-
-
-def encode_image(image, download_images=False, verify=True) -> str:
-    """Backward-compatible entry point."""
-    return _normalize(image, download=download_images, verify=verify)
-
-
-def is_image(obj) -> bool:
-    if PIL_AVAILABLE and isinstance(obj, PILImage.Image):
-        return True
+def is_image(obj):
     if isinstance(obj, str):
         return obj.startswith("data:") or os.path.isfile(obj) or obj.startswith(("http://", "https://"))
-    return False
+    try:
+        from PIL import Image as PILImage
+        return isinstance(obj, PILImage.Image)
+    except ImportError:
+        return False
