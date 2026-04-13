@@ -220,7 +220,7 @@ def request_cache(
             fn_identifier = f"{fn.__module__}.{fn.__qualname__}"
 
             # Create a modified request that includes the function identifier so that it's incorporated into the cache
-            # key. Deep copy is required because litellm sometimes modifies the kwargs in place.
+            # key. Deep copy is required because some backends modify kwargs in place.
             if cache_arg_name:
                 # When `cache_arg_name` is provided, use the value of the argument with this name as the request for
                 # caching.

@@ -1,6 +1,5 @@
 from typing import Any, Callable
 
-import litellm
 import numpy as np
 
 from dspy.clients.cache import request_cache
@@ -11,11 +10,11 @@ class Embedder:
 
     The class for computing embeddings for text inputs. This class provides a unified interface for both:
 
-    1. Hosted embedding models (e.g. OpenAI's text-embedding-3-small) via litellm integration
+    1. Hosted embedding models (e.g. OpenAI's text-embedding-3-small) via lm15
     2. Custom embedding functions that you provide
 
     For hosted models, simply pass the model name as a string (e.g., "openai/text-embedding-3-small"). The class will use
-    litellm to handle the API calls and caching.
+    lm15 to handle the API calls and caching.
 
     For custom embedding models, pass a callable function that:
     - Takes a list of strings as input.
@@ -26,7 +25,7 @@ class Embedder:
 
     Args:
         model: The embedding model to use. This can be either a string (representing the name of the hosted embedding
-            model, must be an embedding model supported by litellm) or a callable that represents a custom embedding
+            model, must be an embedding model supported by lm15) or a callable that represents a custom embedding
             model.
         batch_size (int, optional): The default batch size for processing inputs in batches. Defaults to 200.
         caching (bool, optional): Whether to cache the embedding response when using a hosted model. Defaults to True.
@@ -149,9 +148,11 @@ class Embedder:
 
 def _compute_embeddings(model, batch_inputs, caching=False, **kwargs):
     if isinstance(model, str):
-        caching = caching and litellm.cache is not None
-        embedding_response = litellm.embedding(model=model, input=batch_inputs, caching=caching, **kwargs)
-        return [data["embedding"] for data in embedding_response.data]
+        import lm15
+        from lm15.types import EmbeddingRequest
+        client = lm15.build_default(use_pycurl=False)
+        resp = client.embeddings(EmbeddingRequest(model=model, input=batch_inputs))
+        return resp.embeddings
     elif callable(model):
         return model(batch_inputs, **kwargs)
     else:
@@ -165,13 +166,15 @@ def _cached_compute_embeddings(model, batch_inputs, caching=True, **kwargs):
 
 async def _acompute_embeddings(model, batch_inputs, caching=False, **kwargs):
     if isinstance(model, str):
-        caching = caching and litellm.cache is not None
-        embedding_response = await litellm.aembedding(model=model, input=batch_inputs, caching=caching, **kwargs)
-        return [data["embedding"] for data in embedding_response.data]
+        # lm15 embeddings are sync; wrap in executor for async
+        import asyncio
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _compute_embeddings, model, batch_inputs, caching)
     elif callable(model):
         return model(batch_inputs, **kwargs)
     else:
         raise ValueError(f"`model` in `dspy.Embedder` must be a string or a callable, but got {type(model)}.")
+
 
 
 @request_cache(ignored_args_for_cache_key=["api_key", "api_base", "base_url"])

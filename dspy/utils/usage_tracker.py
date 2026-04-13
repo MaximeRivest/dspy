@@ -26,7 +26,6 @@ class UsageTracker:
         result = {}
         for key, value in usage_entry.items():
             if isinstance(value, BaseModel):
-                # Convert Pydantic models to dicts, like `PromptTokensDetailsWrapper` from litellm.
                 result[key] = value.model_dump()
             else:
                 result[key] = value

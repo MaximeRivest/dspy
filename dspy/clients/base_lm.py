@@ -1,3 +1,10 @@
+"""Base language model class.
+
+``BaseLM`` defines the interface that all DSPy language models implement.
+The default ``dspy.LM`` subclass routes calls through lm15; custom
+subclasses can override ``forward()`` directly.
+"""
+
 import datetime
 import uuid
 from typing import Any, TextIO
@@ -13,50 +20,21 @@ GLOBAL_HISTORY = []
 class BaseLM:
     """Base class for handling LLM calls.
 
-    Most users can directly use the `dspy.LM` class, which is a subclass of `BaseLM`. Users can also implement their
-    own subclasses of `BaseLM` to support custom LLM providers and inject custom logic. To do so, simply override the
-    `forward` method and make sure the return format is identical to the
-    [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+    Most users should use ``dspy.LM`` directly.  Override ``forward()`` to
+    plug in a custom provider — the return value must be shaped like an
+    `OpenAI ChatCompletion <https://platform.openai.com/docs/api-reference/chat/object>`_.
 
     Examples:
 
     ```python
-    from openai import OpenAI
-
     import dspy
 
-
     class MyLM(dspy.BaseLM):
-        @property
-        def supports_function_calling(self) -> bool:
-            return self.model.startswith("openai/gpt-4o")
-
-        @property
-        def supports_reasoning(self) -> bool:
-            return self.model.startswith("anthropic/claude-3-7")
-
-        @property
-        def supports_response_schema(self) -> bool:
-            return self.model.startswith("openai/gpt-4o")
-
-        @property
-        def supported_params(self) -> set[str]:
-            if self.model.startswith("openai/gpt-4o"):
-                return {"response_format"}  # accepts response_format=...
-            return set()
-
         def forward(self, prompt, messages=None, **kwargs):
-            client = OpenAI()
-            return client.chat.completions.create(
-                model=self.model,
-                messages=messages or [{"role": "user", "content": prompt}],
-                **self.kwargs,
-            )
-
-
-    lm = MyLM(model="gpt-4o-mini")
-    dspy.configure(lm=lm)
-    print(dspy.Predict("q->a")(q="Why did the chicken cross the kitchen?"))
+            import lm15
+            resp = lm15.call(self.model, prompt)
+            # Build a ChatCompletion-shaped return value
+            ...
     ```
     """
 
@@ -67,25 +45,29 @@ class BaseLM:
         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
         self.history = []
 
+    # ------------------------------------------------------------------
+    # Capability queries — overridden by LM to delegate to lm15
+    # ------------------------------------------------------------------
+
     @property
     def supports_function_calling(self) -> bool:
-        """Whether the model supports function calling (tool use)."""
         return False
 
     @property
     def supports_reasoning(self) -> bool:
-        """Whether the model supports native reasoning (extended thinking)."""
         return False
 
     @property
     def supports_response_schema(self) -> bool:
-        """Whether the model supports structured output via response schema."""
         return False
 
     @property
     def supported_params(self) -> set[str]:
-        """Set of supported OpenAI-style parameter names for the model."""
         return set()
+
+    # ------------------------------------------------------------------
+    # Response processing
+    # ------------------------------------------------------------------
 
     def _process_lm_response(self, response, prompt, messages, **kwargs):
         merged_kwargs = {**self.kwargs, **kwargs}
@@ -98,12 +80,11 @@ class BaseLM:
         if settings.disable_history:
             return outputs
 
-        # Logging, with removed api key & where `cost` is None on cache hit.
-        kwargs = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
+        safe_kwargs = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
         entry = {
             "prompt": prompt,
             "messages": messages,
-            "kwargs": kwargs,
+            "kwargs": safe_kwargs,
             "response": response,
             "outputs": outputs,
             "usage": dict(response.usage),
@@ -114,148 +95,11 @@ class BaseLM:
             "response_model": response.model,
             "model_type": self.model_type,
         }
-
         self.update_history(entry)
-
         return outputs
-
-    @with_callbacks
-    def __call__(
-        self,
-        prompt: str | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        **kwargs
-    ) -> list[dict[str, Any] | str]:
-        response = self.forward(prompt=prompt, messages=messages, **kwargs)
-        outputs = self._process_lm_response(response, prompt, messages, **kwargs)
-
-        return outputs
-
-    @with_callbacks
-    async def acall(
-        self,
-        prompt: str | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        **kwargs
-    ) -> list[dict[str, Any] | str]:
-        response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
-        outputs = self._process_lm_response(response, prompt, messages, **kwargs)
-        return outputs
-
-    def forward(
-        self,
-        prompt: str | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        **kwargs
-    ):
-        """Forward pass for the language model.
-
-        Subclasses must implement this method, and the response should be identical to either of the following formats:
-
-        - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
-        - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
-        - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
-
-        Raises:
-            dspy.ContextWindowExceededError: When the request fails because the
-                input exceeds the model's context window. DSPy adapters and
-                modules rely on this error to trigger fallback behavior (e.g.
-                truncating the prompt and retrying). Each subclass is
-                responsible for catching its provider's native error and
-                re-raising it as `dspy.ContextWindowExceededError`.
-        """
-        raise NotImplementedError("Subclasses must implement this method.")
-
-    async def aforward(
-        self,
-        prompt: str | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        **kwargs
-    ):
-        """Async forward pass for the language model.
-
-        Subclasses must implement this method, and the response should be identical to either of the following formats:
-
-        - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
-        - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
-        - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
-
-        Raises:
-            dspy.ContextWindowExceededError: When the request fails because the
-                input exceeds the model's context window. DSPy adapters and
-                modules rely on this error to trigger fallback behavior (e.g.
-                truncating the prompt and retrying). Each subclass is
-                responsible for catching its provider's native error and
-                re-raising it as `dspy.ContextWindowExceededError`.
-        """
-        raise NotImplementedError("Subclasses must implement this method.")
-
-    def copy(self, **kwargs):
-        """Returns a copy of the language model with possibly updated parameters.
-
-        Any provided keyword arguments update the corresponding attributes or LM kwargs of
-        the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose
-        requests use a different rollout ID at non-zero temperature to bypass cache collisions.
-        """
-
-        import copy
-
-        new_instance = copy.deepcopy(self)
-        new_instance.history = []
-
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(new_instance, key, value)
-            if (key in self.kwargs) or (not hasattr(self, key)):
-                if value is None:
-                    new_instance.kwargs.pop(key, None)
-                else:
-                    new_instance.kwargs[key] = value
-        if hasattr(new_instance, "_warned_zero_temp_rollout"):
-            new_instance._warned_zero_temp_rollout = False
-
-        return new_instance
-
-    def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
-        pretty_print_history(self.history, n, file=file)
-
-    def update_history(self, entry):
-        if settings.disable_history:
-            return
-
-        # Global LM history
-        if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:
-            GLOBAL_HISTORY.pop(0)
-
-        GLOBAL_HISTORY.append(entry)
-
-        if settings.max_history_size == 0:
-            return
-
-        # dspy.LM.history
-        if len(self.history) >= settings.max_history_size:
-            self.history.pop(0)
-
-        self.history.append(entry)
-
-        # Per-module history
-        caller_modules = settings.caller_modules or []
-        for module in caller_modules:
-            if len(module.history) >= settings.max_history_size:
-                module.history.pop(0)
-            module.history.append(entry)
 
     def _process_completion(self, response, merged_kwargs):
-        """Process the response of OpenAI chat completion API and extract outputs.
-
-        Args:
-            response: The OpenAI chat completion response
-                https://platform.openai.com/docs/api-reference/chat/object
-            merged_kwargs: Merged kwargs from self.kwargs and method kwargs
-
-        Returns:
-            List of processed outputs
-        """
+        """Extract outputs from a ChatCompletion-shaped response."""
         outputs = []
         for c in response.choices:
             output = {}
@@ -266,86 +110,110 @@ class BaseLM:
 
             if merged_kwargs.get("logprobs"):
                 output["logprobs"] = c.logprobs if hasattr(c, "logprobs") else c["logprobs"]
+
             if hasattr(c, "message") and getattr(c.message, "tool_calls", None):
                 output["tool_calls"] = c.message.tool_calls
 
-            # Extract citations from LiteLLM response if available
-            citations = self._extract_citations_from_response(c)
-            if citations:
-                output["citations"] = citations
+            # Citations from provider_specific_fields
+            try:
+                citations_data = c.message.provider_specific_fields.get("citations")
+                if isinstance(citations_data, list):
+                    output["citations"] = [cit for group in citations_data for cit in group]
+            except Exception:
+                pass
 
             outputs.append(output)
 
-        if all(len(output) == 1 for output in outputs):
-            # Return a list if every output only has "text" key
-            outputs = [output["text"] for output in outputs]
+        if all(len(o) == 1 for o in outputs):
+            outputs = [o["text"] for o in outputs]
         return outputs
 
-    def _extract_citations_from_response(self, choice):
-        """Extract citations from LiteLLM response if available.
-        Reference: https://docs.litellm.ai/docs/providers/anthropic#beta-citations-api
-
-        Args:
-            choice: The choice object from response.choices
-
-        Returns:
-            A list of citation dictionaries or None if no citations found
-        """
-        try:
-            # Check for citations in LiteLLM provider_specific_fields
-            citations_data = choice.message.provider_specific_fields.get("citations")
-            if isinstance(citations_data, list):
-                return [citation for citations in citations_data for citation in citations]
-        except Exception:
-            return None
-
     def _process_response(self, response):
-        """Process the response of OpenAI Response API and extract outputs.
-
-        Args:
-            response: OpenAI Response API response
-                https://platform.openai.com/docs/api-reference/responses/object
-
-        Returns:
-            List of processed outputs, which is always of size 1 because the Response API only supports one output.
-        """
-        text_outputs = []
-        tool_calls = []
-        reasoning_contents = []
-
-        for output_item in response.output:
-            output_item_type = output_item.type
-            if output_item_type == "message":
-                for content_item in output_item.content:
-                    text_outputs.append(content_item.text)
-            elif output_item_type == "function_call":
-                tool_calls.append(output_item.model_dump())
-            elif output_item_type == "reasoning":
-                if getattr(output_item, "content", None) and len(output_item.content) > 0:
-                    for content_item in output_item.content:
-                        reasoning_contents.append(content_item.text)
-                elif getattr(output_item, "summary", None) and len(output_item.summary) > 0:
-                    for summary_item in output_item.summary:
-                        reasoning_contents.append(summary_item.text)
+        """Extract outputs from an OpenAI Responses API response."""
+        text_outputs, tool_calls, reasoning = [], [], []
+        for item in response.output:
+            if item.type == "message":
+                for c in item.content:
+                    text_outputs.append(c.text)
+            elif item.type == "function_call":
+                tool_calls.append(item.model_dump())
+            elif item.type == "reasoning":
+                for c in getattr(item, "content", None) or getattr(item, "summary", None) or []:
+                    reasoning.append(c.text)
 
         result = {}
-        if len(text_outputs) > 0:
+        if text_outputs:
             result["text"] = "".join(text_outputs)
-        if len(tool_calls) > 0:
+        if tool_calls:
             result["tool_calls"] = tool_calls
-        if len(reasoning_contents) > 0:
-            result["reasoning_content"] = "".join(reasoning_contents)
-        # All `response.output` items map to one answer, so we return a list of size 1.
+        if reasoning:
+            result["reasoning_content"] = "".join(reasoning)
         return [result]
+
+    # ------------------------------------------------------------------
+    # Call interface
+    # ------------------------------------------------------------------
+
+    @with_callbacks
+    def __call__(self, prompt=None, messages=None, **kwargs) -> list[dict[str, Any] | str]:
+        response = self.forward(prompt=prompt, messages=messages, **kwargs)
+        return self._process_lm_response(response, prompt, messages, **kwargs)
+
+    @with_callbacks
+    async def acall(self, prompt=None, messages=None, **kwargs) -> list[dict[str, Any] | str]:
+        response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
+        return self._process_lm_response(response, prompt, messages, **kwargs)
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        raise NotImplementedError
+
+    async def aforward(self, prompt=None, messages=None, **kwargs):
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Copy, history, inspection
+    # ------------------------------------------------------------------
+
+    def copy(self, **kwargs):
+        import copy
+        new = copy.deepcopy(self)
+        new.history = []
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(new, key, value)
+            if (key in self.kwargs) or (not hasattr(self, key)):
+                if value is None:
+                    new.kwargs.pop(key, None)
+                else:
+                    new.kwargs[key] = value
+        if hasattr(new, "_warned_zero_temp_rollout"):
+            new._warned_zero_temp_rollout = False
+        return new
+
+    def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+        pretty_print_history(self.history, n, file=file)
+
+    def update_history(self, entry):
+        if settings.disable_history:
+            return
+
+        if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:
+            GLOBAL_HISTORY.pop(0)
+        GLOBAL_HISTORY.append(entry)
+
+        if settings.max_history_size == 0:
+            return
+
+        if len(self.history) >= settings.max_history_size:
+            self.history.pop(0)
+        self.history.append(entry)
+
+        for module in (settings.caller_modules or []):
+            if len(module.history) >= settings.max_history_size:
+                module.history.pop(0)
+            module.history.append(entry)
 
 
 def inspect_history(n: int = 1, file: "TextIO | None" = None) -> None:
-    """The global history shared across all LMs.
-
-    Args:
-        n: Number of recent entries to display. Defaults to 1.
-        file: An optional file-like object to write output to. When
-            provided, ANSI color codes are automatically disabled.
-            Defaults to `None` (prints to stdout).
-    """
+    """Display the global history shared across all LMs."""
     pretty_print_history(GLOBAL_HISTORY, n, file=file)

@@ -8,8 +8,6 @@ import pydantic
 from dspy.clients.base_lm import BaseLM
 
 if TYPE_CHECKING:
-    from litellm import ModelResponseStream
-
     from dspy.signatures.signature import Signature
 
 CUSTOM_TYPE_START_IDENTIFIER = "<<CUSTOM-TYPE-START-IDENTIFIER>>"
@@ -107,7 +105,7 @@ class Type(pydantic.BaseModel):
         return False
 
     @classmethod
-    def parse_stream_chunk(cls, chunk: "ModelResponseStream") -> Optional["Type"]:
+    def parse_stream_chunk(cls, chunk) -> Optional["Type"]:
         """
         Parse a stream chunk into the custom type.
 

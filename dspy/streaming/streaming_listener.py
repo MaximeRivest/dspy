@@ -5,7 +5,6 @@ from queue import Queue
 from typing import TYPE_CHECKING, Any
 
 import jiter
-from litellm import ModelResponseStream
 
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.adapters.json_adapter import JSONAdapter
@@ -112,7 +111,7 @@ class StreamListener:
 
         return False
 
-    def receive(self, chunk: ModelResponseStream):
+    def receive(self, chunk):
         adapter_name = settings.adapter.__class__.__name__ if settings.adapter else "ChatAdapter"
         if adapter_name not in self.adapter_identifiers:
             raise ValueError(
