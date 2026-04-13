@@ -4,7 +4,6 @@ from typing import Any, get_origin
 import json_repair
 
 from dspy.adapters.types import History, Type
-from dspy.adapters.types.base_type import split_message_content_for_custom_types
 from dspy.adapters.types.reasoning import Reasoning
 from dspy.adapters.types.tool import Tool, ToolCalls
 from dspy.clients.base_lm import BaseLM
@@ -200,9 +199,12 @@ class Adapter:
             signature's output field names. For multiple generations (n > 1), returns multiple dictionaries.
         """
         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
-        inputs = self.format(processed_signature, demos, inputs)
+        multimodal = _collect_multimodal_parts(inputs)
+        messages = self.format(processed_signature, demos, inputs)
 
-        outputs = lm(messages=inputs, **lm_kwargs)
+        if multimodal:
+            lm_kwargs["_multimodal_parts"] = multimodal
+        outputs = lm(messages=messages, **lm_kwargs)
         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
 
     async def acall(
@@ -214,9 +216,12 @@ class Adapter:
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
-        inputs = self.format(processed_signature, demos, inputs)
+        multimodal = _collect_multimodal_parts(inputs)
+        messages = self.format(processed_signature, demos, inputs)
 
-        outputs = await lm.acall(messages=inputs, **lm_kwargs)
+        if multimodal:
+            lm_kwargs["_multimodal_parts"] = multimodal
+        outputs = await lm.acall(messages=messages, **lm_kwargs)
         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
 
     def format(
@@ -292,7 +297,6 @@ class Adapter:
             content = self.format_user_message_content(signature, inputs_copy, main_request=True)
             messages.append({"role": "user", "content": content})
 
-        messages = split_message_content_for_custom_types(messages)
         return messages
 
     def format_system_message(self, signature: type[Signature]) -> str:
@@ -533,3 +537,20 @@ class Adapter:
             A dictionary of the output fields.
         """
         raise NotImplementedError
+
+
+def _collect_multimodal_parts(inputs: dict[str, Any]) -> list:
+    """Extract lm15 Parts from any multimodal Type values in the inputs."""
+    parts = []
+    for v in inputs.values():
+        if isinstance(v, Type) and hasattr(v, "to_lm15_part"):
+            p = v.to_lm15_part()
+            if p is not None:
+                parts.append(p)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, Type) and hasattr(item, "to_lm15_part"):
+                    p = item.to_lm15_part()
+                    if p is not None:
+                        parts.append(p)
+    return parts

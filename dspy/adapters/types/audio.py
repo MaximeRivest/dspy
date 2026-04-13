@@ -27,7 +27,10 @@ class Audio(Type):
         return [{"type": "input_audio", "input_audio": {"data": self.data, "format": self.audio_format}}]
 
     def to_lm15_part(self):
-        from lm15.types import Part
+        try:
+            from lm15.types import Part
+        except ImportError:
+            return None
         return Part.audio(data=self.data, media_type=f"audio/{self.audio_format}")
 
     @pydantic.model_validator(mode="before")

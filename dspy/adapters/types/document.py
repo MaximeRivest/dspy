@@ -30,7 +30,10 @@ class Document(Type):
         return [block]
 
     def to_lm15_part(self):
-        from lm15.types import Part
+        try:
+            from lm15.types import Part
+        except ImportError:
+            return None
         return Part.document(data=self.data, media_type=self.media_type)
 
     @pydantic.model_validator(mode="before")

@@ -52,7 +52,10 @@ class File(Type):
         return [{"type": "file", "file": d}]
 
     def to_lm15_part(self):
-        from lm15.types import Part
+        try:
+            from lm15.types import Part
+        except ImportError:
+            return None
         if self.file_data:
             return Part.document(data=self.file_data)
         if self.file_id:

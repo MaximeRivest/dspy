@@ -36,7 +36,10 @@ class Image(Type):
 
     def to_lm15_part(self):
         """Return an lm15 ImagePart for direct use with lm15 Messages."""
-        from lm15.types import Part
+        try:
+            from lm15.types import Part
+        except ImportError:
+            return None
         if self.url.startswith("data:"):
             import re
             m = re.match(r"data:([^;]+);base64,(.+)", self.url)
