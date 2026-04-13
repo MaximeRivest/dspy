@@ -1,3 +1,5 @@
+"""Status messages and stream response types for DSPy streaming."""
+
 import asyncio
 import concurrent.futures
 from dataclasses import dataclass
@@ -19,166 +21,63 @@ class StreamResponse:
 
 @dataclass
 class StatusMessage:
-    """Dataclass that wraps a status message for status streaming."""
-
     message: str
 
 
 def sync_send_to_stream(stream, message):
-    """Send message to stream in a sync context, regardless of event loop state."""
-
+    """Send message to stream, works whether or not an event loop is running."""
     async def _send():
         await stream.send(message)
 
     try:
         asyncio.get_running_loop()
-
-        # If we're in an event loop, offload to a new thread with its own event loop
-        def run_in_new_loop():
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            try:
-                return new_loop.run_until_complete(_send())
-            finally:
-                new_loop.close()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(run_in_new_loop)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(lambda: asyncio.run(_send()))
             return future.result()
     except RuntimeError:
-        # Not in an event loop, safe to use a new event loop in this thread
         return syncify(_send)()
 
 
 class StatusMessageProvider:
-    """Provides customizable status message streaming for DSPy programs.
+    """Override methods to customize status messages during streaming."""
 
-    This class serves as a base for creating custom status message providers. Users can subclass
-    and override its methods to define specific status messages for different stages of program execution,
-    each method must return a string.
-
-    Examples:
-    ```python
-    class MyStatusMessageProvider(StatusMessageProvider):
-        def lm_start_status_message(self, instance, inputs):
-            return f"Calling LM with inputs {inputs}..."
-
-        def module_end_status_message(self, outputs):
-            return f"Module finished with output: {outputs}!"
-
-    program = dspy.streamify(dspy.Predict("q->a"), status_message_provider=MyStatusMessageProvider())
-    ```
-    """
-
-    def tool_start_status_message(self, instance: Any, inputs: dict[str, Any]):
-        """Status message before a `dspy.Tool` is called."""
+    def tool_start_status_message(self, instance, inputs):
         return f"Calling tool {instance.name}..."
 
-    def tool_end_status_message(self, outputs: Any):
-        """Status message after a `dspy.Tool` is called."""
+    def tool_end_status_message(self, outputs):
         return "Tool calling finished! Querying the LLM with tool calling results..."
 
-    def module_start_status_message(self, instance: Any, inputs: dict[str, Any]):
-        """Status message before a `dspy.Module` or `dspy.Predict` is called."""
-        pass
-
-    def module_end_status_message(self, outputs: Any):
-        """Status message after a `dspy.Module` or `dspy.Predict` is called."""
-        pass
-
-    def lm_start_status_message(self, instance: Any, inputs: dict[str, Any]):
-        """Status message before a `dspy.LM` is called."""
-        pass
-
-    def lm_end_status_message(self, outputs: Any):
-        """Status message after a `dspy.LM` is called."""
-        pass
+    def module_start_status_message(self, instance, inputs): pass
+    def module_end_status_message(self, outputs): pass
+    def lm_start_status_message(self, instance, inputs): pass
+    def lm_end_status_message(self, outputs): pass
 
 
 class StatusStreamingCallback(BaseCallback):
-    def __init__(self, status_message_provider: StatusMessageProvider | None = None):
-        self.status_message_provider = status_message_provider or StatusMessageProvider()
+    def __init__(self, provider=None):
+        self.p = provider or StatusMessageProvider()
 
-    def on_tool_start(
-        self,
-        call_id: str,
-        instance: Any,
-        inputs: dict[str, Any],
-    ):
+    def _send(self, msg):
         stream = settings.send_stream
-        if stream is None or instance.name == "finish":
-            return
+        if stream and msg:
+            sync_send_to_stream(stream, StatusMessage(msg))
 
-        status_message = self.status_message_provider.tool_start_status_message(instance, inputs)
-        if status_message:
-            sync_send_to_stream(stream, StatusMessage(status_message))
+    def on_tool_start(self, call_id, instance, inputs):
+        if instance.name != "finish":
+            self._send(self.p.tool_start_status_message(instance, inputs))
 
-    def on_tool_end(
-        self,
-        call_id: str,
-        outputs: dict[str, Any] | None,
-        exception: Exception | None = None,
-    ):
-        stream = settings.send_stream
-        if stream is None or outputs == "Completed.":
-            return
+    def on_tool_end(self, call_id, outputs=None, exception=None):
+        if outputs != "Completed.":
+            self._send(self.p.tool_end_status_message(outputs))
 
-        status_message = self.status_message_provider.tool_end_status_message(outputs)
-        if status_message:
-            sync_send_to_stream(stream, StatusMessage(status_message))
+    def on_lm_start(self, call_id, instance, inputs):
+        self._send(self.p.lm_start_status_message(instance, inputs))
 
-    def on_lm_start(
-        self,
-        call_id: str,
-        instance: Any,
-        inputs: dict[str, Any],
-    ):
-        stream = settings.send_stream
-        if stream is None:
-            return
+    def on_lm_end(self, call_id, outputs=None, exception=None):
+        self._send(self.p.lm_end_status_message(outputs))
 
-        status_message = self.status_message_provider.lm_start_status_message(instance, inputs)
-        if status_message:
-            sync_send_to_stream(stream, StatusMessage(status_message))
+    def on_module_start(self, call_id, instance, inputs):
+        self._send(self.p.module_start_status_message(instance, inputs))
 
-    def on_lm_end(
-        self,
-        call_id: str,
-        outputs: dict[str, Any] | None,
-        exception: Exception | None = None,
-    ):
-        stream = settings.send_stream
-        if stream is None:
-            return
-
-        status_message = self.status_message_provider.lm_end_status_message(outputs)
-        if status_message:
-            sync_send_to_stream(stream, StatusMessage(status_message))
-
-    def on_module_start(
-        self,
-        call_id: str,
-        instance: Any,
-        inputs: dict[str, Any],
-    ):
-        stream = settings.send_stream
-        if stream is None:
-            return
-
-        status_message = self.status_message_provider.module_start_status_message(instance, inputs)
-        if status_message:
-            sync_send_to_stream(stream, StatusMessage(status_message))
-
-    def on_module_end(
-        self,
-        call_id: str,
-        outputs: dict[str, Any] | None,
-        exception: Exception | None = None,
-    ):
-        stream = settings.send_stream
-        if stream is None:
-            return
-
-        status_message = self.status_message_provider.module_end_status_message(outputs)
-        if status_message:
-            sync_send_to_stream(stream, StatusMessage(status_message))
+    def on_module_end(self, call_id, outputs=None, exception=None):
+        self._send(self.p.module_end_status_message(outputs))
