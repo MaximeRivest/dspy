@@ -1,3 +1,10 @@
+"""Reasoning type for DSPy — wraps native LM reasoning/extended thinking.
+
+str-like type: adapters treat it as a string, but it also captures
+reasoning content from models that support native reasoning (o1, o3,
+Claude, etc.).  lm15 surfaces reasoning via ``resp.thinking``.
+"""
+
 from typing import TYPE_CHECKING, Any, Optional
 
 import pydantic
@@ -10,15 +17,6 @@ if TYPE_CHECKING:
 
 
 class Reasoning(Type):
-    """Reasoning type in DSPy.
-
-    This type is useful when you want the DSPy output to include the reasoning of the LM. We build this type so that
-    DSPy can support the reasoning model and non-reasoning model with the same code.
-
-    This is a str-like type, you can convert a string directly to a Reasoning object, and from DSPy adapters'
-    perspective, `Reasoning` is treated as a string.
-    """
-
     content: str
 
     def format(self):
@@ -27,69 +25,39 @@ class Reasoning(Type):
     @pydantic.model_validator(mode="before")
     @classmethod
     def validate_input(cls, data: Any):
-        if isinstance(data, cls):
-            return data
-
-        if isinstance(data, str):
-            return {"content": data}
-
+        if isinstance(data, cls): return data
+        if isinstance(data, str): return {"content": data}
         if isinstance(data, dict):
             if "content" not in data:
                 raise ValueError("`content` field is required for `dspy.Reasoning`")
-            if not isinstance(data["content"], str):
-                raise ValueError(f"`content` field must be a string, but received type: {type(data['content'])}")
             return {"content": data["content"]}
-
-        raise ValueError(f"Received invalid value for `dspy.Reasoning`: {data}")
+        raise ValueError(f"Invalid Reasoning value: {data}")
 
     @classmethod
-    def adapt_to_native_lm_feature(
-        cls,
-        signature: type["Signature"],
-        field_name: str,
-        lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-    ) -> type["Signature"]:
+    def adapt_to_native_lm_feature(cls, signature, field_name, lm, lm_kwargs):
         if "reasoning_effort" in lm_kwargs:
-            # `lm_kwargs` overrides `lm.kwargs`.
-            reasoning_effort = lm_kwargs["reasoning_effort"]
+            effort = lm_kwargs["reasoning_effort"]
         elif "reasoning_effort" in lm.kwargs:
-            reasoning_effort = lm.kwargs["reasoning_effort"]
+            effort = lm.kwargs["reasoning_effort"]
         else:
-            # Turn on the native reasoning explicitly if Reasoning field is present in the signature and no explicit
-            # reasoning effort is set in `lm_kwargs` or `lm.kwargs`.
-            reasoning_effort = "low"
+            effort = "low"
 
-        if reasoning_effort is None or not lm.supports_reasoning:
-            # If users explicitly set `reasoning_effort` to None or the LM doesn't support reasoning, we don't enable
-            # native reasoning.
+        if effort is None or not lm.supports_reasoning:
             return signature
 
-        lm_kwargs["reasoning_effort"] = reasoning_effort
-        # Delete the reasoning field from the signature to use the native reasoning feature.
+        lm_kwargs["reasoning_effort"] = effort
         return signature.delete(field_name)
 
     @classmethod
-    def parse_lm_response(cls, response: str | dict[str, Any]) -> Optional["Reasoning"]:
-        """Parse the LM response into a Reasoning object."""
-        if "reasoning_content" in response:
+    def parse_lm_response(cls, response) -> Optional["Reasoning"]:
+        if isinstance(response, dict) and "reasoning_content" in response:
             return Reasoning(content=response["reasoning_content"])
         return None
 
     @classmethod
     def parse_stream_chunk(cls, chunk) -> str | None:
-        """
-        Parse a stream chunk into reasoning content if available.
-
-        Args:
-            chunk: A stream chunk from the LM.
-
-        Returns:
-            The reasoning content (str) if available, None otherwise.
-        """
         try:
-            if choices := getattr(chunk, "choices", None):
-                return getattr(choices[0].delta, "reasoning_content", None)
+            return getattr(chunk.choices[0].delta, "reasoning_content", None)
         except Exception:
             return None
 
@@ -97,67 +65,27 @@ class Reasoning(Type):
     def is_streamable(cls) -> bool:
         return True
 
-    def __repr__(self) -> str:
-        return f"{self.content!r}"
+    # -- str-like interface --
 
-    def __str__(self) -> str:
-        return self.content
+    def __repr__(self): return repr(self.content)
+    def __str__(self): return self.content
+    def __eq__(self, o): return self.content == (o.content if isinstance(o, Reasoning) else o)
+    def __ne__(self, o): return not self.__eq__(o)
+    def __len__(self): return len(self.content)
+    def __getitem__(self, k): return self.content[k]
+    def __contains__(self, x): return x in self.content
+    def __iter__(self): return iter(self.content)
 
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Reasoning):
-            return self.content == other.content
-        if isinstance(other, str):
-            return self.content == other
-        return False
-
-    def __ne__(self, other: object) -> bool:
-        return not self.__eq__(other)
-
-    def __len__(self) -> int:
-        return len(self.content)
-
-    def __getitem__(self, key):
-        return self.content[key]
-
-    def __contains__(self, item) -> bool:
-        return item in self.content
-
-    def __iter__(self):
-        return iter(self.content)
-
-    def __add__(self, other):
-        if isinstance(other, Reasoning):
-            return Reasoning(content=self.content + other.content)
-        if isinstance(other, str):
-            return self.content + other
+    def __add__(self, o):
+        if isinstance(o, Reasoning): return Reasoning(content=self.content + o.content)
+        if isinstance(o, str): return self.content + o
         return NotImplemented
 
-    def __radd__(self, other):
-        if isinstance(other, str):
-            return other + self.content
-        if isinstance(other, Reasoning):
-            return Reasoning(content=other.content + self.content)
+    def __radd__(self, o):
+        if isinstance(o, str): return o + self.content
         return NotImplemented
 
     def __getattr__(self, name):
-        """
-        Delegate string methods to the underlying content.
-
-        This makes Reasoning fully str-like by forwarding any string method calls
-        (like .strip(), .lower(), .split(), etc.) to the content string.
-
-        Note: This is called only when the attribute is not found on the Reasoning instance,
-        so it won't interfere with Pydantic fields or existing methods.
-        """
-        # Check if this is a valid string method/attribute
         if hasattr(str, name):
-            # Delegate to the content string
             return getattr(self.content, name)
-
-        # If it's not a string method, provide a helpful error
-        raise AttributeError(
-            f"`{type(self).__name__}` object has no attribute '{name}'. "
-            f"If you are using `dspy.ChainOfThought`, note that the 'reasoning' field in ChainOfThought is now a "
-            "`dspy.Reasoning` object (not a plain string). "
-            f"You can convert it to a string with str(reasoning) or access the content with reasoning.content."
-        )
+        raise AttributeError(f"`Reasoning` has no attribute '{name}'")
