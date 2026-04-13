@@ -1,3 +1,13 @@
+"""Adapter base class — the bridge between DSPy signatures and LM calls.
+
+The adapter pipeline: preprocess → format → LM call → postprocess → parse.
+``_call_preprocess`` handles native tool calling and native response types.
+``_call_postprocess`` handles output parsing, tool call extraction, and
+native type parsing.
+
+``format()`` and ``parse()`` are implemented by subclasses (TemplateAdapter).
+"""
+
 import logging
 from typing import Any, get_origin
 
@@ -18,21 +28,7 @@ _DEFAULT_NATIVE_RESPONSE_TYPES = [Citations, Reasoning]
 
 
 class Adapter:
-    """Base Adapter class.
-
-    The Adapter serves as the interface layer between DSPy module/signature and Language Models (LMs). It handles the
-    complete transformation pipeline from DSPy inputs to LM calls and back to structured outputs.
-
-    Key responsibilities:
-        - Transform user inputs and signatures into properly formatted LM prompts, which also instructs the LM to format
-            the response in a specific format.
-        - Parse LM outputs into dictionaries matching the signature's output fields.
-        - Enable/disable native LM features (function calling, citations, etc.) based on configuration.
-        - Handle conversation history, few-shot examples, and custom type processing.
-
-    The adapter pattern allows DSPy to work with different LM interfaces while maintaining a consistent programming
-    model for users.
-    """
+    """Base Adapter class — handles preprocess/postprocess around format/parse."""
 
     def __init__(
         self,
@@ -40,434 +36,140 @@ class Adapter:
         use_native_function_calling: bool = False,
         native_response_types: list[type[Type]] | None = None,
     ):
-        """
-        Args:
-            callbacks: List of callback functions to execute during `format()` and `parse()` methods. Callbacks can be
-                used for logging, monitoring, or custom processing. Defaults to None (empty list).
-            use_native_function_calling: Whether to enable native function calling capabilities when the LM supports it.
-                If True, the adapter will automatically configure function calling when input fields contain `dspy.Tool`
-                or `list[dspy.Tool]` types. Defaults to False.
-            native_response_types: List of output field types that should be handled by native LM features rather than
-                adapter parsing. For example, `dspy.Citations` can be populated directly by citation APIs
-                (e.g., Anthropic's citation feature). Defaults to `[Citations]`.
-        """
         self.callbacks = callbacks or []
         self.use_native_function_calling = use_native_function_calling
         self.native_response_types = native_response_types or _DEFAULT_NATIVE_RESPONSE_TYPES
 
-    def __init_subclass__(cls, **kwargs) -> None:
+    def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-
-        # Decorate format() and parse() method with with_callbacks
         cls.format = with_callbacks(cls.format)
         cls.parse = with_callbacks(cls.parse)
 
-    def _call_preprocess(
-        self,
-        lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-        signature: type[Signature],
-        inputs: dict[str, Any],
-    ) -> type[Signature]:
+    # ------------------------------------------------------------------
+    # Preprocess: native tool calling + native response types
+    # ------------------------------------------------------------------
+
+    def _call_preprocess(self, lm, lm_kwargs, signature, inputs):
         if self.use_native_function_calling:
-            tool_call_input_field_name = self._get_tool_call_input_field_name(signature)
-            tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
+            tc_in = self._get_tool_call_input_field_name(signature)
+            tc_out = self._get_tool_call_output_field_name(signature)
 
-            if tool_call_output_field_name and tool_call_input_field_name is None:
+            if tc_out and tc_in is None:
                 raise ValueError(
-                    f"You provided an output field {tool_call_output_field_name} to receive the tool calls information, "
-                    "but did not provide any tools as the input. Please provide a list of tools as the input by adding an "
-                    "input field with type `list[dspy.Tool]`."
+                    f"Output field {tc_out} expects tool calls but no tool input field found. "
+                    "Add an input field with type `list[dspy.Tool]`."
                 )
 
-            if tool_call_output_field_name and lm.supports_function_calling:
-                tools = inputs[tool_call_input_field_name]
+            if tc_out and lm.supports_function_calling:
+                tools = inputs[tc_in]
                 tools = tools if isinstance(tools, list) else [tools]
+                lm_kwargs["tools"] = [t.format_as_function_call() for t in tools]
+                signature = signature.delete(tc_out).delete(tc_in)
+                return signature
 
-                lm_tools = [tool.format_as_function_call() for tool in tools]
-
-                lm_kwargs["tools"] = lm_tools
-
-                signature_for_native_function_calling = signature.delete(tool_call_output_field_name)
-                signature_for_native_function_calling = signature_for_native_function_calling.delete(
-                    tool_call_input_field_name
-                )
-
-                return signature_for_native_function_calling
-
-        # Handle custom types that use native LM features, e.g., reasoning, citations, etc.
         for name, field in signature.output_fields.items():
-            if (
-                isinstance(field.annotation, type)
-                and field.annotation in self.native_response_types
-                and issubclass(field.annotation, Type)
-            ):
+            if (isinstance(field.annotation, type)
+                    and field.annotation in self.native_response_types
+                    and issubclass(field.annotation, Type)):
                 signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)
 
         return signature
 
-    def _call_postprocess(
-        self,
-        processed_signature: type[Signature],
-        original_signature: type[Signature],
-        outputs: list[dict[str, Any] | str],
-        lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        values = []
+    # ------------------------------------------------------------------
+    # Postprocess: parse outputs, extract tool calls, native types
+    # ------------------------------------------------------------------
 
-        tool_call_output_field_name = self._get_tool_call_output_field_name(original_signature)
+    def _call_postprocess(self, processed_sig, original_sig, outputs, lm, lm_kwargs):
+        values = []
+        tc_out = self._get_tool_call_output_field_name(original_sig)
 
         for output in outputs:
-            output_logprobs = None
+            logprobs = None
             tool_calls = None
             text = output
 
             if isinstance(output, dict):
                 text = output["text"]
-                output_logprobs = output.get("logprobs")
+                logprobs = output.get("logprobs")
                 tool_calls = output.get("tool_calls")
 
             if text:
-                value = self.parse(processed_signature, text)
-                for field_name in original_signature.output_fields.keys():
-                    if field_name not in value:
-                        # We need to set the field not present in the processed signature to None for consistency.
-                        value[field_name] = None
-            elif tool_calls and tool_call_output_field_name:
-                value = {}
-                for field_name in original_signature.output_fields.keys():
-                    value[field_name] = None
+                value = self.parse(processed_sig, text)
+                for f in original_sig.output_fields:
+                    if f not in value:
+                        value[f] = None
+            elif tool_calls and tc_out:
+                value = {f: None for f in original_sig.output_fields}
             else:
                 raise AdapterParseError(
-                    adapter_name=type(self).__name__,
-                    signature=original_signature,
-                    lm_response=str(output),
-                    message="The LM returned an empty or null response.",
-                )
+                    adapter_name=type(self).__name__, signature=original_sig,
+                    lm_response=str(output), message="Empty or null LM response.")
 
-            if tool_calls and tool_call_output_field_name:
-                tool_calls = [
-                    {
-                        "name": v["function"]["name"],
-                        "args": json_repair.loads(v["function"]["arguments"]),
-                    }
-                    for v in tool_calls
-                ]
-                value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)
+            if tool_calls and tc_out:
+                parsed_tc = [{"name": v["function"]["name"],
+                              "args": json_repair.loads(v["function"]["arguments"])} for v in tool_calls]
+                value[tc_out] = ToolCalls.from_dict_list(parsed_tc)
 
-            # Parse custom types that does not rely on the `Adapter.parse()` method
-            for name, field in original_signature.output_fields.items():
-                if (
-                    isinstance(field.annotation, type)
-                    and field.annotation in self.native_response_types
-                    and issubclass(field.annotation, Type)
-                ):
-                    parsed_value = field.annotation.parse_lm_response(output)
-                    if parsed_value is not None:
-                        value[name] = parsed_value
+            for name, field in original_sig.output_fields.items():
+                if (isinstance(field.annotation, type)
+                        and field.annotation in self.native_response_types
+                        and issubclass(field.annotation, Type)):
+                    parsed = field.annotation.parse_lm_response(output)
+                    if parsed is not None:
+                        value[name] = parsed
 
-            if output_logprobs:
-                value["logprobs"] = output_logprobs
-
+            if logprobs:
+                value["logprobs"] = logprobs
             values.append(value)
 
         return values
 
-    def __call__(
-        self,
-        lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-        signature: type[Signature],
-        demos: list[dict[str, Any]],
-        inputs: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """
-        Execute the adapter pipeline: format inputs, call LM, and parse outputs.
+    # ------------------------------------------------------------------
+    # Call pipeline: preprocess → format → LM → postprocess
+    # ------------------------------------------------------------------
 
-        Args:
-            lm: The Language Model instance to use for generation. Must be an instance of `dspy.BaseLM`.
-            lm_kwargs: Additional keyword arguments to pass to the LM call (e.g., temperature, max_tokens). These are
-                passed directly to the LM.
-            signature: The DSPy signature associated with this LM call.
-            demos: List of few-shot examples to include in the prompt. Each dictionary should contain keys matching the
-                signature's input and output field names. Examples are formatted as user/assistant message pairs.
-            inputs: The current input values for this call. Keys must match the signature's input field names.
-
-        Returns:
-            List of dictionaries representing parsed LM responses. Each dictionary contains keys matching the
-            signature's output field names. For multiple generations (n > 1), returns multiple dictionaries.
-        """
-        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
+    def __call__(self, lm, lm_kwargs, signature, demos, inputs):
+        processed = self._call_preprocess(lm, lm_kwargs, signature, inputs)
         multimodal = _collect_multimodal_parts(inputs)
-        messages = self.format(processed_signature, demos, inputs)
-
+        messages = self.format(processed, demos, inputs)
         if multimodal:
             lm_kwargs["_multimodal_parts"] = multimodal
         outputs = lm(messages=messages, **lm_kwargs)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+        return self._call_postprocess(processed, signature, outputs, lm, lm_kwargs)
 
-    async def acall(
-        self,
-        lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-        signature: type[Signature],
-        demos: list[dict[str, Any]],
-        inputs: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
+    async def acall(self, lm, lm_kwargs, signature, demos, inputs):
+        processed = self._call_preprocess(lm, lm_kwargs, signature, inputs)
         multimodal = _collect_multimodal_parts(inputs)
-        messages = self.format(processed_signature, demos, inputs)
-
+        messages = self.format(processed, demos, inputs)
         if multimodal:
             lm_kwargs["_multimodal_parts"] = multimodal
         outputs = await lm.acall(messages=messages, **lm_kwargs)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+        return self._call_postprocess(processed, signature, outputs, lm, lm_kwargs)
 
-    def format(
-        self,
-        signature: type[Signature],
-        demos: list[dict[str, Any]],
-        inputs: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Format the input messages for the LM call.
+    # ------------------------------------------------------------------
+    # Abstract methods — implemented by TemplateAdapter
+    # ------------------------------------------------------------------
 
-        This method converts the DSPy structured input along with few-shot examples and conversation history into
-        multiturn messages as expected by the LM. For custom adapters, this method can be overridden to customize
-        the formatting of the input messages.
-
-        In general we recommend the messages to have the following structure:
-        ```
-        [
-            {"role": "system", "content": system_message},
-            # Begin few-shot examples
-            {"role": "user", "content": few_shot_example_1_input},
-            {"role": "assistant", "content": few_shot_example_1_output},
-            {"role": "user", "content": few_shot_example_2_input},
-            {"role": "assistant", "content": few_shot_example_2_output},
-            ...
-            # End few-shot examples
-            # Begin conversation history
-            {"role": "user", "content": conversation_history_1_input},
-            {"role": "assistant", "content": conversation_history_1_output},
-            {"role": "user", "content": conversation_history_2_input},
-            {"role": "assistant", "content": conversation_history_2_output},
-            ...
-            # End conversation history
-            {"role": "user", "content": current_input},
-        ]
-
-        And system message should contain the field description, field structure, and task description.
-        ```
-
-
-        Args:
-            signature: The DSPy signature for which to format the input messages.
-            demos: A list of few-shot examples.
-            inputs: The input arguments to the DSPy module.
-
-        Returns:
-            A list of multiturn messages as expected by the LM.
-        """
-        inputs_copy = dict(inputs)
-
-        # If the signature and inputs have conversation history, we need to format the conversation history and
-        # remove the history field from the signature.
-        history_field_name = self._get_history_field_name(signature)
-        if history_field_name:
-            # In order to format the conversation history, we need to remove the history field from the signature.
-            signature_without_history = signature.delete(history_field_name)
-            conversation_history = self.format_conversation_history(
-                signature_without_history,
-                history_field_name,
-                inputs_copy,
-            )
-
-        messages = []
-        system_message = self.format_system_message(signature)
-        messages.append({"role": "system", "content": system_message})
-        messages.extend(self.format_demos(signature, demos))
-        if history_field_name:
-            # Conversation history and current input
-            content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)
-            messages.extend(conversation_history)
-            messages.append({"role": "user", "content": content})
-        else:
-            # Only current input
-            content = self.format_user_message_content(signature, inputs_copy, main_request=True)
-            messages.append({"role": "user", "content": content})
-
-        return messages
-
-    def format_system_message(self, signature: type[Signature]) -> str:
-        """Format the system message for the LM call.
-
-
-        Args:
-            signature: The DSPy signature for which to format the system message.
-        """
-        return (
-            f"{self.format_field_description(signature)}\n"
-            f"{self.format_field_structure(signature)}\n"
-            f"{self.format_task_description(signature)}"
-        )
-
-    def format_field_description(self, signature: type[Signature]) -> str:
-        """Format the field description for the system message.
-
-        This method formats the field description for the system message. It should return a string that contains
-        the field description for the input fields and the output fields.
-
-        Args:
-            signature: The DSPy signature for which to format the field description.
-
-        Returns:
-            A string that contains the field description for the input fields and the output fields.
-        """
+    def format(self, signature, demos, inputs, **kw):
         raise NotImplementedError
 
-    def format_field_structure(self, signature: type[Signature]) -> str:
-        """Format the field structure for the system message.
-
-        This method formats the field structure for the system message. It should return a string that dictates the
-        format the input fields should be provided to the LM, and the format the output fields will be in the response.
-        Refer to the ChatAdapter and JsonAdapter for an example.
-
-        Args:
-            signature: The DSPy signature for which to format the field structure.
-        """
+    def parse(self, signature, completion, **kw):
         raise NotImplementedError
 
-    def format_task_description(self, signature: type[Signature]) -> str:
-        """Format the task description for the system message.
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-        This method formats the task description for the system message. In most cases this is just a thin wrapper
-        over `signature.instructions`.
-
-        Args:
-            signature: The DSPy signature of the DSpy module.
-
-        Returns:
-            A string that describes the task.
-        """
-        raise NotImplementedError
-
-    def format_user_message_content(
-        self,
-        signature: type[Signature],
-        inputs: dict[str, Any],
-        prefix: str = "",
-        suffix: str = "",
-        main_request: bool = False,
-    ) -> str:
-        """Format the user message content.
-
-        This method formats the user message content, which can be used in formatting few-shot examples, conversation
-        history, and the current input.
-
-        Args:
-            signature: The DSPy signature for which to format the user message content.
-            inputs: The input arguments to the DSPy module.
-            prefix: A prefix to the user message content.
-            suffix: A suffix to the user message content.
-
-        Returns:
-            A string that contains the user message content.
-        """
-        raise NotImplementedError
-
-    def format_assistant_message_content(
-        self,
-        signature: type[Signature],
-        outputs: dict[str, Any],
-        missing_field_message: str | None = None,
-    ) -> str:
-        """Format the assistant message content.
-
-        This method formats the assistant message content, which can be used in formatting few-shot examples,
-        conversation history.
-
-        Args:
-            signature: The DSPy signature for which to format the assistant message content.
-            outputs: The output fields to be formatted.
-            missing_field_message: A message to be used when a field is missing.
-
-        Returns:
-            A string that contains the assistant message content.
-        """
-        raise NotImplementedError
-
-    def format_demos(self, signature: type[Signature], demos: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Format the few-shot examples.
-
-        This method formats the few-shot examples as multiturn messages.
-
-        Args:
-            signature: The DSPy signature for which to format the few-shot examples.
-            demos: A list of few-shot examples, each element is a dictionary with keys of the input and output fields of
-                the signature.
-
-        Returns:
-            A list of multiturn messages.
-        """
-        complete_demos = []
-        incomplete_demos = []
-
-        for demo in demos:
-            # Check if all fields are present and not None
-            is_complete = all(k in demo and demo[k] is not None for k in signature.fields)
-
-            # Check if demo has at least one input and one output field
-            has_input = any(k in demo for k in signature.input_fields)
-            has_output = any(k in demo for k in signature.output_fields)
-
-            if is_complete:
-                complete_demos.append(demo)
-            elif has_input and has_output:
-                # We only keep incomplete demos that have at least one input and one output field
-                incomplete_demos.append(demo)
-
-        messages = []
-
-        incomplete_demo_prefix = "This is an example of the task, though some input or output fields are not supplied."
-        for demo in incomplete_demos:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": self.format_user_message_content(signature, demo, prefix=incomplete_demo_prefix),
-                }
-            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": self.format_assistant_message_content(
-                        signature, demo, missing_field_message="Not supplied for this particular example. "
-                    ),
-                }
-            )
-
-        for demo in complete_demos:
-            messages.append({"role": "user", "content": self.format_user_message_content(signature, demo)})
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": self.format_assistant_message_content(
-                        signature, demo, missing_field_message="Not supplied for this conversation history message. "
-                    ),
-                }
-            )
-
-        return messages
-
-    def _get_history_field_name(self, signature: type[Signature]) -> bool:
-        for name, field in signature.input_fields.items():
+    @staticmethod
+    def _get_history_field_name(sig):
+        for name, field in sig.input_fields.items():
             if field.annotation == History:
                 return name
         return None
 
-    def _get_tool_call_input_field_name(self, signature: type[Signature]) -> bool:
-        for name, field in signature.input_fields.items():
-            # Look for annotation `list[dspy.Tool]` or `dspy.Tool`
+    @staticmethod
+    def _get_tool_call_input_field_name(sig):
+        for name, field in sig.input_fields.items():
             origin = get_origin(field.annotation)
             if origin is list and field.annotation.__args__[0] == Tool:
                 return name
@@ -475,72 +177,16 @@ class Adapter:
                 return name
         return None
 
-    def _get_tool_call_output_field_name(self, signature: type[Signature]) -> bool:
-        for name, field in signature.output_fields.items():
+    @staticmethod
+    def _get_tool_call_output_field_name(sig):
+        for name, field in sig.output_fields.items():
             if field.annotation == ToolCalls:
                 return name
         return None
 
-    def format_conversation_history(
-        self,
-        signature: type[Signature],
-        history_field_name: str,
-        inputs: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Format the conversation history.
-
-        This method formats the conversation history and the current input as multiturn messages.
-
-        Args:
-            signature: The DSPy signature for which to format the conversation history.
-            history_field_name: The name of the history field in the signature.
-            inputs: The input arguments to the DSPy module.
-
-        Returns:
-            A list of multiturn messages.
-        """
-        conversation_history = inputs[history_field_name].messages if history_field_name in inputs else None
-
-        if conversation_history is None:
-            return []
-
-        messages = []
-        for message in conversation_history:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": self.format_user_message_content(signature, message),
-                }
-            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": self.format_assistant_message_content(signature, message),
-                }
-            )
-
-        # Remove the history field from the inputs
-        del inputs[history_field_name]
-
-        return messages
-
-    def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
-        """Parse the LM output into a dictionary of the output fields.
-
-        This method parses the LM output into a dictionary of the output fields.
-
-        Args:
-            signature: The DSPy signature for which to parse the LM output.
-            completion: The LM output to be parsed.
-
-        Returns:
-            A dictionary of the output fields.
-        """
-        raise NotImplementedError
-
 
 def _collect_multimodal_parts(inputs: dict[str, Any]) -> list:
-    """Extract lm15 Parts from any multimodal Type values in the inputs."""
+    """Extract lm15 Parts from any multimodal Type values in inputs."""
     parts = []
     for v in inputs.values():
         if isinstance(v, Type) and hasattr(v, "to_lm15_part"):

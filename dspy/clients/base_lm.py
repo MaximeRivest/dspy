@@ -1,9 +1,8 @@
-"""Base language model interface.
+"""Base language model stub — kept for isinstance checks and custom subclasses.
 
-``BaseLM`` is a minimal stub kept for backward compatibility —
-type-hints, ``isinstance`` checks, custom subclasses, and
-``inspect_history`` all still work.  All real logic lives in
-``dspy.LM``, which calls lm15 directly.
+``dspy.LM`` inherits this but calls lm15 directly, bypassing forward().
+Custom subclasses can still override ``forward()`` to return a
+ChatCompletion-shaped object.
 """
 
 import datetime
@@ -19,11 +18,7 @@ GLOBAL_HISTORY = []
 
 
 class BaseLM:
-    """Minimal base class for DSPy language models.
-
-    Most users should use ``dspy.LM`` directly. If you need a fully
-    custom provider, subclass ``BaseLM`` and implement ``forward()``.
-    """
+    """Minimal base for DSPy language models."""
 
     def __init__(self, model, model_type="chat", temperature=0.0, max_tokens=1000, cache=True, **kwargs):
         self.model = model
@@ -32,35 +27,24 @@ class BaseLM:
         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
         self.history = []
 
-    # -- Capability queries (overridden by LM) ----------------------------
-
     @property
-    def supports_function_calling(self) -> bool:
-        return False
-
+    def supports_function_calling(self): return False
     @property
-    def supports_reasoning(self) -> bool:
-        return False
-
+    def supports_reasoning(self): return False
     @property
-    def supports_response_schema(self) -> bool:
-        return False
-
+    def supports_response_schema(self): return False
     @property
-    def supported_params(self) -> set[str]:
-        return set()
-
-    # -- Call interface ----------------------------------------------------
+    def supported_params(self): return set()
 
     @with_callbacks
-    def __call__(self, prompt=None, messages=None, **kwargs) -> list[dict[str, Any] | str]:
-        response = self.forward(prompt=prompt, messages=messages, **kwargs)
-        return self._process_lm_response(response, prompt, messages, **kwargs)
+    def __call__(self, prompt=None, messages=None, **kwargs):
+        resp = self.forward(prompt=prompt, messages=messages, **kwargs)
+        return self._process(resp, prompt, messages, **kwargs)
 
     @with_callbacks
-    async def acall(self, prompt=None, messages=None, **kwargs) -> list[dict[str, Any] | str]:
-        response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
-        return self._process_lm_response(response, prompt, messages, **kwargs)
+    async def acall(self, prompt=None, messages=None, **kwargs):
+        resp = await self.aforward(prompt=prompt, messages=messages, **kwargs)
+        return self._process(resp, prompt, messages, **kwargs)
 
     def forward(self, prompt=None, messages=None, **kwargs):
         raise NotImplementedError
@@ -68,79 +52,52 @@ class BaseLM:
     async def aforward(self, prompt=None, messages=None, **kwargs):
         raise NotImplementedError
 
-    # -- Response processing (legacy — used by custom BaseLM subclasses) ---
-
-    def _process_lm_response(self, response, prompt, messages, **kwargs):
-        """Extract outputs from an OpenAI-shaped response and log history."""
-        merged = {**self.kwargs, **kwargs}
-        outputs = self._extract_outputs(response, merged)
-
-        if not settings.disable_history:
-            safe_kw = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
-            entry = {
-                "prompt": prompt, "messages": messages, "kwargs": safe_kw,
-                "response": response, "outputs": outputs,
-                "usage": dict(response.usage) if hasattr(response, "usage") else {},
-                "cost": getattr(response, "_hidden_params", {}).get("response_cost"),
-                "timestamp": datetime.datetime.now().isoformat(),
-                "uuid": str(uuid.uuid4()),
-                "model": self.model,
-                "response_model": getattr(response, "model", self.model),
-                "model_type": self.model_type,
-            }
-            _update_history(self, entry)
-        return outputs
-
-    def _extract_outputs(self, response, merged_kwargs):
-        """Extract text/tool_calls/reasoning from a ChatCompletion-shaped response."""
+    def _process(self, response, prompt, messages, **kwargs):
+        """Extract outputs from ChatCompletion-shaped response + log history."""
         outputs = []
         for c in response.choices:
-            out = {}
-            out["text"] = c.message.content if hasattr(c, "message") else c["text"]
+            o = {"text": c.message.content if hasattr(c, "message") else c["text"]}
             if hasattr(c, "message"):
                 if getattr(c.message, "reasoning_content", None):
-                    out["reasoning_content"] = c.message.reasoning_content
+                    o["reasoning_content"] = c.message.reasoning_content
                 if getattr(c.message, "tool_calls", None):
-                    out["tool_calls"] = c.message.tool_calls
-                try:
-                    cits = c.message.provider_specific_fields.get("citations")
-                    if isinstance(cits, list):
-                        out["citations"] = [ci for group in cits for ci in group]
-                except Exception:
-                    pass
-            if merged_kwargs.get("logprobs") and hasattr(c, "logprobs"):
-                out["logprobs"] = c.logprobs
-            outputs.append(out)
+                    o["tool_calls"] = c.message.tool_calls
+            outputs.append(o)
         if all(len(o) == 1 for o in outputs):
             outputs = [o["text"] for o in outputs]
+
+        if not settings.disable_history:
+            _update_history(self, {
+                "prompt": prompt, "messages": messages,
+                "kwargs": {k: v for k, v in kwargs.items() if not k.startswith("api_")},
+                "response": response, "outputs": outputs,
+                "usage": dict(response.usage) if hasattr(response, "usage") else {},
+                "timestamp": datetime.datetime.now().isoformat(),
+                "uuid": str(uuid.uuid4()),
+                "model": self.model, "response_model": getattr(response, "model", self.model),
+                "model_type": self.model_type,
+            })
         return outputs
 
-    # -- Copy, history, inspection ----------------------------------------
-
     def copy(self, **kwargs):
-        import copy as _copy
-        new = _copy.deepcopy(self)
+        import copy as _c
+        new = _c.deepcopy(self)
         new.history = []
         for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(new, k, v)
+            if hasattr(self, k): setattr(new, k, v)
             if (k in self.kwargs) or (not hasattr(self, k)):
-                if v is None:
-                    new.kwargs.pop(k, None)
-                else:
-                    new.kwargs[k] = v
+                if v is None: new.kwargs.pop(k, None)
+                else: new.kwargs[k] = v
         if hasattr(new, "_warned_zero_temp_rollout"):
             new._warned_zero_temp_rollout = False
         return new
 
-    def inspect_history(self, n: int = 1, file: "TextIO | None" = None):
+    def inspect_history(self, n=1, file=None):
         pretty_print_history(self.history, n, file=file)
 
     def dump_state(self):
         return {}
 
-
-# -- History management (shared) -------------------------------------------
 
 def _update_history(lm, entry):
     if settings.disable_history:
@@ -153,12 +110,11 @@ def _update_history(lm, entry):
     if len(lm.history) >= settings.max_history_size:
         lm.history.pop(0)
     lm.history.append(entry)
-    for module in (settings.caller_modules or []):
-        if len(module.history) >= settings.max_history_size:
-            module.history.pop(0)
-        module.history.append(entry)
+    for mod in (settings.caller_modules or []):
+        if len(mod.history) >= settings.max_history_size:
+            mod.history.pop(0)
+        mod.history.append(entry)
 
 
-def inspect_history(n: int = 1, file: "TextIO | None" = None):
-    """Display the global history shared across all LMs."""
+def inspect_history(n=1, file=None):
     pretty_print_history(GLOBAL_HISTORY, n, file=file)

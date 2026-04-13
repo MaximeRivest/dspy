@@ -325,11 +325,7 @@ class TemplateAdapter(Adapter):
                     msgs.append({"role": "assistant", "content": json.dumps(serialize_for_json(out), indent=2)})
         return msgs
 
-    def _get_history_field_name(self, sig):
-        for name, field in sig.input_fields.items():
-            if field.annotation == History:
-                return name
-        return None
+    # _get_history_field_name inherited from Adapter
 
 
 # ======================================================================
