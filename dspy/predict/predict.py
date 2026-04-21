@@ -240,11 +240,118 @@ class Predict(Module, Parameter):
 
         return should_stream
 
+    def _should_use_live_prediction(self, config):
+        """Decide whether to return a LivePrediction (eager background streaming).
+
+        Enabled by ``dspy.configure(eager=True)`` or ``dspy.context(eager=True)``.
+        Returns False when the legacy ``streamify`` path is active (a
+        ``send_stream`` was already set externally) so the two mechanisms
+        don't collide.  Also disabled for ``n > 1``.
+        """
+        # Must be explicitly opted in
+        if not settings.get("eager", False):
+            return False
+        # Legacy streamify path — let it handle streaming
+        if settings.send_stream is not None:
+            return False
+        # Multiple completions — streaming not well-defined
+        n = config.get("n") or 1
+        if n > 1:
+            return False
+        # When usage tracking is active at the module level the synchronous
+        # path is needed so Module.__call__ can attach usage data.
+        if settings.track_usage:
+            return False
+        return True
+
+    @staticmethod
+    def _is_live_prediction_capable_lm(lm):
+        """Return True if this LM can be used with the background-thread streaming path."""
+        # Only the standard LM class (backed by litellm) supports the
+        # send_stream / _get_stream_completion_fn mechanism.  Custom
+        # BaseLM subclasses and DummyLM do not.
+        return type(lm) is LM
+
+    def _make_live_prediction(self, adapter, lm, config, signature, demos, kwargs):
+        """Create a :class:`LivePrediction` backed by a background-thread LM call.
+
+        The adapter call (format → LM → parse) runs in a daemon thread with a
+        :class:`ChunkInterceptor` installed as ``settings.send_stream``.  When
+        the LM supports litellm streaming this gives real-time tagged chunks;
+        otherwise the parsed result is emitted as synthetic field chunks.
+        """
+        from dspy.streaming.buffer import StreamBuffer
+        from dspy.streaming.chunks import StreamChunk
+        from dspy.streaming.live_prediction import LivePrediction
+
+        # Trace bookkeeping
+        trace_kwargs = {k: v for k, v in kwargs.items() if k != "_trace"}
+        do_trace = kwargs.pop("_trace", True)
+        trace_ref = settings.trace if do_trace else None
+        max_trace = settings.max_trace_size if do_trace else 0
+
+        callbacks = list(settings.callbacks)
+        predict_self = self
+
+        def produce(buf: StreamBuffer) -> None:
+            # Run the adapter pipeline with streaming explicitly disabled
+            # (send_stream=None).  We cannot use litellm's async streaming
+            # inside a bare daemon thread because ``syncify`` requires an
+            # AnyIO event-loop token.  Instead the LM call completes
+            # normally and we emit tagged chunks from the parsed result.
+            #
+            # The user still benefits from eager execution: the network
+            # round-trip overlaps with whatever the caller does between
+            # ``predict(...)`` and ``result.answer`` / ``for chunk in result``.
+            with settings.context(
+                send_stream=None,
+                callbacks=callbacks,
+            ):
+                completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+
+            parsed = completions[0]
+
+            # Emit a tagged chunk per output field so iteration works.
+            for field_name in signature.output_fields:
+                if field_name in parsed:
+                    buf.put(
+                        StreamChunk(
+                            type="output_field",
+                            field=field_name,
+                            text=str(parsed[field_name]),
+                            is_last=True,
+                        )
+                    )
+
+            buf.set_parsed(parsed)
+
+        prediction = LivePrediction.from_producer(produce)
+
+        # Eagerly record the trace once the background thread finishes so
+        # that ``dspy.settings.trace`` is populated even if the caller never
+        # accesses any field on the prediction.
+        if trace_ref is not None and max_trace > 0:
+            import threading
+
+            def _record_trace_when_done():
+                prediction._ensure_parsed()  # blocks until stream completes
+                if len(trace_ref) >= max_trace:
+                    trace_ref.pop(0)
+                trace_ref.append((predict_self, trace_kwargs, prediction))
+
+            t = threading.Thread(target=_record_trace_when_done, daemon=True)
+            t.start()
+
+        return prediction
+
     def forward(self, **kwargs):
         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
-
         adapter = settings.adapter or ChatAdapter()
 
+        if self._should_use_live_prediction(config) and self._is_live_prediction_capable_lm(lm):
+            return self._make_live_prediction(adapter, lm, config, signature, demos, kwargs)
+
+        # Legacy / fallback paths
         if self._should_stream():
             with settings.context(caller_predict=self):
                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
@@ -256,8 +363,16 @@ class Predict(Module, Parameter):
 
     async def aforward(self, **kwargs):
         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
-
         adapter = settings.adapter or ChatAdapter()
+
+        if self._should_use_live_prediction(config) and self._is_live_prediction_capable_lm(lm):
+            # Reuse the thread-based LivePrediction — the background thread
+            # calls the *sync* adapter which internally uses syncify for the
+            # litellm streaming coroutine.  This is efficient because the
+            # thread does not block the caller's event loop.
+            return self._make_live_prediction(adapter, lm, config, signature, demos, kwargs)
+
+        # Legacy / fallback paths
         if self._should_stream():
             with settings.context(caller_predict=self):
                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
