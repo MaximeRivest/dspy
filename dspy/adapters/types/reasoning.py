@@ -72,7 +72,18 @@ class Reasoning(Type):
             # Litellm issue: https://github.com/BerriAI/litellm/issues/14748
             return signature
 
-        lm_kwargs["reasoning_effort"] = reasoning_effort
+        if isinstance(reasoning_effort, int):
+            # Exact token budget — use the provider-specific `thinking` param
+            # (e.g. Anthropic's budget_tokens) instead of the string-based
+            # reasoning_effort which only supports "low"/"medium"/"high".
+            lm_kwargs.pop("reasoning_effort", None)
+            lm_kwargs["thinking"] = {"type": "enabled", "budget_tokens": reasoning_effort}
+            lm_kwargs.setdefault("allowed_openai_params", []).append("thinking")
+            # Anthropic requires max_tokens >= budget_tokens + output tokens.
+            if "max_tokens" not in lm_kwargs:
+                lm_kwargs["max_tokens"] = reasoning_effort + 4096
+        else:
+            lm_kwargs["reasoning_effort"] = reasoning_effort
         # Delete the reasoning field from the signature to use the native reasoning feature.
         return signature.delete(field_name)
 
