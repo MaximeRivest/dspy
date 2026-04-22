@@ -5,6 +5,8 @@ import asyncio
 
 import pytest
 
+import dspy
+
 from dspy.lm_types import (
     AuthError,
     BaseLMv2,
@@ -99,6 +101,29 @@ class TestBaseLMContract:
         lm([LMMessage.user("hi")], LMConfig(temperature=0.9))
         _, cfg = lm.calls[0]
         assert cfg.temperature == 0.9
+
+    def test_copy_keeps_default_config_in_sync(self):
+        lm = _FixedLM(temperature=0.5)
+        copied = lm.copy(temperature=0.9, top_p=0.7, custom_flag=True)
+
+        copied([LMMessage.user("hi")])
+        _, cfg = copied.calls[0]
+        assert cfg.temperature == 0.9
+        assert cfg.top_p == 0.7
+        assert cfg.extensions["custom_flag"] is True
+
+    def test_direct_v2_calls_record_history(self):
+        lm = _FixedLM(text="hello")
+        lm([LMMessage.user("hi")])
+        assert len(lm.history) == 1
+        assert lm.history[0]["outputs"] == ["hello"]
+
+    def test_direct_v2_calls_track_usage(self):
+        lm = _FixedLM(text="hello")
+        with dspy.track_usage() as tracker:
+            lm([LMMessage.user("hi")])
+        totals = tracker.get_total_tokens()
+        assert totals[lm.model]["total_tokens"] == 15
 
     def test_raises_if_forward_not_implemented(self):
         class Incomplete(BaseLMv2):

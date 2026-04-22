@@ -3,6 +3,8 @@ import threading
 from collections import deque
 from typing import Any
 
+from dspy.streaming.chunks import StreamChunk
+
 
 class StreamBuffer:
     """Thread-safe buffer for streaming chunks between a producer and consumer.
@@ -19,18 +21,26 @@ class StreamBuffer:
         self._done = threading.Event()
         self._cancelled = threading.Event()
         self._parsed: dict[str, Any] | None = None
+        self._partial_parsed: dict[str, str] = {}
         self._error: BaseException | None = None
         self._chunk_count: int = 0
 
     # ── Producer API ────────────────────────────────────────
 
     def put(self, chunk: Any) -> None:
-        """Append a chunk to the buffer.  No-op after cancellation."""
+        """Append a chunk to the buffer.  No-op after cancellation.
+
+        While the authoritative parsed result only becomes available once the
+        producer finishes, we also accumulate partial output-field text so that
+        cancellation can return immediately with the best result seen so far.
+        """
         if self._cancelled.is_set():
             return
         with self._lock:
             self._chunks.append(chunk)
             self._chunk_count += 1
+            if isinstance(chunk, StreamChunk) and chunk.type == "output_field" and chunk.field:
+                self._partial_parsed[chunk.field] = self._partial_parsed.get(chunk.field, "") + chunk.text
         self._new_data.set()
 
     def set_parsed(self, parsed: dict[str, Any]) -> None:
@@ -95,8 +105,19 @@ class StreamBuffer:
             await asyncio.sleep(0.005)
 
     def wait_for_result(self) -> dict[str, Any] | None:
-        """Block until the stream completes, then return the parsed result."""
+        """Return the best available parsed result.
+
+        Normal completion waits for the producer to finish and returns the
+        authoritative parsed result. After cancellation, this returns
+        immediately with the latest partial parsed output collected so far.
+        The underlying producer may still be winding down in the background.
+        """
+        if self._cancelled.is_set():
+            return self._parsed if self._parsed is not None else dict(self._partial_parsed)
+
         self._done.wait()
+        if self._cancelled.is_set():
+            return self._parsed if self._parsed is not None else dict(self._partial_parsed)
         if self._error:
             raise self._error
         return self._parsed
@@ -104,8 +125,15 @@ class StreamBuffer:
     # ── Cancellation ────────────────────────────────────────
 
     def cancel(self) -> None:
-        """Stop the producer and unblock a waiting consumer."""
+        """Cancel consumption immediately and unblock all waiters.
+
+        This is intentionally UX-first: callers waiting on iteration or field
+        access should stop as quickly as possible. The background producer may
+        continue to wind down, but the buffer is considered complete from the
+        consumer's perspective as soon as cancellation happens.
+        """
         self._cancelled.set()
+        self._done.set()
         self._new_data.set()
 
     # ── Introspection ───────────────────────────────────────

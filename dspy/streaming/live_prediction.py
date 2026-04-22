@@ -12,13 +12,19 @@ from dspy.streaming.chunks import StreamChunk
 class LivePrediction(Prediction):
     """A Prediction whose LM call runs eagerly in the background.
 
-    Tokens start arriving the moment the object is created.  Users consume
-    them in two ways — both of which benefit from the head start:
+    Tokens start arriving the moment the object is created. Users consume them
+    in two ways — both of which benefit from the head start:
 
     * **Iterate** (``for chunk in result``) to get real-time
-      :class:`StreamChunk` objects.  Already-buffered chunks arrive instantly.
-    * **Access a field** (``result.answer``) to block until the stream
-      finishes, then get the fully-parsed value.
+      :class:`StreamChunk` objects. Already-buffered chunks arrive instantly.
+    * **Access a field** (``result.answer``) to wait for the final parsed
+      value — unless the prediction was cancelled, in which case field access
+      returns immediately with the best partial value collected so far.
+
+    Cancellation is intentionally UX-first: it stops iteration and unblocks
+    field access as fast as possible. The underlying provider request may
+    still be winding down in the background, but the ``LivePrediction`` itself
+    becomes immediately usable.
 
     Examples:
         Stream tokens to the console::
@@ -32,7 +38,7 @@ class LivePrediction(Prediction):
 
             result = predict(question="What is 2+2?")
             # ... do other work while tokens arrive in the background ...
-            print(result.answer)   # blocks only for the *remaining* time
+            print(result.answer)   # waits only for the remaining time
 
         Cancel early::
 
@@ -41,6 +47,7 @@ class LivePrediction(Prediction):
                 if "conclusion" in chunk.text:
                     result.cancel()
                     break
+            print(result.answer)   # returns partial text immediately
 
         Async iteration::
 
@@ -188,24 +195,28 @@ class LivePrediction(Prediction):
         return super().toDict()
 
     def _ensure_parsed(self) -> None:
-        """Block until the stream completes and populate ``_store``."""
+        """Populate ``_store`` with the best available parsed result.
+
+        Before cancellation this waits for completion. After cancellation it
+        returns immediately with the partial parsed state collected so far.
+        """
         if self._buffer is None:
             return
         if self._buffer.is_done and self._store:
             return
 
         parsed = self._buffer.wait_for_result()
-        if parsed:
+        if parsed is not None:
             self._store.update(parsed)
 
     # ── Cancellation ────────────────────────────────────────
 
     def cancel(self) -> None:
-        """Stop consuming the LM stream early.
+        """Cancel the prediction immediately.
 
-        Already-buffered chunks remain accessible via iteration.
-        Accessing a field after cancellation parses whatever was collected;
-        fields may be incomplete or missing.
+        Already-buffered chunks remain accessible. Iteration stops quickly and
+        field access returns the best partial value collected so far instead of
+        waiting for the provider request to finish.
         """
         if self._buffer:
             self._buffer.cancel()
@@ -221,6 +232,8 @@ class LivePrediction(Prediction):
     # ── Representation ──────────────────────────────────────
 
     def __repr__(self) -> str:
+        if self._buffer and self._buffer.is_cancelled:
+            return "LivePrediction(cancelled)"
         if self._buffer and not self._buffer.is_done:
             return "LivePrediction(streaming…)"
         return super().__repr__()

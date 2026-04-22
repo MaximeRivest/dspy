@@ -11,10 +11,14 @@ No OpenAI response shape, no litellm dependency, no untyped kwargs.
 from __future__ import annotations
 
 import asyncio
+import datetime
+import importlib
 import time
+import uuid
 from typing import Any, AsyncIterator
 
 from dspy.clients.base_lm import BaseLM
+from dspy.dsp.utils import settings
 from dspy.dsp.utils.utils import dotdict
 from dspy.utils.callback import with_callbacks
 
@@ -161,13 +165,19 @@ class BaseLMv2(BaseLM):
         self,
         messages: list[LMMessage],
         config: LMConfig | None = None,
+        *,
+        record_history: bool = True,
     ) -> LMResponse:
         effective = self.default_config.merge(config) if config else self.default_config
 
         last_error: LMError | None = None
         for attempt in range(1 + self.num_retries):
             try:
-                return self.forward(messages, effective)
+                response = self.forward(messages, effective)
+                self._record_usage(response)
+                if record_history:
+                    self._record_history_v2(messages, effective, response)
+                return response
             except RETRYABLE_ERRORS as e:
                 last_error = e
                 if attempt < self.num_retries:
@@ -192,13 +202,19 @@ class BaseLMv2(BaseLM):
         self,
         messages: list[LMMessage],
         config: LMConfig | None = None,
+        *,
+        record_history: bool = True,
     ) -> LMResponse:
         effective = self.default_config.merge(config) if config else self.default_config
 
         last_error: LMError | None = None
         for attempt in range(1 + self.num_retries):
             try:
-                return await self.aforward(messages, effective)
+                response = await self.aforward(messages, effective)
+                self._record_usage(response)
+                if record_history:
+                    self._record_history_v2(messages, effective, response)
+                return response
             except RETRYABLE_ERRORS as e:
                 last_error = e
                 if attempt < self.num_retries:
@@ -217,23 +233,26 @@ class BaseLMv2(BaseLM):
 
     def _legacy_call(self, prompt=None, messages=None, **kwargs):
         legacy_response = self._legacy_forward(prompt=prompt, messages=messages, **kwargs)
-        # Emulate BaseLM._process_completion: return list of strings or dicts
-        return self._process_legacy_response(legacy_response, kwargs)
+        outputs = self._process_legacy_response(legacy_response, kwargs)
+        self._record_history_legacy(prompt, messages, kwargs, legacy_response, outputs)
+        return outputs
 
     async def _legacy_acall(self, prompt=None, messages=None, **kwargs):
         legacy_response = await self._legacy_aforward(prompt=prompt, messages=messages, **kwargs)
-        return self._process_legacy_response(legacy_response, kwargs)
+        outputs = self._process_legacy_response(legacy_response, kwargs)
+        self._record_history_legacy(prompt, messages, kwargs, legacy_response, outputs)
+        return outputs
 
     def _legacy_forward(self, prompt=None, messages=None, **kwargs):
         typed_messages = self._legacy_messages_to_typed(prompt, messages)
         config = self._legacy_kwargs_to_config(kwargs)
-        v2_response = self._call_v2(typed_messages, config)
+        v2_response = self._call_v2(typed_messages, config, record_history=False)
         return self._v2_response_to_legacy(v2_response)
 
     async def _legacy_aforward(self, prompt=None, messages=None, **kwargs):
         typed_messages = self._legacy_messages_to_typed(prompt, messages)
         config = self._legacy_kwargs_to_config(kwargs)
-        v2_response = await self._acall_v2(typed_messages, config)
+        v2_response = await self._acall_v2(typed_messages, config, record_history=False)
         return self._v2_response_to_legacy(v2_response)
 
     @staticmethod
@@ -354,6 +373,143 @@ class BaseLMv2(BaseLM):
         if all(len(o) == 1 for o in outputs):
             outputs = [o["text"] for o in outputs]
         return outputs
+
+    def _record_usage(self, response: LMResponse) -> None:
+        if settings.usage_tracker:
+            usage = response.usage.model_dump(exclude_none=True)
+            settings.usage_tracker.add_usage(self.model, usage)
+
+    def _record_history_v2(self, messages: list[LMMessage], config: LMConfig, response: LMResponse) -> None:
+        if settings.disable_history:
+            return
+
+        legacy_messages = self._typed_messages_to_legacy(messages)
+        legacy_response = self._v2_response_to_legacy(response)
+        kwargs = config.model_dump(exclude_none=True)
+        kwargs.update(kwargs.pop("extensions", {}) or {})
+        outputs = self._process_legacy_response(legacy_response, kwargs)
+        self._record_history_legacy(None, legacy_messages, kwargs, legacy_response, outputs)
+
+    def _record_history_legacy(self, prompt, messages, kwargs, response, outputs) -> None:
+        if settings.disable_history:
+            return
+
+        filtered_kwargs = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
+        entry = {
+            "prompt": prompt,
+            "messages": messages,
+            "kwargs": filtered_kwargs,
+            "response": response,
+            "outputs": outputs,
+            "usage": dict(getattr(response, "usage", {})),
+            "cost": getattr(response, "_hidden_params", {}).get("response_cost"),
+            "timestamp": datetime.datetime.now().isoformat(),
+            "uuid": str(uuid.uuid4()),
+            "model": self.model,
+            "response_model": getattr(response, "model", None),
+            "model_type": self.model_type,
+        }
+        self.update_history(entry)
+
+    @staticmethod
+    def _typed_messages_to_legacy(messages: list[LMMessage]) -> list[dict[str, Any]]:
+        legacy_messages: list[dict[str, Any]] = []
+        for message in messages:
+            parts_payload: list[dict[str, Any]] = []
+            text_chunks: list[str] = []
+            for part in message.parts:
+                if isinstance(part, TextPart):
+                    text_chunks.append(part.text)
+                elif isinstance(part, ImagePart):
+                    if part.url:
+                        parts_payload.append({"type": "image_url", "image_url": {"url": part.url}})
+                    elif part.data:
+                        parts_payload.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{part.media_type or 'image/png'};base64,{part.data}"},
+                        })
+                elif isinstance(part, AudioPart):
+                    parts_payload.append({
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": part.data,
+                            "format": (part.media_type or "audio/wav").split("/", 1)[-1],
+                        },
+                    })
+                else:
+                    text_chunks.append(str(part))
+
+            if parts_payload:
+                if text_chunks:
+                    parts_payload.insert(0, {"type": "text", "text": "".join(text_chunks)})
+                content: Any = parts_payload
+            else:
+                content = "".join(text_chunks)
+            legacy_messages.append({"role": message.role, "content": content})
+        return legacy_messages
+
+    def copy(self, **kwargs):
+        new_instance = super().copy(**kwargs)
+        if not isinstance(new_instance, BaseLMv2):
+            return new_instance
+
+        default_cfg = new_instance.default_config.model_dump()
+        extensions = dict(default_cfg.get("extensions", {}) or {})
+        for key, value in kwargs.items():
+            if key in default_cfg:
+                default_cfg[key] = value
+            elif value is None:
+                extensions.pop(key, None)
+            else:
+                extensions[key] = value
+        default_cfg["extensions"] = extensions
+        new_instance.default_config = LMConfig(**default_cfg)
+        return new_instance
+
+    def dump_state(self) -> dict[str, Any]:
+        return {
+            "__dspy_lm_v2__": True,
+            "class_module": type(self).__module__,
+            "class_qualname": type(self).__qualname__,
+            "model": self.model,
+            "model_type": self.model_type,
+            "cache": self.cache,
+            "num_retries": self.num_retries,
+            "default_config": self.default_config.model_dump(exclude_none=True),
+            "kwargs": {k: v for k, v in self.kwargs.items() if k != "api_key"},
+        }
+
+    @classmethod
+    def load_state(cls, state: dict[str, Any]) -> "BaseLMv2":
+        class_module = state.get("class_module")
+        class_qualname = state.get("class_qualname")
+        target_cls = cls
+
+        if class_module and class_qualname:
+            module = importlib.import_module(class_module)
+            target_cls = module
+            for attr in class_qualname.split("."):
+                target_cls = getattr(target_cls, attr)
+
+        cfg = dict(state.get("default_config") or {})
+        extensions = dict(cfg.pop("extensions", {}) or {})
+        init_kwargs = {k: v for k, v in cfg.items() if v is not None}
+        init_kwargs.update(extensions)
+
+        instance = target_cls(
+            model=state["model"],
+            cache=state.get("cache", True),
+            num_retries=state.get("num_retries", 3),
+            **init_kwargs,
+        )
+        instance.model_type = state.get("model_type", getattr(instance, "model_type", "chat"))
+
+        for key, value in (state.get("kwargs") or {}).items():
+            if value is None:
+                instance.kwargs.pop(key, None)
+            else:
+                instance.kwargs[key] = value
+        return instance
 
     # ── Streaming (default fakes from forward) ──
 

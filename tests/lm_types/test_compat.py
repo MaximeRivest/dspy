@@ -23,6 +23,16 @@ from dspy.lm_types import (
 from dspy.utils.dummies import DummyLM
 
 
+class SerializableLM(BaseLMv2):
+    def forward(self, messages, config):
+        return LMResponse(completions=[LMCompletion(parts=[TextPart(
+            text="[[ ## a ## ]]\nParis\n\n[[ ## completed ## ]]"
+        )])])
+
+    async def aforward(self, messages, config):
+        return self.forward(messages, config)
+
+
 class TestExistingAdaptersStillWork:
     def test_chat_adapter_unchanged(self):
         """Existing ChatAdapter should still work the same way."""
@@ -54,6 +64,23 @@ class TestPredictWithLMv2:
             program = dspy.Predict(Sig)
             result = program(q="What?")
             assert result.a == "Paris"
+            assert len(lm.history) == 1
+            assert len(program.history) == 1
+            assert program.history[0]["outputs"] == ["[[ ## a ## ]]\nParis\n\n[[ ## completed ## ]]"]
+
+    def test_predict_dump_and_load_state_with_direct_v2_lm(self):
+        class Sig(dspy.Signature):
+            q: str = dspy.InputField()
+            a: str = dspy.OutputField()
+
+        program = dspy.Predict(Sig)
+        program.lm = SerializableLM(model="serial", temperature=0.5, base_url="https://unsafe.example")
+        state = program.dump_state()
+
+        restored = dspy.Predict(Sig).load_state(state)
+        assert isinstance(restored.lm, SerializableLM)
+        assert restored.lm.default_config.temperature == 0.5
+        assert "base_url" not in restored.lm.default_config.extensions
 
 
 class TestBackwardCompatShim:

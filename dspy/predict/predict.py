@@ -1,3 +1,4 @@
+import importlib
 import logging
 import random
 from typing import Any, Literal, get_args, get_origin
@@ -26,18 +27,59 @@ def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
     if allow_unsafe_lm_state:
         return lm_state
 
-    unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))
+    sanitized_lm_state = dict(lm_state)
+    unsafe_keys = set()
+
+    for key in list(sanitized_lm_state):
+        if key in UNSAFE_LM_STATE_KEYS:
+            unsafe_keys.add(key)
+            sanitized_lm_state.pop(key, None)
+
+    default_config = sanitized_lm_state.get("default_config")
+    if isinstance(default_config, dict):
+        extensions = default_config.get("extensions")
+        if isinstance(extensions, dict):
+            removed = UNSAFE_LM_STATE_KEYS.intersection(extensions)
+            unsafe_keys.update(removed)
+            if removed:
+                default_config = dict(default_config)
+                default_config["extensions"] = {k: v for k, v in extensions.items() if k not in removed}
+                sanitized_lm_state["default_config"] = default_config
+
+    kwargs = sanitized_lm_state.get("kwargs")
+    if isinstance(kwargs, dict):
+        removed = UNSAFE_LM_STATE_KEYS.intersection(kwargs)
+        unsafe_keys.update(removed)
+        if removed:
+            sanitized_lm_state["kwargs"] = {k: v for k, v in kwargs.items() if k not in removed}
 
     if not unsafe_keys:
-        return lm_state
+        return sanitized_lm_state
 
-    sanitized_lm_state = {k: v for k, v in lm_state.items() if k not in UNSAFE_LM_STATE_KEYS}
     logger.warning(
         "Ignoring unsafe LM config key(s) during state load: %s. "
         "Pass allow_unsafe_lm_state=True to preserve these keys for trusted files.",
-        unsafe_keys,
+        sorted(unsafe_keys),
     )
     return sanitized_lm_state
+
+
+def _load_lm_from_state(lm_state: dict, allow_unsafe_lm_state: bool):
+    sanitized_lm_state = _sanitize_lm_state(lm_state, allow_unsafe_lm_state)
+    if sanitized_lm_state.get("__dspy_lm_v2__"):
+        class_module = sanitized_lm_state.get("class_module")
+        class_qualname = sanitized_lm_state.get("class_qualname")
+        if not class_module or not class_qualname:
+            raise ValueError("Serialized BaseLMv2 state is missing class information.")
+
+        module = importlib.import_module(class_module)
+        cls = module
+        for attr in class_qualname.split("."):
+            cls = getattr(cls, attr)
+        if not hasattr(cls, "load_state"):
+            raise ValueError(f"LM class {class_module}.{class_qualname} does not support load_state().")
+        return cls.load_state(sanitized_lm_state)
+    return LM(**sanitized_lm_state)
 
 
 class Predict(Module, Parameter):
@@ -107,8 +149,7 @@ class Predict(Module, Parameter):
                 setattr(self, name, value)
 
         self.signature = self.signature.load_state(state["signature"])
-        sanitized_lm_state = _sanitize_lm_state(state["lm"], allow_unsafe_lm_state) if state["lm"] else None
-        self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None
+        self.lm = _load_lm_from_state(state["lm"], allow_unsafe_lm_state) if state["lm"] else None
 
         if "extended_signature" in state:  # legacy, up to and including 2.5, for CoT.
             raise NotImplementedError("Loading extended_signature is no longer supported in DSPy 2.6+")
@@ -318,22 +359,8 @@ class Predict(Module, Parameter):
                         inputs=kwargs,
                     )
 
-            try:
-                completions = asyncio.run(_drive())
-                streamed = interceptor.received_any
-            except Exception:
-                # Fall back to the synchronous adapter path (non-streaming).
-                # Useful for LMs that don't support litellm streaming, or
-                # when asyncio.run() is unavailable for some reason.
-                with settings.context(send_stream=None, callbacks=callbacks):
-                    completions = adapter(
-                        lm,
-                        lm_kwargs=config,
-                        signature=signature,
-                        demos=demos,
-                        inputs=kwargs,
-                    )
-                streamed = False
+            completions = asyncio.run(_drive())
+            streamed = interceptor.received_any
 
             # Flush any trailing text buffered by the parser.
             interceptor.finalize()
@@ -366,7 +393,10 @@ class Predict(Module, Parameter):
             import threading
 
             def _record_trace_when_done():
-                prediction._ensure_parsed()  # blocks until stream completes
+                try:
+                    prediction._ensure_parsed()  # blocks until stream completes
+                except Exception:
+                    return
                 if len(trace_ref) >= max_trace:
                     trace_ref.pop(0)
                 trace_ref.append((predict_self, trace_kwargs, prediction))
