@@ -15,6 +15,8 @@ from litellm import ModelResponseStream
 from dspy.dsp.utils.settings import settings
 from dspy.primitives.prediction import Prediction
 from dspy.streaming.messages import StatusMessage, StatusMessageProvider, StatusStreamingCallback
+from dspy.streaming.normalizer import StreamChunkNormalizer
+from dspy.streaming.parser_factory import create_stream_parser
 from dspy.streaming.streaming_listener import StreamListener, find_predictor_for_stream_listeners
 from dspy.utils.asyncify import asyncify
 
@@ -173,6 +175,13 @@ def streamify(
         await stream.send(prediction)
 
     async def async_streamer(*args, **kwargs):
+        predict_id_to_normalizer = {}
+        for predict_id, listeners in predict_id_to_listener.items():
+            predict = listeners[0].predict
+            predict_id_to_normalizer[predict_id] = StreamChunkNormalizer(
+                create_stream_parser(settings.adapter, predict.signature)
+            )
+
         send_stream, receive_stream = create_memory_object_stream(16)
         async with create_task_group() as tg, send_stream, receive_stream:
             tg.start_soon(generator, args, kwargs, send_stream)
@@ -183,17 +192,34 @@ def streamify(
                         # No listeners are configured, yield the chunk directly for backwards compatibility.
                         yield value
                     else:
-                        # We are receiving a chunk from the LM's response stream, delegate it to the listeners to
-                        # determine if we should yield a value to the user.
-                        for listener in predict_id_to_listener[value.predict_id]:
-                            # In some special cases such as Citation API, it is possible that multiple listeners
-                            # return values at the same time due to the chunk buffer of the listener.
-                            if output := listener.receive(value):
+                        listeners = predict_id_to_listener[value.predict_id]
+
+                        for listener in listeners:
+                            if listener.uses_raw_stream and (output := listener.receive_raw(value)):
                                 yield output
+
+                        normalizer = predict_id_to_normalizer.get(value.predict_id)
+                        if normalizer is None:
+                            predict = listeners[0].predict
+                            normalizer = StreamChunkNormalizer(
+                                create_stream_parser(settings.adapter, predict.signature)
+                            )
+                            predict_id_to_normalizer[value.predict_id] = normalizer
+                        for chunk in normalizer.feed(value):
+                            for listener in listeners:
+                                if output := listener.receive(chunk):
+                                    yield output
                 elif isinstance(value, StatusMessage):
                     yield value
                 elif isinstance(value, Prediction):
                     # Flush remaining buffered tokens before yielding the Prediction instance
+                    for predict_id, normalizer in predict_id_to_normalizer.items():
+                        listeners = predict_id_to_listener[predict_id]
+                        for chunk in normalizer.finalize():
+                            for listener in listeners:
+                                if output := listener.receive(chunk):
+                                    yield output
+
                     for listener in stream_listeners:
                         if final_chunk := listener.finalize():
                             yield final_chunk

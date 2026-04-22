@@ -1,8 +1,10 @@
+from dspy.streaming.chunks import StreamChunk
 from dspy.streaming.messages import StatusMessage, StatusMessageProvider, StreamResponse
 from dspy.streaming.streamify import apply_sync_streaming, streamify, streaming_response
 from dspy.streaming.streaming_listener import StreamListener
 
 __all__ = [
+    "StreamChunk",
     "StatusMessage",
     "StatusMessageProvider",
     "streamify",

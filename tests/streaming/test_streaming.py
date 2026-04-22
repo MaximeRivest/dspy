@@ -694,17 +694,19 @@ async def test_stream_listener_returns_correct_chunk_chat_adapter_untokenized_st
                 if isinstance(value, dspy.streaming.StreamResponse):
                     all_chunks.append(value)
 
-        assert all_chunks[0].predict_name == "predict1"
-        assert all_chunks[0].signature_field_name == "answer"
-        assert all_chunks[0].chunk == "To get to the other side."
-        assert all_chunks[1].is_last_chunk is True
+        answer_chunks = [chunk for chunk in all_chunks if chunk.signature_field_name == "answer"]
+        judgement_chunks = [chunk for chunk in all_chunks if chunk.signature_field_name == "judgement"]
 
-        assert all_chunks[2].predict_name == "predict2"
-        assert all_chunks[2].signature_field_name == "judgement"
-        assert all_chunks[2].chunk == (
+        assert answer_chunks[0].predict_name == "predict1"
+        assert "".join(chunk.chunk for chunk in answer_chunks) == "To get to the other side."
+        assert answer_chunks[-1].is_last_chunk is True
+
+        assert judgement_chunks[0].predict_name == "predict2"
+        assert "".join(chunk.chunk for chunk in judgement_chunks) == (
             "The answer provides the standard punchline for this classic joke format, adapted to the specific location "
             "mentioned in the question. It is the expected and appropriate response."
         )
+        assert judgement_chunks[-1].is_last_chunk is True
 
 
 @pytest.mark.anyio
@@ -827,16 +829,16 @@ async def test_stream_listener_returns_correct_chunk_json_adapter_untokenized_st
                 if isinstance(value, dspy.streaming.StreamResponse):
                     all_chunks.append(value)
 
-        assert all_chunks[0].predict_name == "predict1"
-        assert all_chunks[0].signature_field_name == "answer"
+        answer_chunks = [chunk for chunk in all_chunks if chunk.signature_field_name == "answer"]
+        judgement_chunks = [chunk for chunk in all_chunks if chunk.signature_field_name == "judgement"]
 
-        assert all_chunks[0].chunk == '"To get to the other side... of the cutting board!"'
+        assert answer_chunks[0].predict_name == "predict1"
+        assert "".join(chunk.chunk for chunk in answer_chunks) == '"To get to the other side... of the cutting board!"'
+        assert answer_chunks[-1].is_last_chunk is True
 
-        assert all_chunks[1].predict_name == "predict2"
-        assert all_chunks[1].signature_field_name == "judgement"
-        assert (
-            all_chunks[1].chunk == '"The answer provides a humorous and relevant punchline to the classic joke setup."'
-        )
+        assert judgement_chunks[0].predict_name == "predict2"
+        assert "".join(chunk.chunk for chunk in judgement_chunks) == '"The answer provides a humorous and relevant punchline to the classic joke setup."'
+        assert judgement_chunks[-1].is_last_chunk is True
 
 
 @pytest.mark.anyio
