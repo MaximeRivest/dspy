@@ -280,9 +280,13 @@ class Predict(Module, Parameter):
         the LM supports litellm streaming this gives real-time tagged chunks;
         otherwise the parsed result is emitted as synthetic field chunks.
         """
+        import asyncio
+
         from dspy.streaming.buffer import StreamBuffer
         from dspy.streaming.chunks import StreamChunk
+        from dspy.streaming.interceptor import ChunkInterceptor
         from dspy.streaming.live_prediction import LivePrediction
+        from dspy.streaming.parser_factory import create_stream_parser
 
         # Trace bookkeeping
         trace_kwargs = {k: v for k, v in kwargs.items() if k != "_trace"}
@@ -294,34 +298,62 @@ class Predict(Module, Parameter):
         predict_self = self
 
         def produce(buf: StreamBuffer) -> None:
-            # Run the adapter pipeline with streaming explicitly disabled
-            # (send_stream=None).  We cannot use litellm's async streaming
-            # inside a bare daemon thread because ``syncify`` requires an
-            # AnyIO event-loop token.  Instead the LM call completes
-            # normally and we emit tagged chunks from the parsed result.
-            #
-            # The user still benefits from eager execution: the network
-            # round-trip overlaps with whatever the caller does between
-            # ``predict(...)`` and ``result.answer`` / ``for chunk in result``.
-            with settings.context(
-                send_stream=None,
-                callbacks=callbacks,
-            ):
-                completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+            # Install a ChunkInterceptor as send_stream so every raw LM
+            # chunk flows through the adapter-specific parser and lands in
+            # ``buf`` as a tagged StreamChunk.  Then drive the *async*
+            # adapter path via asyncio.run() in this fresh daemon thread:
+            # that avoids ``syncify`` (which requires an AnyIO event-loop
+            # token that bare threads don't have) while still giving us
+            # real token-by-token streaming from litellm.
+            parser = create_stream_parser(adapter, signature)
+            interceptor = ChunkInterceptor(parser, buf)
+
+            async def _drive():
+                with settings.context(send_stream=interceptor, callbacks=callbacks):
+                    return await adapter.acall(
+                        lm,
+                        lm_kwargs=config,
+                        signature=signature,
+                        demos=demos,
+                        inputs=kwargs,
+                    )
+
+            try:
+                completions = asyncio.run(_drive())
+                streamed = interceptor.received_any
+            except Exception:
+                # Fall back to the synchronous adapter path (non-streaming).
+                # Useful for LMs that don't support litellm streaming, or
+                # when asyncio.run() is unavailable for some reason.
+                with settings.context(send_stream=None, callbacks=callbacks):
+                    completions = adapter(
+                        lm,
+                        lm_kwargs=config,
+                        signature=signature,
+                        demos=demos,
+                        inputs=kwargs,
+                    )
+                streamed = False
+
+            # Flush any trailing text buffered by the parser.
+            interceptor.finalize()
 
             parsed = completions[0]
 
-            # Emit a tagged chunk per output field so iteration works.
-            for field_name in signature.output_fields:
-                if field_name in parsed:
-                    buf.put(
-                        StreamChunk(
-                            type="output_field",
-                            field=field_name,
-                            text=str(parsed[field_name]),
-                            is_last=True,
+            # If nothing streamed (e.g. DummyLM, cache hit, custom BaseLM),
+            # emit one synthetic chunk per output field so iteration still
+            # yields something useful.
+            if not streamed:
+                for field_name in signature.output_fields:
+                    if field_name in parsed:
+                        buf.put(
+                            StreamChunk(
+                                type="output_field",
+                                field=field_name,
+                                text=str(parsed[field_name]),
+                                is_last=True,
+                            )
                         )
-                    )
 
             buf.set_parsed(parsed)
 
@@ -366,10 +398,10 @@ class Predict(Module, Parameter):
         adapter = settings.adapter or ChatAdapter()
 
         if self._should_use_live_prediction(config) and self._is_live_prediction_capable_lm(lm):
-            # Reuse the thread-based LivePrediction — the background thread
-            # calls the *sync* adapter which internally uses syncify for the
-            # litellm streaming coroutine.  This is efficient because the
-            # thread does not block the caller's event loop.
+            # Reuse the thread-based LivePrediction.  The background thread
+            # runs ``asyncio.run(adapter.acall(...))`` in its own event loop,
+            # which never blocks the caller's event loop and sidesteps the
+            # AnyIO ``syncify`` requirement.
             return self._make_live_prediction(adapter, lm, config, signature, demos, kwargs)
 
         # Legacy / fallback paths
