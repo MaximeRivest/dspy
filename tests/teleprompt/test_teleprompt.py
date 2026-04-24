@@ -1,3 +1,4 @@
+from dspy.teleprompt.mipro_optimizer_v2 import _candidate_set_counts
 from dspy.teleprompt.teleprompt import Teleprompter
 
 
@@ -15,3 +16,7 @@ def test_get_params():
     teleprompter = DummyTeleprompter(param1=1, param2="test")
     params = teleprompter.get_params()
     assert params == {"param1": 1, "param2": "test"}
+
+
+def test_candidate_set_counts_handles_mipro_demo_candidate_mapping():
+    assert _candidate_set_counts({0: ["zero_shot", "labels"], 1: ["zero_shot"]}) == [2, 1]

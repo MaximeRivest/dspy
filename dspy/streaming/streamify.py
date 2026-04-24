@@ -3,6 +3,7 @@ import contextvars
 import logging
 import threading
 from asyncio import iscoroutinefunction
+from dataclasses import asdict, is_dataclass
 from queue import Queue
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Generator
 
@@ -14,7 +15,13 @@ from litellm import ModelResponseStream
 
 from dspy.dsp.utils.settings import settings
 from dspy.primitives.prediction import Prediction
-from dspy.streaming.messages import StatusMessage, StatusMessageProvider, StatusStreamingCallback
+from dspy.streaming.messages import (
+    OptimizationEvent,
+    StatusMessage,
+    StatusMessageProvider,
+    StatusStreamingCallback,
+    StreamResponse,
+)
 from dspy.streaming.streaming_listener import StreamListener, find_predictor_for_stream_listeners
 from dspy.utils.asyncify import asyncify
 
@@ -257,6 +264,22 @@ def apply_sync_streaming(async_generator: AsyncGenerator) -> Generator:
         yield item
 
 
+def _json_safe(value: Any) -> Any:
+    if is_dataclass(value):
+        return _json_safe(asdict(value))
+    if isinstance(value, Prediction):
+        return _json_safe(dict(value.items(include_dspy=False)))
+    if hasattr(value, "model_dump"):
+        return _json_safe(value.model_dump(mode="json"))
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return repr(value)
+
+
 async def streaming_response(streamer: AsyncGenerator) -> AsyncGenerator:
     """
     Convert a DSPy program output stream to an OpenAI-compatible output stream that can be
@@ -269,15 +292,28 @@ async def streaming_response(streamer: AsyncGenerator) -> AsyncGenerator:
     """
     async for value in streamer:
         if isinstance(value, Prediction):
-            data = {"prediction": dict(value.items(include_dspy=False))}
+            data = {"prediction": _json_safe(value)}
             yield f"data: {orjson.dumps(data).decode()}\n\n"
         elif isinstance(value, litellm.ModelResponseStream):
-            data = {"chunk": value.json()}
+            metadata = {
+                "predict_id": getattr(value, "predict_id", None),
+                "lm_call_id": getattr(value, "lm_call_id", None),
+            }
+            data = {"chunk": value.json(), "metadata": {k: v for k, v in metadata.items() if v is not None}}
+            yield f"data: {orjson.dumps(data).decode()}\n\n"
+        elif isinstance(value, StreamResponse):
+            data = {"stream_response": _json_safe(value)}
+            yield f"data: {orjson.dumps(data).decode()}\n\n"
+        elif isinstance(value, StatusMessage):
+            data = {"status": _json_safe(value)}
+            yield f"data: {orjson.dumps(data).decode()}\n\n"
+        elif isinstance(value, OptimizationEvent):
+            data = {"event": _json_safe(value)}
             yield f"data: {orjson.dumps(data).decode()}\n\n"
         elif isinstance(value, str) and value.startswith("data:"):
             # The chunk value is an OpenAI-compatible streaming chunk value,
-            # e.g. "data: {"finish_reason": "stop", "index": 0, "is_finished": True, ...}",
-            # so yield it directly
+            # e.g., "data: {"finish_reason": "stop", "index": 0, "is_finished": True, ...}",
+            # so yield it directly.
             yield value
         else:
             raise ValueError(f"Unknown chunk value type: {value}")

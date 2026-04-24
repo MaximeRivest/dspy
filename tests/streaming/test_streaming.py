@@ -1,4 +1,6 @@
 import asyncio
+import json
+import threading
 import time
 from dataclasses import dataclass
 from unittest import mock
@@ -12,7 +14,15 @@ from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 import dspy
 from dspy.adapters.types import Type
 from dspy.experimental import Citations, Document
-from dspy.streaming import StatusMessage, StatusMessageProvider, StreamResponse, streaming_response
+from dspy.streaming import (
+    OptimizationEvent,
+    StatusMessage,
+    StatusMessageProvider,
+    StreamResponse,
+    send_stream_event,
+    streaming_response,
+)
+from dspy.utils.callback import BaseCallback
 
 
 @pytest.mark.anyio
@@ -69,6 +79,147 @@ async def test_streaming_response_yields_expected_response_chunks(litellm_test_s
         assert all(chunk.startswith("data: ") for chunk in output_chunks)
         assert 'data: {"prediction":{"output_text":"Hello!"}}\n\n' in output_chunks
         assert output_chunks[-1] == "data: [DONE]\n\n"
+
+
+@pytest.mark.anyio
+async def test_send_stream_event_emits_optimization_event():
+    class CollectingStream:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message):
+            self.messages.append(message)
+
+    stream = CollectingStream()
+    with dspy.context(send_stream=stream):
+        send_stream_event("optimization.step.started", {"step": "demo"}, run_id="run-1")
+
+    assert len(stream.messages) == 1
+    assert stream.messages[0].event == "optimization.step.started"
+    assert stream.messages[0].payload == {"step": "demo"}
+    assert stream.messages[0].run_id == "run-1"
+
+
+def test_send_stream_event_emits_from_regular_thread():
+    class CollectingStream:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message):
+            self.messages.append(message)
+
+    stream = CollectingStream()
+
+    def target():
+        with dspy.context(send_stream=stream):
+            send_stream_event("optimization.step.started", {"step": "thread"}, run_id="run-1")
+
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join()
+
+    assert len(stream.messages) == 1
+    assert stream.messages[0].event == "optimization.step.started"
+    assert stream.messages[0].payload == {"step": "thread"}
+    assert stream.messages[0].run_id == "run-1"
+
+
+@pytest.mark.anyio
+async def test_streaming_response_yields_structured_dspy_events():
+    async def stream():
+        yield StatusMessage("working")
+        yield OptimizationEvent("optimization.trial.finished", {"trial_num": 1, "score": 12.5}, run_id="run-1")
+        yield StreamResponse("predict", "answer", "hello", is_last_chunk=True)
+
+    output_chunks = [chunk async for chunk in streaming_response(stream())]
+    payloads = [json.loads(chunk.removeprefix("data: ")) for chunk in output_chunks[:-1]]
+
+    assert payloads[0] == {"status": {"message": "working"}}
+    assert payloads[1]["event"]["event"] == "optimization.trial.finished"
+    assert payloads[1]["event"]["run_id"] == "run-1"
+    assert payloads[1]["event"]["payload"] == {"trial_num": 1, "score": 12.5}
+    assert payloads[2] == {
+        "stream_response": {
+            "predict_name": "predict",
+            "signature_field_name": "answer",
+            "chunk": "hello",
+            "is_last_chunk": True,
+        }
+    }
+    assert output_chunks[-1] == "data: [DONE]\n\n"
+
+
+def test_sync_lm_streaming_works_from_regular_thread():
+    class CollectingStream:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message):
+            self.messages.append(message)
+
+    async def gpt_4o_mini_stream(*args, **kwargs):
+        yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="[[ ## answer ## ]]\n"))])
+        yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="Hello"))])
+        yield ModelResponseStream(
+            model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="\n\n[[ ## completed ## ]]"))]
+        )
+
+    stream = CollectingStream()
+    predictions = []
+    errors = []
+
+    def target():
+        try:
+            with dspy.context(
+                lm=dspy.LM("openai/gpt-4o-mini", cache=False),
+                send_stream=stream,
+                stream_listeners=[],
+            ):
+                predictions.append(dspy.Predict("question->answer")(question="Say hello"))
+        except Exception as exc:
+            errors.append(exc)
+
+    with mock.patch("litellm.acompletion", side_effect=gpt_4o_mini_stream):
+        thread = threading.Thread(target=target)
+        thread.start()
+        thread.join()
+
+    assert errors == []
+    assert predictions[0].answer == "Hello"
+    assert any(isinstance(message, ModelResponseStream) for message in stream.messages)
+
+
+@pytest.mark.anyio
+async def test_streaming_chunks_include_lm_call_id():
+    class CaptureLMCallIDCallback(BaseCallback):
+        def __init__(self):
+            self.lm_call_ids = []
+
+        def on_lm_start(self, call_id, instance, inputs):
+            self.lm_call_ids.append(call_id)
+
+    async def gpt_4o_mini_stream(*args, **kwargs):
+        yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="[[ ## answer ## ]]\n"))])
+        yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="Hello"))])
+        yield ModelResponseStream(
+            model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="\n\n[[ ## completed ## ]]"))]
+        )
+
+    callback = CaptureLMCallIDCallback()
+    with mock.patch("litellm.acompletion", side_effect=gpt_4o_mini_stream):
+        with dspy.context(
+            lm=dspy.LM("openai/gpt-4o-mini", cache=False),
+            callbacks=[callback],
+        ):
+            program = dspy.streamify(dspy.Predict("question->answer"))
+            chunks = []
+            async for value in program(question="Say hello"):
+                if isinstance(value, ModelResponseStream):
+                    chunks.append(value)
+
+    assert len(callback.lm_call_ids) == 1
+    assert chunks
+    assert all(getattr(chunk, "lm_call_id", None) == callback.lm_call_ids[0] for chunk in chunks)
 
 
 @pytest.mark.anyio

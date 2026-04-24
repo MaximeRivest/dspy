@@ -1,9 +1,8 @@
 import asyncio
 import concurrent.futures
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any
-
-from asyncer import syncify
 
 from dspy.dsp.utils.settings import settings
 from dspy.utils.callback import BaseCallback
@@ -22,6 +21,32 @@ class StatusMessage:
     """Dataclass that wraps a status message for status streaming."""
 
     message: str
+
+
+@dataclass
+class OptimizationEvent:
+    """Report one optimizer event to a streaming consumer.
+
+    Optimizers use this event to send structured progress updates while they run.
+    The `event` field is a dotted name such as `optimization.trial.started`, and
+    `payload` contains event-specific values such as a trial number, score, or
+    selected prompt parameters.
+
+    Args:
+        event: A dotted event name.
+        payload: JSON-like values for this event.
+        run_id: Optional identifier shared by all events from one optimizer run.
+        span_id: Optional identifier for this event span.
+        parent_span_id: Optional identifier for the parent span.
+        timestamp: Unix timestamp for when the event was created.
+    """
+
+    event: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    run_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
+    timestamp: float = field(default_factory=time.time)
 
 
 def sync_send_to_stream(stream, message):
@@ -46,8 +71,45 @@ def sync_send_to_stream(stream, message):
             future = executor.submit(run_in_new_loop)
             return future.result()
     except RuntimeError:
-        # Not in an event loop, safe to use a new event loop in this thread
-        return syncify(_send)()
+        # Not in an event loop, safe to use a new event loop in this thread.
+        return asyncio.run(_send())
+
+
+def send_stream_event(
+    event: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    run_id: str | None = None,
+    span_id: str | None = None,
+    parent_span_id: str | None = None,
+):
+    """Send one structured event to the active DSPy stream.
+
+    If no stream is active, this function does nothing. Use it inside code that
+    may run with `dspy.settings.send_stream` set by `dspy.streamify` or by a
+    service that consumes DSPy's streaming side channel.
+
+    Args:
+        event: A dotted event name such as `optimization.trial.finished`.
+        payload: JSON-like values for the event.
+        run_id: Optional identifier shared by all events from one run.
+        span_id: Optional identifier for this event span.
+        parent_span_id: Optional identifier for the parent span.
+    """
+    stream = settings.send_stream
+    if stream is None:
+        return
+
+    sync_send_to_stream(
+        stream,
+        OptimizationEvent(
+            event=event,
+            payload=payload or {},
+            run_id=run_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+        ),
+    )
 
 
 class StatusMessageProvider:

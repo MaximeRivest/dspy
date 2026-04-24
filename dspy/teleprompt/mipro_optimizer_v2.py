@@ -1,5 +1,6 @@
 import logging
 import random
+import uuid
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
@@ -8,6 +9,7 @@ import numpy as np
 import dspy
 from dspy.evaluate.evaluate import Evaluate
 from dspy.propose import GroundedProposer
+from dspy.streaming.messages import send_stream_event
 from dspy.teleprompt.teleprompt import Teleprompter
 from dspy.teleprompt.utils import (
     create_minibatch,
@@ -58,6 +60,14 @@ BOLD = "\033[1m"
 ENDC = "\033[0m"  # Resets the color to default
 
 
+def _candidate_set_counts(candidates: Any) -> list[int]:
+    if candidates is None:
+        return []
+    if isinstance(candidates, dict):
+        candidates = candidates.values()
+    return [len(candidate_set) for candidate_set in candidates]
+
+
 class MIPROv2(Teleprompter):
     def __init__(
         self,
@@ -103,9 +113,13 @@ class MIPROv2(Teleprompter):
         self.metric_threshold = metric_threshold
         self.seed = seed
         self.rng = None
+        self._stream_run_id = None
 
         if not self.prompt_model or not self.task_model:
             raise ValueError("Either provide both prompt_model and task_model or set a default LM through dspy.configure(lm=...)")
+
+    def _emit_optimization_event(self, event: str, payload: dict[str, Any] | None = None):
+        send_stream_event(event, payload or {}, run_id=self._stream_run_id)
 
     def compile(
         self,
@@ -129,11 +143,11 @@ class MIPROv2(Teleprompter):
         requires_permission_to_run: bool | None = None, # deprecated
         provide_traceback: bool | None = None,
     ) -> Any:
-        if requires_permission_to_run == False:
+        if requires_permission_to_run is False:
             logger.warning(
                 "'requires_permission_to_run' is deprecated and will be removed in a future version."
             )
-        elif requires_permission_to_run == True:
+        elif requires_permission_to_run is True:
             raise ValueError("User confirmation is removed from MIPROv2. Please remove the 'requires_permission_to_run' argument.")
 
         effective_max_errors = (
@@ -215,6 +229,24 @@ class MIPROv2(Teleprompter):
         if minibatch and minibatch_size > len(valset):
             raise ValueError(f"Minibatch size cannot exceed the size of the valset. Valset size: {len(valset)}.")
 
+        self._stream_run_id = uuid.uuid4().hex
+        self._emit_optimization_event(
+            "optimization.run.started",
+            {
+                "optimizer": "MIPROv2",
+                "auto": self.auto,
+                "seed": seed,
+                "trainset_size": len(trainset),
+                "valset_size": len(valset),
+                "num_trials": num_trials,
+                "minibatch": minibatch,
+                "minibatch_size": minibatch_size if minibatch else len(valset),
+                "num_fewshot_candidates": num_fewshot_candidates,
+                "num_instruct_candidates": num_instruct_candidates,
+                "zeroshot": zeroshot_opt,
+            },
+        )
+
         # Initialize program and evaluator
         program = student.deepcopy()
         evaluate = Evaluate(
@@ -273,6 +305,14 @@ class MIPROv2(Teleprompter):
                 seed,
             )
 
+        self._emit_optimization_event(
+            "optimization.run.finished",
+            {
+                "best_score": getattr(best_program, "score", None),
+                "total_calls": getattr(best_program, "total_calls", None),
+                "prompt_model_total_calls": getattr(best_program, "prompt_model_total_calls", None),
+            },
+        )
         return best_program
 
     def _set_random_seeds(self, seed):
@@ -414,6 +454,16 @@ class MIPROv2(Teleprompter):
         metric_threshold: float | None,
     ) -> list | None:
         logger.info("\n==> STEP 1: BOOTSTRAP FEWSHOT EXAMPLES <==")
+        self._emit_optimization_event(
+            "optimization.step.started",
+            {
+                "step": "bootstrap_fewshot_examples",
+                "num_fewshot_candidates": num_fewshot_candidates,
+                "max_bootstrapped_demos": max_bootstrapped_demos,
+                "max_labeled_demos": max_labeled_demos,
+                "trainset_size": len(trainset),
+            },
+        )
         if max_bootstrapped_demos > 0:
             logger.info(
                 "These will be used as few-shot example candidates for our program and for creating instructions.\n"
@@ -451,6 +501,14 @@ class MIPROv2(Teleprompter):
         #     logger.info("Running without few-shot examples.!!!!\n\n\n\n\n")
         #     demo_candidates = None
 
+        self._emit_optimization_event(
+            "optimization.step.finished",
+            {
+                "step": "bootstrap_fewshot_examples",
+                "num_predictors": len(demo_candidates or []),
+                "num_candidate_sets": _candidate_set_counts(demo_candidates),
+            },
+        )
         return demo_candidates
 
     def _propose_instructions(
@@ -466,6 +524,17 @@ class MIPROv2(Teleprompter):
         num_instruct_candidates: int,
     ) -> dict[int, list[str]]:
         logger.info("\n==> STEP 2: PROPOSE INSTRUCTION CANDIDATES <==")
+        self._emit_optimization_event(
+            "optimization.step.started",
+            {
+                "step": "propose_instructions",
+                "num_instruct_candidates": num_instruct_candidates,
+                "program_aware": program_aware_proposer,
+                "data_aware": data_aware_proposer,
+                "tip_aware": tip_aware_proposer,
+                "fewshot_aware": fewshot_aware_proposer,
+            },
+        )
         logger.info(
             "We will use the few-shot examples from the previous step, a generated dataset summary, a summary of the program code, and a randomly selected prompting tip to propose instructions."
         )
@@ -502,8 +571,20 @@ class MIPROv2(Teleprompter):
             instruction_candidates[i][0] = get_signature(pred).instructions
             for j, instruction in enumerate(instruction_candidates[i]):
                 logger.info(f"{j}: {instruction}\n")
+                self._emit_optimization_event(
+                    "optimization.instruction.proposed",
+                    {"predictor_index": i, "instruction_index": j, "instruction": instruction},
+                )
             logger.info("\n")
 
+        self._emit_optimization_event(
+            "optimization.step.finished",
+            {
+                "step": "propose_instructions",
+                "num_predictors": len(instruction_candidates),
+                "num_instructions": {str(i): len(candidates) for i, candidates in instruction_candidates.items()},
+            },
+        )
         return instruction_candidates
 
     def _optimize_prompt_parameters(
@@ -524,6 +605,17 @@ class MIPROv2(Teleprompter):
         # Run optimization
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         logger.info("==> STEP 3: FINDING OPTIMAL PROMPT PARAMETERS <==")
+        self._emit_optimization_event(
+            "optimization.step.started",
+            {
+                "step": "optimize_prompt_parameters",
+                "num_trials": num_trials,
+                "minibatch": minibatch,
+                "minibatch_size": minibatch_size if minibatch else len(valset),
+                "minibatch_full_eval_steps": minibatch_full_eval_steps,
+                "valset_size": len(valset),
+            },
+        )
         logger.info(
             "We will evaluate the program over a series of trials with different combinations of instructions and few-shot examples to find the optimal combination using Bayesian Optimization.\n"
         )
@@ -536,8 +628,16 @@ class MIPROv2(Teleprompter):
             else num_trials
         )
         logger.info(f"== Trial {1} / {adjusted_num_trials} - Full Evaluation of Default Program ==")
+        self._emit_optimization_event(
+            "optimization.full_eval.started",
+            {"trial_num": 1, "adjusted_num_trials": adjusted_num_trials, "default_program": True},
+        )
 
         default_score = eval_candidate_program(len(valset), valset, program, evaluate, self.rng).score
+        self._emit_optimization_event(
+            "optimization.full_eval.finished",
+            {"trial_num": 1, "score": default_score, "default_program": True, "total_eval_calls": len(valset)},
+        )
         logger.info(f"Default program score: {default_score}\n")
 
         trial_logs = {}
@@ -580,6 +680,17 @@ class MIPROv2(Teleprompter):
                 trial_num,
             )
 
+            self._emit_optimization_event(
+                "optimization.trial.started",
+                {
+                    "trial_num": trial_num,
+                    "num_trials": adjusted_num_trials if minibatch else num_trials,
+                    "minibatch": minibatch,
+                    "chosen_params": chosen_params,
+                    "raw_chosen_params": raw_chosen_params,
+                },
+            )
+
             # Log assembled program
             if self.verbose:
                 logger.info("Evaluating the following candidate program...\n")
@@ -594,6 +705,10 @@ class MIPROv2(Teleprompter):
             if not minibatch and score > best_score:
                 best_score = score
                 best_program = candidate_program.deepcopy()
+                self._emit_optimization_event(
+                    "optimization.best_updated",
+                    {"trial_num": trial_num, "score": score, "minibatch": False},
+                )
                 logger.info(f"{GREEN}Best full score so far!{ENDC} Score: {score}")
 
             # Log evaluation results
@@ -629,6 +744,19 @@ class MIPROv2(Teleprompter):
                     candidate_program,
                     total_eval_calls,
                 )
+            self._emit_optimization_event(
+                "optimization.trial.finished",
+                {
+                    "trial_num": trial_num,
+                    "score": score,
+                    "best_score": best_score,
+                    "batch_size": batch_size,
+                    "minibatch": minibatch,
+                    "total_eval_calls": total_eval_calls,
+                    "chosen_params": chosen_params,
+                    "raw_chosen_params": raw_chosen_params,
+                },
+            )
             categorical_key = ",".join(map(str, chosen_params))
             param_score_dict[categorical_key].append(
                 (score, candidate_program, raw_chosen_params),
@@ -690,6 +818,15 @@ class MIPROv2(Teleprompter):
             ]
 
         logger.info(f"Returning best identified program with score {best_score}!")
+        self._emit_optimization_event(
+            "optimization.step.finished",
+            {
+                "step": "optimize_prompt_parameters",
+                "best_score": best_score,
+                "total_eval_calls": total_eval_calls,
+                "num_trials": num_trials,
+            },
+        )
 
         return best_program
 
@@ -786,16 +923,16 @@ class MIPROv2(Teleprompter):
 
     def _get_param_distributions(self, program, instruction_candidates, demo_candidates):
         optuna = _import_optuna()
-        CategoricalDistribution = optuna.distributions.CategoricalDistribution
+        categorical_distribution = optuna.distributions.CategoricalDistribution
 
         param_distributions = {}
 
         for i in range(len(instruction_candidates)):
-            param_distributions[f"{i}_predictor_instruction"] = CategoricalDistribution(
+            param_distributions[f"{i}_predictor_instruction"] = categorical_distribution(
                 range(len(instruction_candidates[i]))
             )
             if demo_candidates:
-                param_distributions[f"{i}_predictor_demos"] = CategoricalDistribution(range(len(demo_candidates[i])))
+                param_distributions[f"{i}_predictor_demos"] = categorical_distribution(range(len(demo_candidates[i])))
 
         return param_distributions
 
@@ -825,6 +962,15 @@ class MIPROv2(Teleprompter):
             param_score_dict, fully_evaled_param_combos
         )
         logger.info(f"Doing full eval on next top averaging program (Avg Score: {mean_score}) from minibatch trials...")
+        self._emit_optimization_event(
+            "optimization.full_eval.started",
+            {
+                "trial_num": trial_num + 1,
+                "adjusted_num_trials": adjusted_num_trials,
+                "mean_minibatch_score": mean_score,
+                "params": params,
+            },
+        )
         full_eval_score = eval_candidate_program(len(valset), valset, highest_mean_program, evaluate, self.rng).score
         score_data.append({"score": full_eval_score, "program": highest_mean_program, "full_eval": True})
 
@@ -842,6 +988,16 @@ class MIPROv2(Teleprompter):
             "score": full_eval_score,
         }
         total_eval_calls += len(valset)
+        self._emit_optimization_event(
+            "optimization.full_eval.finished",
+            {
+                "trial_num": trial_num + 1,
+                "score": full_eval_score,
+                "mean_minibatch_score": mean_score,
+                "params": params,
+                "total_eval_calls": total_eval_calls,
+            },
+        )
         trial_logs[trial_num + 1] = {}
         trial_logs[trial_num + 1]["total_eval_calls_so_far"] = total_eval_calls
         trial_logs[trial_num + 1]["full_eval_program_path"] = save_candidate_program(
@@ -858,6 +1014,10 @@ class MIPROv2(Teleprompter):
             logger.info(f"{GREEN}New best full eval score!{ENDC} Score: {full_eval_score}")
             best_score = full_eval_score
             best_program = highest_mean_program.deepcopy()
+            self._emit_optimization_event(
+                "optimization.best_updated",
+                {"trial_num": trial_num + 1, "score": full_eval_score, "minibatch": False},
+            )
         full_eval_scores = ", ".join([f"{s['score']}" for s in score_data if s["full_eval"]])
         trajectory = "[" + full_eval_scores + "]"
         logger.info(f"Full eval scores so far: {trajectory}")

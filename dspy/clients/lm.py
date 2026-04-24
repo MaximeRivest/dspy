@@ -1,3 +1,5 @@
+import asyncio
+import concurrent.futures
 import logging
 import os
 import re
@@ -8,7 +10,6 @@ from typing import Any, Literal, cast
 import litellm
 import pydantic
 from anyio.streams.memory import MemoryObjectSendStream
-from asyncer import syncify
 from litellm import ContextWindowExceededError as LitellmContextWindowExceededError
 
 import dspy
@@ -17,7 +18,7 @@ from dspy.clients.openai import OpenAIProvider
 from dspy.clients.provider import Provider, ReinforceJob, TrainingJob
 from dspy.clients.utils_finetune import TrainDataFormat
 from dspy.dsp.utils.settings import settings
-from dspy.utils.callback import BaseCallback
+from dspy.utils.callback import ACTIVE_CALL_ID, BaseCallback
 from dspy.utils.exceptions import ContextWindowExceededError
 
 from .base_lm import BaseLM
@@ -334,6 +335,20 @@ class LM(BaseLM):
             )
 
 
+def _run_async_from_sync(async_fn, *args, **kwargs):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(async_fn(*args, **kwargs))
+
+    def run_in_new_loop():
+        return asyncio.run(async_fn(*args, **kwargs))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(run_in_new_loop)
+        return future.result()
+
+
 def _get_stream_completion_fn(
     request: dict[str, Any],
     cache_kwargs: dict[str, Any],
@@ -342,6 +357,7 @@ def _get_stream_completion_fn(
 ):
     stream = dspy.settings.send_stream
     caller_predict = dspy.settings.caller_predict
+    lm_call_id = ACTIVE_CALL_ID.get()
 
     if stream is None:
         return None
@@ -365,13 +381,15 @@ def _get_stream_completion_fn(
             if caller_predict_id:
                 # Add the predict id to the chunk so that the stream listener can identify which predict produces it.
                 chunk.predict_id = caller_predict_id
+            if lm_call_id:
+                # Add the LM callback id so streaming consumers can group concurrent token streams.
+                chunk.lm_call_id = lm_call_id
             chunks.append(chunk)
             await stream.send(chunk)
         return litellm.stream_chunk_builder(chunks)
 
     def sync_stream_completion():
-        syncified_stream_completion = syncify(stream_completion)
-        return syncified_stream_completion(request, cache_kwargs)
+        return _run_async_from_sync(stream_completion, request, cache_kwargs)
 
     async def async_stream_completion():
         return await stream_completion(request, cache_kwargs)
