@@ -1,596 +1,580 @@
-import logging
-import os
-import re
-import threading
-import warnings
-from typing import Any, Literal, cast
+"""Create DSPy language models through the stable `dspy.LM` entry point.
 
-import litellm
-import pydantic
-from anyio.streams.memory import MemoryObjectSendStream
-from asyncer import syncify
-from litellm import ContextWindowExceededError as LitellmContextWindowExceededError
+This module keeps `dspy.LM(...)` as the public constructor while allowing the
+implementation to route to concrete `BaseLM` backends. By default, `LM` uses the
+LiteLLM backend. Community libraries can register resolvers that select their
+own `BaseLM` subclasses for particular model names or constructor arguments.
 
+Examples:
+Default LiteLLM-backed LM:
+```python
 import dspy
-from dspy.clients.cache import request_cache
-from dspy.clients.openai import OpenAIProvider
-from dspy.clients.provider import Provider, ReinforceJob, TrainingJob
-from dspy.clients.utils_finetune import TrainDataFormat
-from dspy.dsp.utils.settings import settings
-from dspy.utils.callback import BaseCallback
-from dspy.utils.exceptions import ContextWindowExceededError
 
-from .base_lm import BaseLM
+lm = dspy.LM("openai/gpt-4o-mini")
+dspy.configure(lm=lm)
 
-logger = logging.getLogger(__name__)
+assert isinstance(lm, dspy.LM)
+```
+
+Register several backends:
+```python
+from dspy.clients.base_lm import BaseLM
+from dspy.clients.lm import LM, register_lm_backend
+
+
+class AcmeLM(BaseLM):
+    def forward(self, prompt=None, messages=None, **kwargs):
+        ...
+
+
+class TinkerLM(BaseLM):
+    def forward(self, prompt=None, messages=None, **kwargs):
+        ...
+
+
+@register_lm_backend
+def route_acme(model, *args, **kwargs):
+    return AcmeLM if model.startswith("acme/") else None
+
+
+@register_lm_backend
+def route_tinker(model, *args, **kwargs):
+    return TinkerLM if model.startswith("tinker/") else None
+
+
+acme_lm = LM("acme/small")
+tinker_lm = LM("tinker/research")
+
+assert isinstance(acme_lm, LM)
+assert isinstance(acme_lm.backend, AcmeLM)
+assert isinstance(tinker_lm.backend, TinkerLM)
+```
+"""
+
+from dataclasses import dataclass
+from importlib import import_module
+from typing import Any, Callable
+
+from dspy.clients.base_lm import BaseLM
+
+LMBackendResolver = Callable[..., type[BaseLM] | None]
+_LM_BACKEND_RESOLVERS: list[LMBackendResolver] = []
+_DEFAULT_BACKEND = "dspy.clients.litellmlm:LiteLLMLM"
+_DEFAULT_BACKEND_MODULE = _DEFAULT_BACKEND.partition(":")[0]
+_BACKEND_ATTRS = {
+    "model",
+    "model_type",
+    "cache",
+    "callbacks",
+    "history",
+    "num_retries",
+    "provider",
+    "finetuning_model",
+    "launch_kwargs",
+    "train_kwargs",
+    "kwargs",
+    "use_developer_role",
+    "_warned_zero_temp_rollout",
+}
+
+
+@dataclass(frozen=True)
+class LMBackendProvenance:
+    """Record how `dspy.LM(...)` selected its backend.
+
+    Use this object when you need to inspect which resolver or explicit backend
+    produced an `LM` instance. The backend itself is available as `lm.backend`.
+
+    Attributes:
+        backend_cls: The `BaseLM` subclass selected for the instance.
+        backend_name: Fully qualified name of `backend_cls`.
+        resolver_name: Name of the resolver that selected the backend, or
+            `None` when the backend was explicit or the default fallback.
+        explicit_backend: Whether the user supplied `backend=` directly.
+
+    Examples:
+    Inspect backend provenance:
+    ```python
+    import dspy
+
+    lm = dspy.LM("openai/gpt-4o-mini")
+
+    assert lm.backend_provenance.backend_name.endswith("LiteLLMLM")
+    assert lm.backend_provenance.explicit_backend is False
+    ```
+    """
+
+    backend_cls: type[BaseLM]
+    backend_name: str
+    resolver_name: str | None = None
+    explicit_backend: bool = False
+
+
+def _backend_name(backend_cls: type[BaseLM]) -> str:
+    return f"{backend_cls.__module__}.{backend_cls.__qualname__}"
+
+
+def _backend_path(backend_cls: type[BaseLM]) -> str:
+    if "<locals>" in backend_cls.__qualname__:
+        raise ValueError(
+            "LM backends must be defined at module scope to be serialized. "
+            f"Received non-importable backend {backend_cls!r}."
+        )
+    return f"{backend_cls.__module__}:{backend_cls.__qualname__}"
+
+
+def _resolver_name(resolver: LMBackendResolver) -> str:
+    return f"{resolver.__module__}.{getattr(resolver, '__qualname__', resolver.__name__)}"
+
+
+def _import_backend(path: str) -> type[BaseLM]:
+    module_name, _, object_name = path.partition(":")
+    if not module_name or not object_name:
+        raise ValueError(f"Backend path must be of the form 'module:object', but received {path!r}.")
+
+    obj = import_module(module_name)
+    for part in object_name.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _get_default_backend_cls() -> type[BaseLM]:
+    return _validate_backend_cls(_import_backend(_DEFAULT_BACKEND))
+
+
+def __getattr__(name: str):
+    # Backward-compatible access for helper names that historically lived in
+    # dspy.clients.lm. The default backend module owns those implementations;
+    # this branch is only reached when callers request a legacy helper.
+    module = import_module(_DEFAULT_BACKEND_MODULE)
+    if name in getattr(module, "__all__", ()):
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def register_lm_backend(resolver: LMBackendResolver, *, prepend: bool = True) -> LMBackendResolver:
+    """Register a resolver that routes `dspy.LM(...)` to a `BaseLM` subclass.
+
+    Resolver functions receive the same constructor arguments passed to `LM`.
+    Return a `BaseLM` subclass to handle the request, or `None` to let later
+    resolvers try. Community packages can call this at import time to plug their
+    own backend into the public `dspy.LM` constructor.
+
+    Args:
+        resolver: Callable returning a `BaseLM` subclass or `None`.
+        prepend: If `True`, try this resolver before existing resolvers.
+
+    Returns:
+        The resolver. This lets you use `register_lm_backend` as a decorator.
+
+    Examples:
+    Register by calling the function:
+    ```python
+    from dspy.clients.base_lm import BaseLM
+    from dspy.clients.lm import LM, register_lm_backend
+
+
+    class AcmeLM(BaseLM):
+        def forward(self, prompt=None, messages=None, **kwargs):
+            ...
+
+
+    def acme_resolver(model, *args, **kwargs):
+        return AcmeLM if model.startswith("acme/") else None
+
+
+    register_lm_backend(acme_resolver)
+    lm = LM("acme/small")
+
+    assert isinstance(lm, LM)
+    assert isinstance(lm.backend, AcmeLM)
+    ```
+
+    Register several backends:
+    ```python
+    @register_lm_backend
+    def route_acme(model, *args, **kwargs):
+        return AcmeLM if model.startswith("acme/") else None
+
+
+    @register_lm_backend
+    def route_tinker(model, *args, **kwargs):
+        return TinkerLM if model.startswith("tinker/") else None
+
+
+    acme_lm = LM("acme/small")
+    tinker_lm = LM("tinker/research")
+    default_lm = LM("openai/gpt-4o-mini")  # Falls back to LiteLLM.
+    ```
+
+    Control precedence when two resolvers can handle the same model:
+    ```python
+    register_lm_backend(route_general_acme, prepend=False)
+    register_lm_backend(route_experimental_acme, prepend=True)
+
+    # route_experimental_acme is tried first.
+    lm = LM("acme/small")
+    ```
+    """
+    if prepend:
+        _LM_BACKEND_RESOLVERS.insert(0, resolver)
+    else:
+        _LM_BACKEND_RESOLVERS.append(resolver)
+    return resolver
+
+
+def unregister_lm_backend(resolver: LMBackendResolver) -> None:
+    """Remove a previously registered LM backend resolver.
+
+    Use this in tests, notebooks, or plugin shutdown code when a resolver should
+    no longer affect `dspy.LM(...)`.
+
+    Args:
+        resolver: The resolver function that was passed to
+            `register_lm_backend`.
+
+    Examples:
+    Register a resolver temporarily:
+    ```python
+    from dspy.clients.lm import LM, register_lm_backend, unregister_lm_backend
+
+    register_lm_backend(acme_resolver)
+    lm = LM("acme/small")
+
+    unregister_lm_backend(acme_resolver)
+    ```
+    """
+    _LM_BACKEND_RESOLVERS.remove(resolver)
+
+
+def _validate_backend_cls(backend_cls: type[BaseLM]) -> type[BaseLM]:
+    if not isinstance(backend_cls, type) or not issubclass(backend_cls, BaseLM):
+        raise TypeError(f"LM backend must be a BaseLM subclass, but received {backend_cls!r}.")
+    if backend_cls is LM:
+        raise TypeError("LM cannot route to itself; return a concrete BaseLM subclass instead.")
+    return backend_cls
+
+
+def _resolve_lm_backend(
+    model: str,
+    *args: Any,
+    backend: type[BaseLM] | str | None = None,
+    **kwargs: Any,
+) -> tuple[type[BaseLM], LMBackendProvenance]:
+    if backend is not None:
+        backend_cls = _validate_backend_cls(_import_backend(backend) if isinstance(backend, str) else backend)
+        return backend_cls, LMBackendProvenance(
+            backend_cls=backend_cls,
+            backend_name=_backend_name(backend_cls),
+            explicit_backend=True,
+        )
+
+    for resolver in list(_LM_BACKEND_RESOLVERS):
+        backend_cls = resolver(model, *args, **kwargs)
+        if backend_cls is not None:
+            backend_cls = _validate_backend_cls(backend_cls)
+            return backend_cls, LMBackendProvenance(
+                backend_cls=backend_cls,
+                backend_name=_backend_name(backend_cls),
+                resolver_name=_resolver_name(resolver),
+                explicit_backend=False,
+            )
+
+    backend_cls = _get_default_backend_cls()
+    return backend_cls, LMBackendProvenance(
+        backend_cls=backend_cls,
+        backend_name=_backend_name(backend_cls),
+        explicit_backend=False,
+    )
+
+
+def _configure_backend_for_lm_module(backend: BaseLM) -> None:
+    configure = getattr(backend, "_configure_public_lm_wrapper", None)
+    if configure is not None:
+        configure(module_name=__name__)
 
 
 class LM(BaseLM):
+    """Create a language model while preserving the `dspy.LM` type.
+
+    `LM` is always the public wrapper type. It stores the selected backend in
+    `lm.backend`, delegates inference to that backend, and exposes provenance in
+    `lm.backend_provenance`. The default backend is `LiteLLMLM`.
+
+    Args:
+        model: Model identifier such as `"openai/gpt-4o-mini"`.
+        *args: Positional arguments passed to the selected backend.
+        backend: Optional explicit `BaseLM` subclass or backend path string.
+            When set, this bypasses registered resolvers.
+        **kwargs: Keyword arguments passed to the selected backend, such as
+            `temperature`, `max_tokens`, `cache`, or provider-specific options.
+
+    Examples:
+    Configure the default LiteLLM-backed LM:
+    ```python
+    import dspy
+    from dspy.clients.litellmlm import LiteLLMLM
+
+    lm = dspy.LM("openai/gpt-4o-mini", temperature=0.0)
+    dspy.configure(lm=lm)
+
+    assert isinstance(lm, dspy.LM)
+    assert isinstance(lm.backend, LiteLLMLM)
+    ```
+
+    Route to an explicit backend:
+    ```python
+    from dspy.clients.lm import LM
+    from dspy.clients.litellmlm import LiteLLMLM
+
+    lm = LM("openai/gpt-4o-mini", backend=LiteLLMLM)
+
+    assert isinstance(lm, LM)
+    assert isinstance(lm.backend, LiteLLMLM)
+    assert lm.backend_provenance.explicit_backend is True
+    ```
+
+    Route with a community resolver:
+    ```python
+    from dspy.clients.base_lm import BaseLM
+    from dspy.clients.lm import LM, register_lm_backend
+
+
+    class AcmeLM(BaseLM):
+        def forward(self, prompt=None, messages=None, **kwargs):
+            ...
+
+
+    @register_lm_backend
+    def route_acme(model, *args, **kwargs):
+        return AcmeLM if model.startswith("acme/") else None
+
+
+    lm = LM("acme/small")
+
+    assert isinstance(lm, LM)
+    assert isinstance(lm.backend, AcmeLM)
+    ```
+
+    Register multiple community backends:
+    ```python
+    @register_lm_backend
+    def route_acme(model, *args, **kwargs):
+        return AcmeLM if model.startswith("acme/") else None
+
+
+    @register_lm_backend
+    def route_tinker(model, *args, **kwargs):
+        return TinkerLM if model.startswith("tinker/") else None
+
+
+    lm1 = LM("acme/small")
+    lm2 = LM("tinker/research")
+    lm3 = LM("openai/gpt-4o-mini")  # Falls back to LiteLLM.
+
+    assert isinstance(lm1.backend, AcmeLM)
+    assert isinstance(lm2.backend, TinkerLM)
+    assert isinstance(lm3.backend, LiteLLMLM)
+    ```
     """
-    A language model supporting chat or text completion requests for use with DSPy modules.
-    """
 
-    def __init__(
-        self,
-        model: str,
-        model_type: Literal["chat", "text", "responses"] = "chat",
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-        cache: bool = True,
-        callbacks: list[BaseCallback] | None = None,
-        num_retries: int = 3,
-        provider: Provider | None = None,
-        finetuning_model: str | None = None,
-        launch_kwargs: dict[str, Any] | None = None,
-        train_kwargs: dict[str, Any] | None = None,
-        use_developer_role: bool = False,
-        **kwargs,
-    ):
-        """
-        Create a new language model instance for use with DSPy modules and programs.
+    def __init__(self, model: str, *args: Any, backend: type[BaseLM] | str | None = None, **kwargs: Any):
+        backend_cls, provenance = _resolve_lm_backend(model, *args, backend=backend, **kwargs)
+        backend_instance = backend_cls(model, *args, **kwargs)
+        _configure_backend_for_lm_module(backend_instance)
 
-        Args:
-            model: The model to use. This should be a string of the form ``"llm_provider/llm_name"``
-                   supported by LiteLLM. For example, ``"openai/gpt-4o"``.
-            model_type: The type of the model, either ``"chat"`` or ``"text"``.
-            temperature: The sampling temperature to use when generating responses.
-            max_tokens: The maximum number of tokens to generate per response.
-            cache: Whether to cache the model responses for reuse to improve performance
-                   and reduce costs.
-            callbacks: A list of callback functions to run before and after each request.
-            num_retries: The number of times to retry a request if it fails transiently due to
-                         network error, rate limiting, etc. Requests are retried with exponential
-                         backoff.
-            provider: The provider to use. If not specified, the provider will be inferred from the model.
-            finetuning_model: The model to finetune. In some providers, the models available for finetuning is different
-                from the models available for inference.
-            rollout_id: Optional integer used to differentiate cache entries for otherwise
-                identical requests. Different values bypass DSPy's caches while still caching
-                future calls with the same inputs and rollout ID. Note that `rollout_id`
-                only affects generation when `temperature` is non-zero. This argument is
-                stripped before sending requests to the provider.
-        """
-        # Remember to update LM.copy() if you modify the constructor!
-        self.model = model
-        self.model_type = model_type
-        self.cache = cache
-        self.provider = provider or self.infer_provider()
-        self.callbacks = callbacks or []
-        self.history = []
-        self.num_retries = num_retries
-        self.finetuning_model = finetuning_model
-        self.launch_kwargs = launch_kwargs or {}
-        self.train_kwargs = train_kwargs or {}
-        self.use_developer_role = use_developer_role
-        self._warned_zero_temp_rollout = False
-
-        # Handle model-specific configuration for different model families
-        model_family = model.split("/")[-1].lower() if "/" in model else model.lower()
-
-        # Recognize OpenAI reasoning models (o1, o3, o4, gpt-5 family)
-        # Exclude non-reasoning variants like gpt-5-chat this is in azure ai foundry
-        # Allow date suffixes like -2023-01-01 after model name or mini/nano/pro
-        # For gpt-5, use negative lookahead to exclude -chat and allow other suffixes
-        model_pattern = re.match(
-            r"^(?:o[1345](?:-(?:mini|nano|pro))?(?:-\d{4}-\d{2}-\d{2})?|gpt-5(?!-chat)(?:-.*)?)$",
-            model_family,
-        )
-
-        if model_pattern:
-            if (temperature and temperature != 1.0) or (max_tokens and max_tokens < 16000):
-                raise ValueError(
-                    "OpenAI's reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None to "
-                    "`dspy.LM(...)`, e.g., dspy.LM('openai/gpt-5', temperature=1.0, max_tokens=16000)"
-                )
-            self.kwargs = dict(temperature=temperature, max_completion_tokens=max_tokens, **kwargs)
-            if self.kwargs.get("rollout_id") is None:
-                self.kwargs.pop("rollout_id", None)
-        else:
-            self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
-            if self.kwargs.get("rollout_id") is None:
-                self.kwargs.pop("rollout_id", None)
-
-        self._warn_zero_temp_rollout(self.kwargs.get("temperature"), self.kwargs.get("rollout_id"))
+        object.__setattr__(self, "_backend", backend_instance)
+        object.__setattr__(self, "backend_provenance", provenance)
 
     @property
-    def _provider_name(self) -> str:
-        """Extract the provider name from the model string (e.g., 'openai' from 'openai/gpt-4o')."""
-        if "/" in self.model:
-            return self.model.split("/", 1)[0]
-        return "openai"
+    def backend(self) -> BaseLM:
+        """Return the concrete backend instance used by this `LM`.
+
+        Examples:
+        Inspect the routed backend:
+        ```python
+        import dspy
+        from dspy.clients.litellmlm import LiteLLMLM
+
+        lm = dspy.LM("openai/gpt-4o-mini")
+        assert isinstance(lm.backend, LiteLLMLM)
+        ```
+        """
+        return self._backend
+
+    @property
+    def backend_cls(self) -> type[BaseLM]:
+        """Return the backend class selected for this `LM`.
+
+        Examples:
+        Compare the selected backend class:
+        ```python
+        import dspy
+        from dspy.clients.litellmlm import LiteLLMLM
+
+        lm = dspy.LM("openai/gpt-4o-mini")
+        assert lm.backend_cls is LiteLLMLM
+        ```
+        """
+        return self.backend_provenance.backend_cls
+
+    def __getattr__(self, name: str) -> Any:
+        backend = self.__dict__.get("_backend")
+        if backend is not None:
+            return getattr(backend, name)
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        backend = self.__dict__.get("_backend")
+        if backend is not None and name in _BACKEND_ATTRS:
+            setattr(backend, name, value)
+        else:
+            object.__setattr__(self, name, value)
 
     @property
     def supports_function_calling(self) -> bool:
-        return litellm.supports_function_calling(model=self.model)
+        """Whether the selected backend supports native function calling.
+
+        Examples:
+        Ask the selected backend for tool-call support:
+        ```python
+        import dspy
+
+        lm = dspy.LM("openai/gpt-4o-mini")
+        supports_tools = lm.supports_function_calling
+        ```
+        """
+        return self.backend.supports_function_calling
 
     @property
     def supports_reasoning(self) -> bool:
-        return litellm.supports_reasoning(self.model)
+        """Whether the selected backend supports native reasoning output.
+
+        Examples:
+        Ask the selected backend for reasoning support:
+        ```python
+        import dspy
+
+        lm = dspy.LM("openai/gpt-4o-mini")
+        supports_reasoning = lm.supports_reasoning
+        ```
+        """
+        return self.backend.supports_reasoning
 
     @property
     def supports_response_schema(self) -> bool:
-        return litellm.supports_response_schema(model=self.model, custom_llm_provider=self._provider_name)
+        """Whether the selected backend supports structured response schemas.
+
+        Examples:
+        Ask the selected backend for schema support:
+        ```python
+        import dspy
+
+        lm = dspy.LM("openai/gpt-4o-mini")
+        supports_schema = lm.supports_response_schema
+        ```
+        """
+        return self.backend.supports_response_schema
 
     @property
     def supported_params(self) -> set[str]:
-        params = litellm.get_supported_openai_params(model=self.model, custom_llm_provider=self._provider_name)
-        return set(params) if params else set()
+        """Return OpenAI-style parameters supported by the selected backend.
 
-    def _warn_zero_temp_rollout(self, temperature: float | None, rollout_id):
-        if not self._warned_zero_temp_rollout and rollout_id is not None and temperature == 0:
-            warnings.warn(
-                "rollout_id has no effect when temperature=0; set temperature>0 to bypass the cache.",
-                stacklevel=3,
-            )
-            self._warned_zero_temp_rollout = True
+        Examples:
+        Check whether JSON response formatting is supported:
+        ```python
+        import dspy
 
-    def _get_cached_completion_fn(self, completion_fn, cache):
-        ignored_args_for_cache_key = ["api_key", "api_base", "base_url"]
-        if cache:
-            completion_fn = request_cache(
-                cache_arg_name="request",
-                ignored_args_for_cache_key=ignored_args_for_cache_key,
-            )(completion_fn)
+        lm = dspy.LM("openai/gpt-4o-mini")
+        if "response_format" in lm.supported_params:
+            print("schema or JSON response format is available")
+        ```
+        """
+        return self.backend.supported_params
 
-        litellm_cache_args = {"no-cache": True, "no-store": True}
+    def forward(self, prompt: str | None = None, messages: list[dict[str, Any]] | None = None, **kwargs):
+        """Call the selected backend synchronously.
 
-        return completion_fn, litellm_cache_args
+        Args:
+            prompt: Optional plain-text prompt. When provided without messages,
+                the backend turns it into a user message.
+            messages: Optional chat-style message list.
+            **kwargs: Request parameters passed to the backend.
 
-    def forward(
-        self,
-        prompt: str | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        **kwargs
-    ):
-        # Build the request.
-        kwargs = dict(kwargs)
-        cache = kwargs.pop("cache", self.cache)
+        Examples:
+        Call an LM directly:
+        ```python
+        import dspy
 
-        messages = messages or [{"role": "user", "content": prompt}]
-        if self.use_developer_role and self.model_type == "responses":
-            messages = [{**m, "role": "developer"} if m.get("role") == "system" else m for m in messages]
-        kwargs = {**self.kwargs, **kwargs}
-        self._warn_zero_temp_rollout(kwargs.get("temperature"), kwargs.get("rollout_id"))
-        if kwargs.get("rollout_id") is None:
-            kwargs.pop("rollout_id", None)
+        lm = dspy.LM("openai/gpt-4o-mini")
+        outputs = lm("What is DSPy?")
+        ```
+        """
+        return self.backend.forward(prompt=prompt, messages=messages, **kwargs)
 
-        if self.model_type == "chat":
-            completion = litellm_completion
-        elif self.model_type == "text":
-            completion = litellm_text_completion
-        elif self.model_type == "responses":
-            completion = litellm_responses_completion
-        completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)
+    async def aforward(self, prompt: str | None = None, messages: list[dict[str, Any]] | None = None, **kwargs):
+        """Call the selected backend asynchronously.
 
-        try:
-            results = completion(
-                request=dict(model=self.model, messages=messages, **kwargs),
-                num_retries=self.num_retries,
-                cache=litellm_cache_args,
-            )
-        except LitellmContextWindowExceededError as e:
-            raise ContextWindowExceededError(model=self.model) from e
+        Args:
+            prompt: Optional plain-text prompt. When provided without messages,
+                the backend turns it into a user message.
+            messages: Optional chat-style message list.
+            **kwargs: Request parameters passed to the backend.
 
-        self._check_truncation(results)
+        Examples:
+        Await an LM call:
+        ```python
+        import dspy
 
-        if not getattr(results, "cache_hit", False) and dspy.settings.usage_tracker:
-            settings.usage_tracker.add_usage(self.model, dict(getattr(results, "usage", {})))
-        return results
+        lm = dspy.LM("openai/gpt-4o-mini")
+        outputs = await lm.acall("What is DSPy?")
+        ```
+        """
+        return await self.backend.aforward(prompt=prompt, messages=messages, **kwargs)
 
-    async def aforward(
-        self,
-        prompt: str | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        **kwargs,
-    ):
-        # Build the request.
-        kwargs = dict(kwargs)
-        cache = kwargs.pop("cache", self.cache)
+    def _process_lm_response(self, response, prompt, messages, **kwargs):
+        return self.backend._process_lm_response(response, prompt, messages, **kwargs)
 
-        messages = messages or [{"role": "user", "content": prompt}]
-        if self.use_developer_role and self.model_type == "responses":
-            messages = [{**m, "role": "developer"} if m.get("role") == "system" else m for m in messages]
-        kwargs = {**self.kwargs, **kwargs}
-        self._warn_zero_temp_rollout(kwargs.get("temperature"), kwargs.get("rollout_id"))
-        if kwargs.get("rollout_id") is None:
-            kwargs.pop("rollout_id", None)
+    def copy(self, **kwargs):
+        backend_copy = self.backend.copy(**kwargs)
+        _configure_backend_for_lm_module(backend_copy)
 
-        if self.model_type == "chat":
-            completion = alitellm_completion
-        elif self.model_type == "text":
-            completion = alitellm_text_completion
-        elif self.model_type == "responses":
-            completion = alitellm_responses_completion
-        completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)
-
-        try:
-            results = await completion(
-                request=dict(model=self.model, messages=messages, **kwargs),
-                num_retries=self.num_retries,
-                cache=litellm_cache_args,
-            )
-        except LitellmContextWindowExceededError as e:
-            raise ContextWindowExceededError(model=self.model) from e
-
-        self._check_truncation(results)
-
-        if not getattr(results, "cache_hit", False) and dspy.settings.usage_tracker:
-            settings.usage_tracker.add_usage(self.model, dict(getattr(results, "usage", {})))
-        return results
-
-    def launch(self, launch_kwargs: dict[str, Any] | None = None):
-        self.provider.launch(self, launch_kwargs)
-
-    def kill(self, launch_kwargs: dict[str, Any] | None = None):
-        self.provider.kill(self, launch_kwargs)
-
-    def finetune(
-        self,
-        train_data: list[dict[str, Any]],
-        train_data_format: TrainDataFormat | None,
-        train_kwargs: dict[str, Any] | None = None,
-    ) -> TrainingJob:
-        from dspy import settings as settings
-
-        if not self.provider.finetunable:
-            raise ValueError(
-                f"Provider {self.provider} does not support fine-tuning, please specify your provider by explicitly "
-                "setting `provider` when creating the `dspy.LM` instance. For example, "
-                "`dspy.LM('openai/gpt-4.1-mini-2025-04-14', provider=dspy.OpenAIProvider())`."
-            )
-
-        def thread_function_wrapper():
-            return self._run_finetune_job(job)
-
-        thread = threading.Thread(target=thread_function_wrapper)
-        train_kwargs = train_kwargs or self.train_kwargs
-        model_to_finetune = self.finetuning_model or self.model
-        job = self.provider.TrainingJob(
-            thread=thread,
-            model=model_to_finetune,
-            train_data=train_data,
-            train_data_format=train_data_format,
-            train_kwargs=train_kwargs,
-        )
-        thread.start()
-
-        return job
-
-    def reinforce(self, train_kwargs) -> ReinforceJob:
-        # TODO(GRPO Team): Should we return an initialized job here?
-        from dspy import settings as settings
-
-        err = f"Provider {self.provider} does not implement the reinforcement learning interface."
-        assert self.provider.reinforceable, err
-
-        job = self.provider.ReinforceJob(lm=self, train_kwargs=train_kwargs)
-        job.initialize()
-        return job
-
-    def _run_finetune_job(self, job: TrainingJob):
-        # TODO(enhance): We should listen for keyboard interrupts somewhere.
-        # Requires TrainingJob.cancel() to be implemented for each provider.
-        try:
-            model = self.provider.finetune(
-                job=job,
-                model=job.model,
-                train_data=job.train_data,
-                train_data_format=job.train_data_format,
-                train_kwargs=job.train_kwargs,
-            )
-            lm = self.copy(model=model)
-            job.set_result(lm)
-        except Exception as err:
-            logger.error(err)
-            job.set_result(err)
-
-    def infer_provider(self) -> Provider:
-        if OpenAIProvider.is_provider_model(self.model):
-            return OpenAIProvider()
-        return Provider()
+        new_instance = object.__new__(type(self))
+        object.__setattr__(new_instance, "_backend", backend_copy)
+        object.__setattr__(new_instance, "backend_provenance", self.backend_provenance)
+        return new_instance
 
     def dump_state(self):
-        state_keys = [
-            "model",
-            "model_type",
-            "cache",
-            "num_retries",
-            "finetuning_model",
-            "launch_kwargs",
-            "train_kwargs",
-        ]
-        # Exclude api_key from kwargs to prevent API keys from being saved in plain text
-        filtered_kwargs = {k: v for k, v in self.kwargs.items() if k != "api_key"}
-        return {key: getattr(self, key) for key in state_keys} | filtered_kwargs
+        """Return serializable LM state.
 
-    def _check_truncation(self, results):
-        if self.model_type != "responses" and any(c.finish_reason == "length" for c in results["choices"]):
-            logger.warning(
-                f"LM response was truncated due to exceeding max_tokens={self.kwargs['max_tokens']}. "
-                "You can inspect the latest LM interactions with `dspy.inspect_history()`. "
-                "To avoid truncation, consider passing a larger max_tokens when setting up dspy.LM. "
-                f"You may also consider increasing the temperature (currently {self.kwargs['temperature']}) "
-                " if the reason for truncation is repetition."
-            )
+        This wraps the selected backend's `dump_state()`. When the backend is
+        not the default DSPy backend, the returned state includes a `backend`
+        key with the backend import path so `LM(**state)` can reconstruct it.
 
+        For custom backends, the backend class must live at module scope so it
+        has a stable import path. Loading that path from saved state may import
+        code, so DSPy treats it as unsafe unless the module is already imported
+        or the caller opts in with `allow_unsafe_lm_state=True`.
 
-def _get_stream_completion_fn(
-    request: dict[str, Any],
-    cache_kwargs: dict[str, Any],
-    sync=True,
-    headers: dict[str, Any] | None = None,
-):
-    stream = dspy.settings.send_stream
-    caller_predict = dspy.settings.caller_predict
-
-    if stream is None:
-        return None
-
-    # The stream is already opened, and will be closed by the caller.
-    stream = cast(MemoryObjectSendStream, stream)
-    caller_predict_id = id(caller_predict) if caller_predict else None
-
-    if dspy.settings.track_usage:
-        request["stream_options"] = {"include_usage": True}
-
-    async def stream_completion(request: dict[str, Any], cache_kwargs: dict[str, Any]):
-        response = await litellm.acompletion(
-            cache=cache_kwargs,
-            stream=True,
-            headers=headers,
-            **request,
-        )
-        chunks = []
-        async for chunk in response:
-            if caller_predict_id:
-                # Add the predict id to the chunk so that the stream listener can identify which predict produces it.
-                chunk.predict_id = caller_predict_id
-            chunks.append(chunk)
-            await stream.send(chunk)
-        return litellm.stream_chunk_builder(chunks)
-
-    def sync_stream_completion():
-        syncified_stream_completion = syncify(stream_completion)
-        return syncified_stream_completion(request, cache_kwargs)
-
-    async def async_stream_completion():
-        return await stream_completion(request, cache_kwargs)
-
-    if sync:
-        return sync_stream_completion
-    else:
-        return async_stream_completion
+        Examples:
+        Dump a custom backend with its path:
+        ```python
+        state = lm.dump_state()
+        backend_path = state.get("backend")
+        ```
+        """
+        state = self.backend.dump_state()
+        backend_path = _backend_path(self.backend_cls)
+        if backend_path != _DEFAULT_BACKEND:
+            state["backend"] = backend_path
+        return state
 
 
-def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
-    cache = cache or {"no-cache": True, "no-store": True}
-    request = dict(request)
-    request.pop("rollout_id", None)
-    headers = _add_dspy_identifier_to_headers(request.pop("headers", None))
-    stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)
-    if stream_completion is None:
-        return litellm.completion(
-            cache=cache,
-            num_retries=num_retries,
-            retry_strategy="exponential_backoff_retry",
-            headers=headers,
-            **request,
-        )
-
-    return stream_completion()
-
-
-def litellm_text_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
-    cache = cache or {"no-cache": True, "no-store": True}
-    request = dict(request)
-    request.pop("rollout_id", None)
-    headers = request.pop("headers", None)
-    # Extract the provider and model from the model string.
-    # TODO: Not all the models are in the format of "provider/model"
-    model = request.pop("model").split("/", 1)
-    provider, model = model[0] if len(model) > 1 else "openai", model[-1]
-
-    # Use the API key and base from the request, or from the environment.
-    api_key = request.pop("api_key", None) or os.getenv(f"{provider}_API_KEY")
-    api_base = request.pop("api_base", None) or os.getenv(f"{provider}_API_BASE")
-
-    # Build the prompt from the messages.
-    prompt = "\n\n".join([x["content"] for x in request.pop("messages")] + ["BEGIN RESPONSE:"])
-
-    return litellm.text_completion(
-        cache=cache,
-        model=f"text-completion-openai/{model}",
-        api_key=api_key,
-        api_base=api_base,
-        prompt=prompt,
-        num_retries=num_retries,
-        retry_strategy="exponential_backoff_retry",
-        headers=_add_dspy_identifier_to_headers(headers),
-        **request,
-    )
-
-
-async def alitellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
-    cache = cache or {"no-cache": True, "no-store": True}
-    request = dict(request)
-    request.pop("rollout_id", None)
-    headers = _add_dspy_identifier_to_headers(request.pop("headers", None))
-    stream_completion = _get_stream_completion_fn(request, cache, sync=False, headers=headers)
-    if stream_completion is None:
-        return await litellm.acompletion(
-            cache=cache,
-            num_retries=num_retries,
-            retry_strategy="exponential_backoff_retry",
-            headers=headers,
-            **request,
-        )
-
-    return await stream_completion()
-
-
-async def alitellm_text_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
-    cache = cache or {"no-cache": True, "no-store": True}
-    request = dict(request)
-    request.pop("rollout_id", None)
-    model = request.pop("model").split("/", 1)
-    headers = request.pop("headers", None)
-    provider, model = model[0] if len(model) > 1 else "openai", model[-1]
-
-    # Use the API key and base from the request, or from the environment.
-    api_key = request.pop("api_key", None) or os.getenv(f"{provider}_API_KEY")
-    api_base = request.pop("api_base", None) or os.getenv(f"{provider}_API_BASE")
-
-    # Build the prompt from the messages.
-    prompt = "\n\n".join([x["content"] for x in request.pop("messages")] + ["BEGIN RESPONSE:"])
-
-    return await litellm.atext_completion(
-        cache=cache,
-        model=f"text-completion-openai/{model}",
-        api_key=api_key,
-        api_base=api_base,
-        prompt=prompt,
-        num_retries=num_retries,
-        retry_strategy="exponential_backoff_retry",
-        headers=_add_dspy_identifier_to_headers(headers),
-        **request,
-    )
-
-
-def litellm_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
-    cache = cache or {"no-cache": True, "no-store": True}
-    request = dict(request)
-    request.pop("rollout_id", None)
-    headers = request.pop("headers", None)
-    request = _convert_chat_request_to_responses_request(request)
-
-    return litellm.responses(
-        cache=cache,
-        num_retries=num_retries,
-        retry_strategy="exponential_backoff_retry",
-        headers=_add_dspy_identifier_to_headers(headers),
-        **request,
-    )
-
-
-async def alitellm_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
-    cache = cache or {"no-cache": True, "no-store": True}
-    request = dict(request)
-    request.pop("rollout_id", None)
-    headers = request.pop("headers", None)
-    request = _convert_chat_request_to_responses_request(request)
-
-    return await litellm.aresponses(
-        cache=cache,
-        num_retries=num_retries,
-        retry_strategy="exponential_backoff_retry",
-        headers=_add_dspy_identifier_to_headers(headers),
-        **request,
-    )
-
-
-def _convert_chat_request_to_responses_request(request: dict[str, Any]):
-    """
-    Convert a chat request to a responses request
-    See https://platform.openai.com/docs/api-reference/responses/create for the responses API specification.
-    Also see https://platform.openai.com/docs/api-reference/chat/create for the chat API specification.
-    """
-    request = dict(request)
-    if "messages" in request:
-        input_items = []
-        for msg in request.pop("messages"):
-            content_blocks = []
-            c = msg.get("content")
-            if isinstance(c, str):
-                content_blocks.append({"type": "input_text", "text": c})
-            elif isinstance(c, list):
-                # Convert each content item from Chat API format to Responses API format
-                for item in c:
-                    content_blocks.append(_convert_content_item_to_responses_format(item))
-            input_items.append({"role": msg.get("role", "user"), "content": content_blocks})
-        request["input"] = input_items
-    # Convert `reasoning_effort` to reasoning format supported by the Responses API
-    if "reasoning_effort" in request:
-        effort = request.pop("reasoning_effort")
-        request["reasoning"] = {"effort": effort, "summary": "auto"}
-
-    # Convert `response_format` to `text.format` for Responses API
-    if "response_format" in request:
-        response_format = request.pop("response_format")
-        if isinstance(response_format, type) and issubclass(response_format, pydantic.BaseModel):
-            response_format = {
-                "name": response_format.__name__,
-                "type": "json_schema",
-                "schema": response_format.model_json_schema(),
-            }
-        text = request.pop("text", {})
-        request["text"] = {**text, "format": response_format}
-
-    return request
-
-
-def _convert_content_item_to_responses_format(item: dict[str, Any]) -> dict[str, Any]:
-    """
-    Convert a content item from Chat API format to Responses API format.
-
-    For images, converts from:
-        {"type": "image_url", "image_url": {"url": "..."}}
-    To:
-        {"type": "input_image", "image_url": "..."}
-
-    For text, converts from:
-        {"type": "text", "text": "..."}
-    To:
-        {"type": "input_text", "text": "..."}
-
-    For other types, passes through as-is.
-    """
-    if item.get("type") == "image_url":
-        image_url = item.get("image_url", {}).get("url", "")
-        return {
-            "type": "input_image",
-            "image_url": image_url,
-        }
-    elif item.get("type") == "text":
-        return {
-            "type": "input_text",
-            "text": item.get("text", ""),
-        }
-    elif item.get("type") == "file":
-        file = item.get("file", {})
-        return {
-            "type": "input_file",
-            "file_data": file.get("file_data"),
-            "filename": file.get("filename"),
-            "file_id": file.get("file_id"),
-        }
-
-    # For other items, return as-is
-    return item
-
-
-def _add_dspy_identifier_to_headers(headers: dict[str, Any] | None = None):
-    headers = headers or {}
-    return {
-        "User-Agent": f"DSPy/{dspy.__version__}",
-        **headers,
-    }
+__all__ = [
+    "LM",
+    "LMBackendProvenance",
+    "register_lm_backend",
+    "unregister_lm_backend",
+]

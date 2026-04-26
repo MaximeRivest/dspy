@@ -19,6 +19,19 @@ from dspy.predict.predict import serialize_object
 from dspy.utils.dummies import DummyLM
 
 
+class SerializableCustomLM(dspy.BaseLM):
+    def __init__(self, model: str, suffix: str = "!", **kwargs):
+        super().__init__(model, **kwargs)
+        self.suffix = suffix
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        messages, params = self.prepare_request(prompt, messages, **kwargs)
+        return f"custom:{messages[-1]['content']}{self.suffix}"
+
+    def dump_state(self):
+        return super().dump_state() | {"suffix": self.suffix}
+
+
 def test_initialization_with_string_signature():
     signature_string = "input1, input2 -> output"
     predict = Predict(signature_string)
@@ -66,6 +79,75 @@ def test_lm_after_dump_and_load_state():
     new_instance = Predict("input -> output")
     new_instance.load_state(dumped_state)
     assert new_instance.lm.dump_state() == expected_lm_state
+
+
+def test_custom_lm_after_dump_and_load_state():
+    predict_instance = Predict("input -> output")
+    lm = dspy.LM(
+        model="custom/echo",
+        backend=SerializableCustomLM,
+        suffix="?",
+        temperature=0.2,
+    )
+    predict_instance.lm = lm
+
+    dumped_state = predict_instance.dump_state()
+    assert dumped_state["lm"]["backend"] == f"{SerializableCustomLM.__module__}:SerializableCustomLM"
+    assert dumped_state["lm"]["suffix"] == "?"
+
+    new_instance = Predict("input -> output")
+    new_instance.load_state(dumped_state)
+
+    assert isinstance(new_instance.lm, dspy.LM)
+    assert isinstance(new_instance.lm.backend, SerializableCustomLM)
+    assert new_instance.lm.backend.suffix == "?"
+    assert new_instance.lm.dump_state() == dumped_state["lm"]
+
+
+def test_load_state_blocks_unimported_custom_lm_backend_by_default(tmp_path, monkeypatch):
+    backend_module = tmp_path / "temp_custom_backend.py"
+    backend_module.write_text(
+        "import dspy\n"
+        "\n"
+        "class TempBackendLM(dspy.BaseLM):\n"
+        "    def __init__(self, model, suffix='!', **kwargs):\n"
+        "        super().__init__(model, **kwargs)\n"
+        "        self.suffix = suffix\n"
+        "\n"
+        "    def forward(self, prompt=None, messages=None, **kwargs):\n"
+        "        messages, params = self.prepare_request(prompt, messages, **kwargs)\n"
+        "        return f\"temp:{messages[-1]['content']}{self.suffix}\"\n"
+        "\n"
+        "    def dump_state(self):\n"
+        "        return super().dump_state() | {'suffix': self.suffix}\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    lm_state = {
+        "model": "custom/temp",
+        "model_type": "chat",
+        "temperature": 0.2,
+        "max_tokens": 100,
+        "cache": True,
+        "num_retries": 3,
+        "finetuning_model": None,
+        "launch_kwargs": {},
+        "train_kwargs": {},
+        "suffix": "?",
+        "backend": "temp_custom_backend:TempBackendLM",
+    }
+
+    loaded_predict = dspy.Predict("input -> output")
+    with pytest.raises(ValueError, match="Import that package first"):
+        loaded_predict.load_state({"signature": Signature("input -> output").dump_state(), "lm": lm_state})
+
+    loaded_predict.load_state(
+        {"signature": Signature("input -> output").dump_state(), "lm": lm_state},
+        allow_unsafe_lm_state=True,
+    )
+    assert loaded_predict.lm is not None
+    assert loaded_predict.lm.backend_cls.__name__ == "TempBackendLM"
+    assert loaded_predict.lm.backend.suffix == "?"
 
 
 def test_call_method():

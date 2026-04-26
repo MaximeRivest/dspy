@@ -5,7 +5,7 @@ from typing import Any
 
 import litellm
 
-from dspy.clients.base_lm import BaseLM, inspect_history
+from dspy.clients.base_lm import BaseLM, LMResponse, inspect_history
 from dspy.clients.cache import Cache
 from dspy.clients.embedding import Embedder
 from dspy.clients.lm import LM
@@ -115,6 +115,7 @@ disable_litellm_logging()
 
 __all__ = [
     "BaseLM",
+    "LMResponse",
     "LM",
     "Provider",
     "TrainingJob",

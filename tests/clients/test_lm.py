@@ -46,6 +46,92 @@ def make_response(output_blocks):
     )
 
 
+def test_custom_backend_can_return_lm_response_with_metadata():
+    class MetadataLM(dspy.BaseLM):
+        def forward(self, prompt=None, messages=None, **kwargs):
+            return dspy.LMResponse(
+                outputs={"text": "Hi!", "reasoning_content": "The greeting is short."},
+                usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                cost=0.001,
+                model="custom/served-model",
+            )
+
+    lm = MetadataLM("custom/requested-model")
+
+    with track_usage() as usage_tracker:
+        outputs = lm("hello")
+
+    assert outputs == [{"text": "Hi!", "reasoning_content": "The greeting is short."}]
+    assert usage_tracker.get_total_tokens() == {
+        "custom/requested-model": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+    }
+
+    history_entry = lm.history[-1]
+    assert history_entry["usage"] == {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+    assert history_entry["cost"] == 0.001
+    assert history_entry["response_model"] == "custom/served-model"
+
+
+def test_custom_backend_metadata_does_not_leak_into_outputs():
+    class MetadataDictLM(dspy.BaseLM):
+        def forward(self, prompt=None, messages=None, **kwargs):
+            return {
+                "text": "Hi!",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "cost": 0.002,
+                "model": "custom/dict-model",
+                "_hidden_params": {"response_cost": 0.003},
+            }
+
+    lm = MetadataDictLM("custom/requested-model")
+    outputs = lm("hello")
+
+    assert outputs == [{"text": "Hi!"}]
+    assert lm.history[-1]["usage"] == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    assert lm.history[-1]["cost"] == 0.002
+    assert lm.history[-1]["response_model"] == "custom/dict-model"
+
+
+def test_custom_backend_dict_envelope_supports_cache_hits():
+    class CachedMetadataLM(dspy.BaseLM):
+        def forward(self, prompt=None, messages=None, **kwargs):
+            return {
+                "outputs": "Hi!",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "cost": 0.01,
+                "cache_hit": True,
+            }
+
+    lm = CachedMetadataLM("custom/cached-model")
+
+    with track_usage() as usage_tracker:
+        outputs = lm("hello")
+
+    assert outputs == ["Hi!"]
+    assert usage_tracker.get_total_tokens() == {}
+    assert lm.history[-1]["usage"] == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    assert lm.history[-1]["cost"] is None
+
+
+def test_adapters_parse_custom_backend_metadata_response():
+    class ProgramLM(dspy.BaseLM):
+        def forward(self, prompt=None, messages=None, **kwargs):
+            return dspy.LMResponse(
+                outputs="[[ ## answer ## ]]\nParis\n\n[[ ## completed ## ]]",
+                usage={"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+                cost=0.001,
+                model="custom/program-served-model",
+            )
+
+    with dspy.context(lm=ProgramLM("custom/program-model"), track_usage=True):
+        result = dspy.Predict("question -> answer")(question="What is the capital of France?")
+
+    assert result.answer == "Paris"
+    assert result.get_lm_usage() == {
+        "custom/program-model": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}
+    }
+
+
 def test_chat_lms_can_be_queried(litellm_test_server):
     api_base, _ = litellm_test_server
     expected_response = ["Hi!"]

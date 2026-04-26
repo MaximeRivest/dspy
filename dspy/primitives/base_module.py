@@ -256,8 +256,9 @@ class BaseModule:
             path (str): Path to the saved state file, which should be a .json or a .pkl file
             allow_pickle (bool): If True, allow loading .pkl files, which can run arbitrary code.
                 This is dangerous and should only be used if you are sure about the source of the file and in a trusted environment.
-            allow_unsafe_lm_state (bool): If True, preserves unsafe LM endpoint keys (e.g.,
-                `api_base`, `base_url`, and `model_list`) from loaded state. Enable only for trusted files.
+            allow_unsafe_lm_state (bool): If True, preserves unsafe LM state such as
+                endpoint keys (`api_base`, `base_url`, and `model_list`) and custom
+                backend import paths from loaded state. Enable only for trusted files.
         """
         path = Path(path)
 

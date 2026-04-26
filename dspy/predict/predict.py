@@ -1,5 +1,6 @@
 import logging
 import random
+import sys
 from typing import Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel
@@ -20,11 +21,22 @@ from dspy.utils.constants import IS_TYPE_UNDEFINED
 logger = logging.getLogger(__name__)
 
 UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
+_CUSTOM_BACKEND_KEY = "backend"
 
 
 def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
     if allow_unsafe_lm_state:
         return lm_state
+
+    backend_path = lm_state.get(_CUSTOM_BACKEND_KEY)
+    if isinstance(backend_path, str):
+        module_name, _, _ = backend_path.partition(":")
+        if module_name and module_name not in sys.modules:
+            raise ValueError(
+                "Loading LM state for a custom backend would import code from "
+                f"{module_name!r}. Import that package first, or pass "
+                "allow_unsafe_lm_state=True for trusted files."
+            )
 
     unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))
 
@@ -94,8 +106,9 @@ class Predict(Module, Parameter):
 
         Args:
             state: The saved state of a `Predict` object.
-            allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from
-                serialized LM state. Enable only when loading trusted files.
+            allow_unsafe_lm_state: If True, preserves unsafe LM state such as
+                `api_base`, `base_url`, `model_list`, and custom backend import
+                paths. Enable only when loading trusted files.
 
         Returns:
             Self to allow method chaining.
