@@ -72,6 +72,53 @@ def test_custom_backend_can_return_lm_response_with_metadata():
     assert history_entry["response_model"] == "custom/served-model"
 
 
+def test_lm_routes_builtin_model_handles():
+    local_lm = dspy.LM("local:Qwen/Qwen2.5-7B-Instruct")
+    assert isinstance(local_lm.backend, dspy.LocalLM)
+    assert local_lm.model == "openai/local:Qwen/Qwen2.5-7B-Instruct"
+
+    openai_compatible_lm = dspy.LM(
+        "openai-compatible:llama3.2",
+        base_url="http://localhost:11434/v1",
+    )
+    assert isinstance(openai_compatible_lm.backend, dspy.OpenAICompatibleLM)
+    assert openai_compatible_lm.model == "llama3.2"
+
+    databricks_lm = dspy.LM("databricks:my_endpoint")
+    assert isinstance(databricks_lm.backend, dspy.DatabricksLM)
+    assert databricks_lm.model == "databricks/my_endpoint"
+
+
+def test_lm_facade_delegates_lifecycle_to_backend():
+    class LifecycleLM(dspy.BaseLM):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.launched = False
+            self.killed = False
+
+        def forward(self, prompt=None, messages=None, **kwargs):
+            return "ok"
+
+        def launch(self, launch_kwargs=None):
+            self.launched = True
+
+        def kill(self, launch_kwargs=None):
+            self.killed = True
+
+    def route_lifecycle(model, *args, **kwargs):
+        return LifecycleLM if model == "test/lifecycle" else None
+
+    dspy.register_lm_backend(route_lifecycle)
+    try:
+        lm = dspy.LM("test/lifecycle")
+        lm.launch()
+        lm.kill()
+        assert lm.backend.launched is True
+        assert lm.backend.killed is True
+    finally:
+        dspy.unregister_lm_backend(route_lifecycle)
+
+
 def test_custom_backend_metadata_does_not_leak_into_outputs():
     class MetadataDictLM(dspy.BaseLM):
         def forward(self, prompt=None, messages=None, **kwargs):

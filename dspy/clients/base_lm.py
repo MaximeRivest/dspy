@@ -82,8 +82,10 @@ class BaseLM:
 
     Subclass `BaseLM` when you want DSPy modules to call a model that is not
     handled by the built-in `dspy.LM` router. In most cases, implement only
-    `forward()`. `BaseLM` supplies `__call__`, `acall`, callbacks, history,
-    copying, and provider lifecycle hooks.
+    `forward()`. If the LM can manage resources or train itself, implement
+    `launch()`, `kill()`, `finetune()`, or `reinforce()` on the LM as well.
+    `BaseLM` supplies `__call__`, `acall`, callbacks, history, copying, and a
+    legacy `provider=` compatibility path.
 
     The easiest `forward()` return value is the model text as a string. For
     multiple generations, return a list of strings. When you need output-level
@@ -210,8 +212,10 @@ class BaseLM:
             callbacks: Per-LM callbacks. Global callbacks still come from
                 `dspy.settings`.
             num_retries: Retry count for backends that support retrying.
-            provider: Provider object for launch, kill, fine-tune, and
-                reinforcement-learning hooks.
+            provider: Legacy lifecycle adapter for launch, kill, fine-tune,
+                and reinforcement-learning hooks. New integrations should
+                usually implement those methods directly on the `BaseLM`
+                subclass instead of exposing a provider.
             finetuning_model: Optional model name to fine-tune instead of
                 `model`.
             launch_kwargs: Default launch arguments used by `launch()`.
@@ -669,12 +673,22 @@ class BaseLM:
         pretty_print_history(self.history, n, file=file)
 
     def launch(self, launch_kwargs: dict[str, Any] | None = None):
-        """Launch the model through its provider, if the provider supports launching."""
+        """Start resources needed by this LM, if any.
+
+        API-backed LMs usually leave this as a no-op. Local or server-backed
+        LMs can override it directly. The base method delegates to the legacy
+        `provider=` adapter for backward compatibility.
+        """
         launch_kwargs = {**self.launch_kwargs, **(launch_kwargs or {})}
         self.provider.launch(self, launch_kwargs)
 
     def kill(self, launch_kwargs: dict[str, Any] | None = None):
-        """Stop the model through its provider, if the provider supports launching."""
+        """Release resources owned by this LM, if any.
+
+        API-backed LMs usually leave this as a no-op. Local or server-backed
+        LMs can override it directly. The base method delegates to the legacy
+        `provider=` adapter for backward compatibility.
+        """
         launch_kwargs = {**self.launch_kwargs, **(launch_kwargs or {})}
         self.provider.kill(self, launch_kwargs)
 
@@ -684,12 +698,17 @@ class BaseLM:
         train_data_format: TrainDataFormat | None,
         train_kwargs: dict[str, Any] | None = None,
     ) -> TrainingJob:
-        """Start a provider-backed fine-tuning job for this LM."""
+        """Start a fine-tuning job that returns a replacement LM.
+
+        Override this method on trainable LM implementations. The base method
+        delegates to the legacy `provider=` adapter for backward compatibility.
+        `job.result()` must be either a `BaseLM` or an exception.
+        """
         if not self.provider.finetunable:
             raise ValueError(
-                f"Provider {self.provider} does not support fine-tuning, please specify your provider by explicitly "
-                "setting `provider` when creating the `dspy.LM` instance. For example, "
-                "`dspy.LM('openai/gpt-4.1-mini-2025-04-14', provider=dspy.OpenAIProvider())`."
+                f"{type(self).__name__} can generate but does not support fine-tuning. "
+                "To make an LM trainable, implement `finetune()` on the `BaseLM` subclass. "
+                "Legacy integrations may still pass `provider=...`, but `provider` does not route inference."
             )
 
         def thread_function_wrapper():
@@ -710,8 +729,16 @@ class BaseLM:
         return job
 
     def reinforce(self, train_kwargs) -> ReinforceJob:
-        """Start a provider-backed reinforcement-learning job for this LM."""
-        err = f"Provider {self.provider} does not implement the reinforcement learning interface."
+        """Start a reinforcement-learning job for this LM.
+
+        Override this method on LM implementations that support live RL
+        training. The base method delegates to the legacy `provider=` adapter
+        for backward compatibility.
+        """
+        err = (
+            f"{type(self).__name__} does not support reinforcement learning. "
+            "Implement `reinforce()` on the `BaseLM` subclass, or use a legacy provider that supports it."
+        )
         assert self.provider.reinforceable, err
 
         job = self.provider.ReinforceJob(lm=self, train_kwargs=train_kwargs)
@@ -736,18 +763,19 @@ class BaseLM:
             job.set_result(err)
 
     def infer_provider(self) -> Provider:
-        """Return the provider used for lifecycle hooks.
+        """Return the legacy lifecycle adapter for this LM.
 
-        The base implementation returns a no-op provider. Override this in
-        backends that know how to launch, stop, fine-tune, or reinforce their
-        models.
+        The base implementation returns a no-op adapter. Prefer overriding
+        `launch()`, `kill()`, `finetune()`, or `reinforce()` directly on new
+        `BaseLM` subclasses. Override this only when adapting older provider
+        code.
 
         Examples:
-        Use the default no-op provider:
-        ```python
-        lm = EchoLM("echo")
-        assert lm.provider.finetunable is False
-        ```
+            Default no-op adapter:
+            ```python
+            lm = EchoLM("echo")
+            assert lm.provider.finetunable is False
+            ```
         """
         return Provider()
 

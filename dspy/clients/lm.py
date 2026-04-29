@@ -1,9 +1,11 @@
-"""Create DSPy language models through the stable `dspy.LM` entry point.
+"""Create model handles through the stable `dspy.LM` entry point.
 
-This module keeps `dspy.LM(...)` as the public constructor while allowing the
-implementation to route to concrete `BaseLM` backends. By default, `LM` uses the
-LiteLLM backend. Community libraries can register resolvers that select their
-own `BaseLM` subclasses for particular model names or constructor arguments.
+`dspy.LM(...)` is the convenient constructor for complete `BaseLM`
+implementations. The selected implementation must generate text and may also
+support `launch()`, `kill()`, `finetune()`, or `reinforce()`. By default, DSPy
+uses the LiteLLM implementation. Community libraries can register resolvers
+that select their own `BaseLM` subclasses for model names or constructor
+arguments.
 
 Examples:
 Default LiteLLM-backed LM:
@@ -155,12 +157,12 @@ def __getattr__(name: str):
 
 
 def register_lm_backend(resolver: LMBackendResolver, *, prepend: bool = True) -> LMBackendResolver:
-    """Register a resolver that routes `dspy.LM(...)` to a `BaseLM` subclass.
+    """Register a resolver that routes `dspy.LM(...)` to an LM implementation.
 
     Resolver functions receive the same constructor arguments passed to `LM`.
-    Return a `BaseLM` subclass to handle the request, or `None` to let later
-    resolvers try. Community packages can call this at import time to plug their
-    own backend into the public `dspy.LM` constructor.
+    Return a `BaseLM` subclass to handle the model, or `None` to let later
+    resolvers try. Community packages can call this at import time to plug a
+    complete model handle into the public `dspy.LM` constructor.
 
     Args:
         resolver: Callable returning a `BaseLM` subclass or `None`.
@@ -252,7 +254,8 @@ def unregister_lm_backend(resolver: LMBackendResolver) -> None:
 def _validate_backend_cls(backend_cls: type[BaseLM]) -> type[BaseLM]:
     if not isinstance(backend_cls, type) or not issubclass(backend_cls, BaseLM):
         raise TypeError(f"LM backend must be a BaseLM subclass, but received {backend_cls!r}.")
-    if backend_cls is LM:
+    lm_cls = globals().get("LM")
+    if lm_cls is not None and issubclass(backend_cls, lm_cls):
         raise TypeError("LM cannot route to itself; return a concrete BaseLM subclass instead.")
     return backend_cls
 
@@ -296,20 +299,43 @@ def _configure_backend_for_lm_module(backend: BaseLM) -> None:
         configure(module_name=__name__)
 
 
-class LM(BaseLM):
-    """Create a language model while preserving the `dspy.LM` type.
+def _route_builtin_lm(model: str, *args: Any, **kwargs: Any) -> type[BaseLM] | None:
+    if model.startswith(("local:", "openai/local:", "huggingface/")):
+        from dspy.clients.lm_local import LocalLM
 
-    `LM` is always the public wrapper type. It stores the selected backend in
-    `lm.backend`, delegates inference to that backend, and exposes provenance in
-    `lm.backend_provenance`. The default backend is `LiteLLMLM`.
+        return LocalLM
+    if model.startswith("databricks:"):
+        from dspy.clients.databricks import DatabricksLM
+
+        return DatabricksLM
+    if model.startswith("openai-compatible:"):
+        from dspy.clients.openai_compatible import OpenAICompatibleLM
+
+        return OpenAICompatibleLM
+    return None
+
+
+register_lm_backend(_route_builtin_lm, prepend=False)
+
+
+class LM(BaseLM):
+    """Create a model handle that DSPy programs can use.
+
+    `LM` keeps the convenient `dspy.LM(...)` entry point. It resolves the model
+    name to a concrete `BaseLM` implementation, stores it in `lm.backend`, and
+    delegates generation plus optional lifecycle and training methods to that
+    implementation. The default implementation is `LiteLLMLM`.
 
     Args:
-        model: Model identifier such as `"openai/gpt-4o-mini"`.
-        *args: Positional arguments passed to the selected backend.
-        backend: Optional explicit `BaseLM` subclass or backend path string.
-            When set, this bypasses registered resolvers.
-        **kwargs: Keyword arguments passed to the selected backend, such as
-            `temperature`, `max_tokens`, `cache`, or provider-specific options.
+        model: Model identifier such as `"openai/gpt-4o-mini"`,
+            `"local:Qwen/Qwen2.5-7B-Instruct"`, or
+            `"openai-compatible:llama3.2"`.
+        *args: Positional arguments passed to the selected implementation.
+        backend: Optional explicit `BaseLM` subclass or import path. When set,
+            this bypasses registered resolvers.
+        **kwargs: Keyword arguments passed to the selected implementation, such
+            as `temperature`, `max_tokens`, `cache`, `base_url`, or
+            implementation-specific options.
 
     Examples:
     Configure the default LiteLLM-backed LM:
@@ -536,6 +562,22 @@ class LM(BaseLM):
 
     def _process_lm_response(self, response, prompt, messages, **kwargs):
         return self.backend._process_lm_response(response, prompt, messages, **kwargs)
+
+    def launch(self, launch_kwargs: dict[str, Any] | None = None):
+        """Start resources needed by the selected LM implementation."""
+        return self.backend.launch(launch_kwargs)
+
+    def kill(self, launch_kwargs: dict[str, Any] | None = None):
+        """Release resources owned by the selected LM implementation."""
+        return self.backend.kill(launch_kwargs)
+
+    def finetune(self, *args: Any, **kwargs: Any):
+        """Fine-tune the selected LM implementation and return its job."""
+        return self.backend.finetune(*args, **kwargs)
+
+    def reinforce(self, *args: Any, **kwargs: Any):
+        """Start reinforcement training on the selected LM implementation."""
+        return self.backend.reinforce(*args, **kwargs)
 
     def copy(self, **kwargs):
         backend_copy = self.backend.copy(**kwargs)

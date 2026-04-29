@@ -7,7 +7,7 @@ from typing import Any, Callable, Literal
 from dspy.adapters.base import Adapter
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.adapters.xml_adapter import XMLAdapter
-from dspy.clients.lm import LM
+from dspy.clients.base_lm import BaseLM
 from dspy.clients.utils_finetune import GRPOGroup, GRPOStatus, TrainDataFormat
 from dspy.dsp.utils.settings import settings
 from dspy.evaluate.evaluate import Evaluate
@@ -28,8 +28,8 @@ class GRPO(FinetuneTeleprompter):
         self,
         metric: Callable | None = None,
         multitask: bool = True,
-        train_kwargs: dict[str, Any] | dict[LM, dict[str, Any]] | None = None,
-        adapter: Adapter | dict[LM, Adapter] | None = None,
+        train_kwargs: dict[str, Any] | dict[BaseLM, dict[str, Any]] | None = None,
+        adapter: Adapter | dict[BaseLM, Adapter] | None = None,
         exclude_demos: bool = False,
         num_threads: int = 6,
         num_train_steps: int = 100,
@@ -47,7 +47,7 @@ class GRPO(FinetuneTeleprompter):
         super().__init__(train_kwargs=train_kwargs)
         self.metric = metric
         self.multitask = multitask
-        self.adapter: dict[LM, Adapter] = self.convert_to_lm_dict(adapter)
+        self.adapter: dict[BaseLM, Adapter] = self.convert_to_lm_dict(adapter)
         self.exclude_demos = exclude_demos
         self.num_threads = num_threads
         self.num_train_steps = num_train_steps

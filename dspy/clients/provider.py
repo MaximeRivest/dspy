@@ -178,35 +178,30 @@ class ReinforceJob:
 
 
 class Provider:
-    """Base class for language model providers.
+    """Adapt legacy LM lifecycle code to a `BaseLM` object.
 
-    A provider is responsible for managing language model instances, including
-    launching, killing, and fine-tuning models. Subclasses should implement
-    provider-specific logic for these operations.
+    `Provider` is kept for existing integrations that pass `provider=` to
+    `dspy.LM`. It does not route inference. New integrations should usually
+    subclass `BaseLM` and implement `forward()`, plus optional `launch()`,
+    `kill()`, `finetune()`, or `reinforce()` methods directly on the LM.
 
     Attributes:
-        finetunable: Whether this provider supports fine-tuning.
-        reinforceable: Whether this provider supports reinforcement learning.
-        TrainingJob: The class to use for training jobs (subclass of `TrainingJob`).
-        ReinforceJob: The class to use for reinforcement learning jobs (subclass of `ReinforceJob`).
+        finetunable: Whether this adapter can fine-tune the LM.
+        reinforceable: Whether this adapter can run reinforcement learning.
+        TrainingJob: The job class returned by fine-tuning.
+        ReinforceJob: The job class returned by reinforcement learning.
 
     Examples:
+        Prefer a direct LM for new integrations:
         ```python
-        from dspy.clients.provider import Provider
+        import dspy
 
-        class MyProvider(Provider):
-            def __init__(self):
-                super().__init__()
-                self.finetunable = True
+        class MyLM(dspy.BaseLM):
+            def forward(self, prompt=None, messages=None, **kwargs):
+                ...
 
-            @staticmethod
-            def is_provider_model(model: str) -> bool:
-                return model.startswith("myprovider/")
-
-            @staticmethod
-            def finetune(job, model, train_data, train_data_format, train_kwargs=None):
-                # Implement fine-tuning logic
-                return "fine_tuned_model_id"
+            def finetune(self, train_data, train_data_format=None, train_kwargs=None):
+                ...
         ```
     """
 

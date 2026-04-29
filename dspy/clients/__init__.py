@@ -7,8 +7,12 @@ import litellm
 
 from dspy.clients.base_lm import BaseLM, LMResponse, inspect_history
 from dspy.clients.cache import Cache
+from dspy.clients.databricks import DatabricksLM
 from dspy.clients.embedding import Embedder
-from dspy.clients.lm import LM
+from dspy.clients.litellmlm import LiteLLMLM
+from dspy.clients.lm import LM, register_lm_backend, unregister_lm_backend
+from dspy.clients.lm_local import LocalLM
+from dspy.clients.openai_compatible import OpenAICompatibleLM
 from dspy.clients.provider import Provider, TrainingJob
 
 logger = logging.getLogger(__name__)
@@ -117,6 +121,12 @@ __all__ = [
     "BaseLM",
     "LMResponse",
     "LM",
+    "LiteLLMLM",
+    "LocalLM",
+    "DatabricksLM",
+    "OpenAICompatibleLM",
+    "register_lm_backend",
+    "unregister_lm_backend",
     "Provider",
     "TrainingJob",
     "inspect_history",

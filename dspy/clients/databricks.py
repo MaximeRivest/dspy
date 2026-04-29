@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import orjson
 import requests
 
+from dspy.clients.litellmlm import LiteLLMLM
 from dspy.clients.provider import Provider, TrainingJob
 from dspy.clients.utils_finetune import TrainDataFormat, get_finetune_directory
 
@@ -14,6 +15,50 @@ if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
+
+
+def _as_databricks_model(model: str) -> str:
+    if model.startswith("databricks:"):
+        return f"databricks/{model.removeprefix('databricks:')}"
+    return model
+
+
+class DatabricksLM(LiteLLMLM):
+    """Call and fine-tune Databricks-hosted language models.
+
+    `DatabricksLM` is a model handle for Databricks serving endpoints. It
+    generates through the Databricks OpenAI-compatible route and can fine-tune
+    through Databricks model training when `train_kwargs` include the required
+    Databricks paths and registration target.
+
+    Args:
+        model: Databricks model or endpoint name. `databricks:` and
+            `databricks/` prefixes are accepted.
+        **kwargs: LM parameters such as `temperature`, `max_tokens`,
+            `launch_kwargs`, and `train_kwargs`.
+
+    Examples:
+        Explicit Databricks LM:
+        ```python
+        import dspy
+
+        lm = dspy.DatabricksLM("databricks:my_endpoint")
+        dspy.configure(lm=lm)
+        ```
+
+        Through the `dspy.LM` resolver:
+        ```python
+        import dspy
+
+        lm = dspy.LM("databricks:my_endpoint")
+        ```
+    """
+
+    def __init__(self, model: str, *, provider: Provider | None = None, **kwargs):
+        super().__init__(model=_as_databricks_model(model), provider=provider or DatabricksProvider(), **kwargs)
+
+    def dump_state(self):
+        return super().dump_state() | {"backend": "dspy.clients.databricks:DatabricksLM"}
 
 
 class TrainingJobDatabricks(TrainingJob):

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import requests
 
+from dspy.clients.litellmlm import LiteLLMLM
 from dspy.clients.provider import Provider, TrainingJob
 from dspy.clients.utils_finetune import TrainDataFormat, save_data
 
@@ -17,6 +18,61 @@ if TYPE_CHECKING:
     from dspy.clients.lm import LM
 
 logger = logging.getLogger(__name__)
+
+
+def _as_openai_local_model(model: str) -> str:
+    if model.startswith("openai/local:"):
+        return model
+    if model.startswith("openai/"):
+        return model
+    if model.startswith("local:"):
+        return f"openai/{model}"
+    if model.startswith("huggingface/"):
+        return f"openai/local:{model[len('huggingface/') :]}"
+    return f"openai/local:{model}"
+
+
+class LocalLM(LiteLLMLM):
+    """Run a local chat model through an OpenAI-compatible server.
+
+    `LocalLM` is a model handle: it can generate, launch a local server, stop
+    that server, and fine-tune locally when the training dependencies are
+    installed. Today the built-in launcher uses SGLang and the built-in trainer
+    uses TRL.
+
+    Args:
+        model: Local model path or Hugging Face model name. `local:`,
+            `huggingface/`, and `openai/local:` prefixes are accepted.
+        server: Local serving engine. Only `"sglang"` is currently built in.
+        **kwargs: LM parameters such as `temperature`, `max_tokens`,
+            `launch_kwargs`, and `train_kwargs`.
+
+    Examples:
+        Explicit local LM:
+        ```python
+        import dspy
+
+        lm = dspy.LocalLM("Qwen/Qwen2.5-7B-Instruct")
+        lm.launch()
+        dspy.configure(lm=lm)
+        ```
+
+        Through the `dspy.LM` resolver:
+        ```python
+        import dspy
+
+        lm = dspy.LM("local:Qwen/Qwen2.5-7B-Instruct")
+        ```
+    """
+
+    def __init__(self, model: str, *, server: str = "sglang", provider: Provider | None = None, **kwargs):
+        if server != "sglang":
+            raise ValueError("Only server='sglang' is currently supported by dspy.LocalLM.")
+        self.server = server
+        super().__init__(model=_as_openai_local_model(model), provider=provider or LocalProvider(), **kwargs)
+
+    def dump_state(self):
+        return super().dump_state() | {"backend": "dspy.clients.lm_local:LocalLM", "server": self.server}
 
 
 class LocalProvider(Provider):
