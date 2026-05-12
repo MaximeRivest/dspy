@@ -6,8 +6,25 @@ from dspy.teleprompt import *
 
 from dspy.evaluate import Evaluate  # isort: skip
 from dspy.clients import *  # isort: skip
+from dspy.clients.language_models import System, Developer, User, Assistant, ToolCall, ToolResult, LMMessage  # isort: skip
 from dspy.adapters import Adapter, ChatAdapter, JSONAdapter, XMLAdapter, TwoStepAdapter, Image, Audio, File, History, Type, Tool, ToolCalls, Code, Reasoning  # isort: skip
-from dspy.utils.exceptions import ContextWindowExceededError
+from dspy.utils.exceptions import (
+    ContextWindowExceededError,
+    DSPyError,
+    LMAuthError,
+    LMBillingError,
+    LMConfigurationError,
+    LMError,
+    LMInvalidRequestError,
+    LMNotConfiguredError,
+    LMProviderError,
+    LMRateLimitError,
+    LMServerError,
+    LMTimeoutError,
+    LMTransportError,
+    LMUnsupportedFeatureError,
+    LMUnsupportedModelError,
+)
 from dspy.utils.logging_utils import configure_dspy_loggers, disable_logging, enable_logging
 from dspy.utils.asyncify import asyncify
 from dspy.utils.syncify import syncify

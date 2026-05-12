@@ -5,11 +5,48 @@ from typing import Any
 
 import litellm
 
+from dspy.clients import language_models as _language_models
 from dspy.clients.base_lm import BaseLM, inspect_history
 from dspy.clients.cache import Cache
 from dspy.clients.embedding import Embedder
-from dspy.clients.lm import LM
+from dspy.clients.language_models import __all__ as _language_model_all
+from dspy.clients.language_models.router import LMRouter, register_lm_backend
+from dspy.clients.lm import LM as LegacyLM
 from dspy.clients.provider import Provider, TrainingJob
+
+_LANGUAGE_MODEL_LAZY_NAMES = {
+    "LiteLLMChatLM",
+    "LiteLLMTextLM",
+    "LiteLLMResponsesLM",
+    "LM15LM",
+    "CompletionLM",
+    "ResponsesLM",
+}
+_LANGUAGE_MODEL_CLIENT_EXPORTS = tuple(name for name in _language_model_all if name != "LM15LM")
+for _name in _LANGUAGE_MODEL_CLIENT_EXPORTS:
+    if _name not in _LANGUAGE_MODEL_LAZY_NAMES:
+        globals()[_name] = getattr(_language_models, _name)
+
+
+def __getattr__(name: str):
+    if name in _LANGUAGE_MODEL_LAZY_NAMES:
+        return getattr(_language_models, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+def LM(*args: Any, **kwargs: Any):
+    """Create DSPy's public language model.
+
+    By default this returns the existing LiteLLM-backed legacy LM. Set
+    `dspy.configure(experimental_lm=True)` or use
+    `dspy.context(experimental_lm=True)` to route through the normalized
+    `LanguageModel` router.
+    """
+    from dspy.dsp.utils import settings
+
+    if settings.get("experimental_lm", False):
+        return LMRouter(*args, **kwargs)
+    return LegacyLM(*args, **kwargs)
+
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +153,8 @@ disable_litellm_logging()
 __all__ = [
     "BaseLM",
     "LM",
+    "LMRouter",
+    "register_lm_backend",
     "Provider",
     "TrainingJob",
     "inspect_history",
@@ -123,4 +162,5 @@ __all__ = [
     "enable_litellm_logging",
     "disable_litellm_logging",
     "configure_cache",
+    *_LANGUAGE_MODEL_CLIENT_EXPORTS,
 ]
