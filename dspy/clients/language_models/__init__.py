@@ -1,8 +1,18 @@
 """Normalized language model implementations and types."""
 
 from dspy.clients.language_models.base import LanguageModel, LMCapabilities
-from dspy.clients.language_models.router import LM, LMRouter, register_lm_backend
+from dspy.clients.language_models.factories import (
+    litellm_chat_lm,
+    litellm_responses_lm,
+    litellm_text_lm,
+    lm15_lm,
+    openai_responses_lm,
+)
 from dspy.clients.language_models.features import FeatureStatus, LMFeatureReporter, LMRequestSupport, LMSupportIssue
+from dspy.clients.language_models.provider import ProviderRequest
+from dspy.clients.language_models.router import LM, LMRouter, register_lm_backend
+from dspy.clients.language_models.sdk import SDKLanguageModel
+from dspy.clients.language_models.support import ImageSupport, LMSupport, ToolSupport
 from dspy.clients.language_models.types import (
     Assistant,
     AsyncLMStream,
@@ -51,44 +61,14 @@ from dspy.clients.language_models.types import (
     User,
 )
 
-
-def __getattr__(name: str):
-    if name in {"LiteLLMChatLM", "LiteLLMTextLM", "LiteLLMResponsesLM"}:
-        from dspy.clients.language_models.litellm import LiteLLMChatLM, LiteLLMResponsesLM, LiteLLMTextLM
-
-        return {
-            "LiteLLMChatLM": LiteLLMChatLM,
-            "LiteLLMTextLM": LiteLLMTextLM,
-            "LiteLLMResponsesLM": LiteLLMResponsesLM,
-        }[name]
-    if name == "LM15LM":
-        from dspy.clients.language_models.lm15 import LM15LM
-
-        return LM15LM
-    if name in {"OpenAIChatLM", "CompletionLM", "OpenAIResponsesLM", "ResponsesLM", "OpenAITextLM", "TextCompletionLM"}:
-        from dspy.clients.language_models.openai_format import (
-            CompletionLM,
-            OpenAIChatLM,
-            OpenAIResponsesLM,
-            OpenAITextLM,
-            ResponsesLM,
-            TextCompletionLM,
-        )
-
-        return {
-            "OpenAIChatLM": OpenAIChatLM,
-            "CompletionLM": CompletionLM,
-            "OpenAIResponsesLM": OpenAIResponsesLM,
-            "ResponsesLM": ResponsesLM,
-            "OpenAITextLM": OpenAITextLM,
-            "TextCompletionLM": TextCompletionLM,
-        }[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 __all__ = [
     "LanguageModel",
     "LMCapabilities",
+    "ProviderRequest",
+    "SDKLanguageModel",
+    "LMSupport",
+    "ImageSupport",
+    "ToolSupport",
     "LM",
     "LMRouter",
     "register_lm_backend",
@@ -96,16 +76,11 @@ __all__ = [
     "LMFeatureReporter",
     "LMRequestSupport",
     "LMSupportIssue",
-    "LiteLLMChatLM",
-    "LiteLLMTextLM",
-    "LiteLLMResponsesLM",
-    "LM15LM",
-    "OpenAIChatLM",
-    "CompletionLM",
-    "OpenAIResponsesLM",
-    "ResponsesLM",
-    "OpenAITextLM",
-    "TextCompletionLM",
+    "openai_responses_lm",
+    "litellm_chat_lm",
+    "litellm_text_lm",
+    "litellm_responses_lm",
+    "lm15_lm",
     "LMBasePart",
     "LMTextPart",
     "LMImagePart",

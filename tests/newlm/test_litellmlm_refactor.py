@@ -9,37 +9,31 @@ from dspy.clients.language_models.litellm import (
 )
 
 
-def test_lm_routes_to_protocol_specific_litellm_classes():
+def test_lm_routes_to_protocol_specific_litellm_factories():
     with dspy.context(experimental_lm=True):
-        assert isinstance(dspy.LM("test/model", cache=False).backend, dspy.LiteLLMChatLM)
-        assert isinstance(dspy.LM("test/model", model_type="text", cache=False).backend, dspy.LiteLLMTextLM)
-        assert isinstance(dspy.LM("test/model", model_type="responses", cache=False).backend, dspy.LiteLLMResponsesLM)
+        assert dspy.LM("test/model", cache=False).backend.metadata["protocol"] == "openai_chat"
+        assert dspy.LM("test/model", model_type="text", cache=False).backend.metadata["protocol"] == "openai_text"
+        assert dspy.LM("test/model", model_type="responses", cache=False).backend.metadata["protocol"] == "openai_responses"
 
 
-def test_litellm_classes_subclass_canonical_openai_protocol_classes():
-    assert issubclass(dspy.LiteLLMChatLM, dspy.OpenAIChatLM)
-    assert issubclass(dspy.LiteLLMResponsesLM, dspy.OpenAIResponsesLM)
-    assert issubclass(dspy.LiteLLMTextLM, dspy.OpenAITextLM)
+def test_litellm_factories_expose_provider_request_mapping():
+    request = dspy.litellm_chat_lm("test/model", cache=False).explain_provider_request("hello")
+
+    assert isinstance(request, dspy.ProviderRequest)
+    assert request.kwargs["messages"] == [{"role": "user", "content": "hello"}]
 
 
-def test_litellm_capabilities_are_model_specific_hints(monkeypatch):
-    monkeypatch.setattr("litellm.supports_function_calling", lambda **kwargs: True)
-    monkeypatch.setattr("litellm.supports_reasoning", lambda model: False)
-    monkeypatch.setattr("litellm.supports_response_schema", lambda **kwargs: True)
-    monkeypatch.setattr("litellm.supports_vision", lambda **kwargs: False)
-    monkeypatch.setattr("litellm.supports_audio_input", lambda **kwargs: False)
+def test_litellm_support_is_explicit_protocol_metadata():
+    lm = dspy.litellm_chat_lm("test/model", cache=False)
 
-    capabilities = dspy.LiteLLMChatLM("test/model", cache=False).capabilities
-
-    assert capabilities.function_calling is True
-    assert capabilities.reasoning is False
-    assert capabilities.response_schema is True
-    assert capabilities.input_image is False
-    assert capabilities.input_audio is False
+    assert lm.support.tools.schemas is True
+    assert lm.support.response_schema is True
+    assert lm.support.images is not None
+    assert lm.metadata == {"provider": "litellm", "protocol": "openai_chat", "num_retries": 3}
 
 
 def test_litellm_text_lm_reports_text_only_request_support():
-    lm = dspy.LiteLLMTextLM("test/model", cache=False)
+    lm = dspy.litellm_text_lm("test/model", cache=False)
 
     assert lm.features.request.text
     assert lm.features.request.input_image.status == "unsupported"
@@ -54,10 +48,10 @@ def test_litellm_text_lm_reports_text_only_request_support():
 
 
 def test_litellm_chat_maps_file_url_without_empty_file_block():
-    lm = dspy.LiteLLMChatLM("test/model", cache=False)
+    lm = dspy.litellm_chat_lm("test/model", cache=False)
     request = lm.normalize_request(dspy.User("read", dspy.LMFilePart(url="https://example.com/a.pdf", filename="a.pdf")))
 
-    provider_request = lm._to_chat_request(request)
+    provider_request = lm.explain_provider_request(request=request).kwargs
 
     file_block = provider_request["messages"][0]["content"][1]
     assert file_block == {
@@ -67,24 +61,24 @@ def test_litellm_chat_maps_file_url_without_empty_file_block():
 
 
 def test_litellm_chat_maps_single_allowed_tool_choice():
-    lm = dspy.LiteLLMChatLM("test/model", cache=False)
+    lm = dspy.litellm_chat_lm("test/model", cache=False)
     request = lm.normalize_request("use the tool", tool_choice={"mode": "required", "allowed": ["search"]})
 
-    provider_request = lm._to_chat_request(request)
+    provider_request = lm.explain_provider_request(request=request).kwargs
 
     assert provider_request["tool_choice"] == {"type": "function", "function": {"name": "search"}}
 
 
 def test_litellm_chat_rejects_ambiguous_allowed_tool_choice():
-    lm = dspy.LiteLLMChatLM("test/model", cache=False)
+    lm = dspy.litellm_chat_lm("test/model", cache=False)
     request = lm.normalize_request("use tools", tool_choice={"mode": "required", "allowed": ["a", "b"]})
 
     with pytest.raises(ValueError, match="single allowed tool"):
-        lm._to_chat_request(request)
+        lm.explain_provider_request(request=request)
 
 
 def test_litellm_chat_reports_streaming_and_output_artifact_hooks():
-    lm = dspy.LiteLLMChatLM("test/model", cache=False)
+    lm = dspy.litellm_chat_lm("test/model", cache=False)
 
     assert lm.features.streaming.status == "inferred"
     assert lm.features.async_streaming.status == "inferred"
@@ -96,35 +90,18 @@ def test_litellm_chat_reports_streaming_and_output_artifact_hooks():
 
 
 def test_litellm_maps_prompt_cache_to_provider_kwargs():
-    lm = dspy.LiteLLMChatLM("test/model", cache=False)
+    lm = dspy.litellm_chat_lm("test/model", cache=False)
     request = lm.normalize_request("hello", prompt_cache=True, prompt_cache_key="prefix-1")
 
-    provider_request = lm._to_chat_request(request)
+    provider_request = lm.explain_provider_request(request=request).kwargs
 
     assert provider_request["prompt_cache_key"] == "prefix-1"
 
 
-def test_litellm_maps_output_artifact_and_refusal_parts():
-    lm = dspy.LiteLLMChatLM("test/model", cache=False)
-
-    assert lm.map_response_output_image({"url": "https://example.com/image.png"}) == dspy.LMImagePart(
-        url="https://example.com/image.png",
-        media_type="image/png",
-    )
-    assert lm.map_response_output_audio({"data": "audio-bytes", "media_type": "audio/wav"}) == dspy.LMAudioPart(
-        data="audio-bytes",
-        media_type="audio/wav",
-    )
-    assert lm.map_response_output_file({"file_id": "file_1", "filename": "paper.pdf"}) == dspy.LMFilePart(
-        file_id="file_1",
-        filename="paper.pdf",
-    )
-    assert lm.map_response_refusal({"refusal": "I cannot."}) == dspy.LMRefusalPart(text="I cannot.")
-
-
 def test_litellm_responses_preserves_provider_tool_call_metadata():
-    lm = dspy.LiteLLMResponsesLM("test/model", cache=False)
-    part = lm.map_response_tool_calls(
+    from dspy.clients.language_models.openai_format import _responses_function_call_to_part
+
+    part = _responses_function_call_to_part(
         {
             "type": "function_call",
             "id": "item_1",
@@ -276,8 +253,8 @@ def test_normalized_litellm_cache_ignores_credentials_in_request_cache_key(tmp_p
 
         monkeypatch.setattr("litellm.completion", fake_completion)
 
-        dspy.LiteLLMChatLM("test/model", api_key="first")("hello")
-        second = dspy.LiteLLMChatLM("test/model", api_key="second")("hello")
+        dspy.litellm_chat_lm("test/model", api_key="first")("hello")
+        second = dspy.litellm_chat_lm("test/model", api_key="second")("hello")
 
         assert calls == 1
         assert second.cache_hit is True

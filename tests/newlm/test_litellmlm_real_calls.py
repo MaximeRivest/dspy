@@ -49,7 +49,7 @@ def _skip_if_missing_common_provider_key(model: str) -> None:
 
 
 def test_litellmlm_real_text_call_returns_normalized_response():
-    lm = dspy.LiteLLMChatLM(_real_model(), cache=False, temperature=0.0, max_tokens=20)
+    lm = dspy.litellm_chat_lm(_real_model(), cache=False, temperature=0.0, max_tokens=20)
 
     response = lm("Output the exact lowercase string pong and nothing else.")
 
@@ -61,7 +61,7 @@ def test_litellmlm_real_text_call_returns_normalized_response():
 
 
 def test_litellmlm_real_multiturn_call_accepts_message_constructors():
-    lm = dspy.LiteLLMChatLM(_real_model(), cache=False, temperature=0.0, max_tokens=30)
+    lm = dspy.litellm_chat_lm(_real_model(), cache=False, temperature=0.0, max_tokens=30)
 
     response = lm(
         dspy.System("Answer with exactly one word."),
@@ -74,7 +74,7 @@ def test_litellmlm_real_multiturn_call_accepts_message_constructors():
 
 
 def test_litellmlm_real_chat_stream_returns_normalized_response():
-    lm = dspy.LiteLLMChatLM(_real_model(), cache=False, temperature=0.0, max_tokens=10)
+    lm = dspy.litellm_chat_lm(_real_model(), cache=False, temperature=0.0, max_tokens=10)
 
     stream = lm.stream("Output the exact lowercase string pong and nothing else.")
     events = list(stream)
@@ -92,7 +92,7 @@ def test_litellmlm_real_responses_stream_preserves_usage():
     if not os.environ.get("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY is not set; add it to .env or the environment")
     model = os.environ.get("LITELLM_REAL_RESPONSES_MODEL") or "openai/gpt-4o-mini"
-    lm = dspy.LiteLLMResponsesLM(model, cache=False, temperature=0.0, max_tokens=10)
+    lm = dspy.litellm_responses_lm(model, cache=False, temperature=0.0, max_tokens=10)
 
     stream = lm.stream("Output the exact lowercase string pong and nothing else.")
     events = list(stream)

@@ -1,7 +1,7 @@
 import pytest
 
 import dspy
-from dspy.clients.language_models.openai_format import ResponsesLM, _provider_tool_call_to_part
+from dspy.clients.language_models.openai_format import provider_tool_call_to_part
 
 
 class TextOnlyLM(dspy.LanguageModel):
@@ -17,6 +17,40 @@ class TextOnlyLM(dspy.LanguageModel):
 class StreamingLM(TextOnlyLM):
     def forward_stream(self, request):
         yield dspy.LMStreamEndEvent(response=dspy.LMResponse.from_text("ok", model=request.model))
+
+
+class NonDeepcopyableClient:
+    def __deepcopy__(self, memo):
+        raise RuntimeError("SDK clients should not be deep-copied")
+
+
+class ClientBackedLM(dspy.LanguageModel):
+    def __init__(self, client):
+        super().__init__(model="test/client-backed", cache=False, temperature=0.1)
+        self.client = client
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        return dspy.LMResponse.from_text("ok", model=request.model)
+
+
+def test_language_model_copy_is_shallow_for_provider_resources_and_isolates_dspy_state():
+    callback = object()
+    client = NonDeepcopyableClient()
+    lm = ClientBackedLM(client)
+    lm.callbacks.append(callback)
+    lm.history.append({"old": "entry"})
+
+    copied = lm.copy(temperature=0.9, rollout_id=7)
+
+    assert copied is not lm
+    assert copied.client is client
+    assert copied.history == []
+    assert copied.callbacks == [callback]
+    assert copied.callbacks is not lm.callbacks
+    assert copied.kwargs == {"temperature": 0.9, "rollout_id": 7}
+    assert lm.kwargs == {"temperature": 0.1}
+    assert copied.features is not lm.features
+    assert copied.features._lm is copied
 
 
 def test_call_enforces_implementation_request_support_before_forward():
@@ -48,14 +82,14 @@ def test_stream_allowed_when_forward_stream_is_overridden():
 
 def test_litellm_chat_lm_advertises_normalized_streaming():
     pytest.importorskip("litellm")
-    lm = dspy.LiteLLMChatLM("openai/gpt-4o-mini", cache=False)
+    lm = dspy.litellm_chat_lm("openai/gpt-4o-mini", cache=False)
 
-    assert lm.capabilities.streaming is True
+    assert lm.support.streaming is True
     assert lm.features.streaming.status == "inferred"
 
 
 def test_responses_request_preserves_tool_continuation_items():
-    lm = ResponsesLM("openai/gpt-4o-mini", responses=lambda **kwargs: kwargs, cache=False)
+    lm = dspy.openai_responses_lm("openai/gpt-4o-mini", responses=lambda **kwargs: kwargs, cache=False)
     request = dspy.LMRequest.from_call(
         model="openai/gpt-4o-mini",
         items=(
@@ -66,7 +100,7 @@ def test_responses_request_preserves_tool_continuation_items():
         ),
     )
 
-    provider_request = lm._to_responses_request(request)
+    provider_request = lm.explain_provider_request(request=request).kwargs
 
     assert provider_request["input"][0] == {
         "role": "user",
@@ -109,7 +143,7 @@ def test_prompt_cache_requires_explicit_implementation_support():
 
 def test_lm15_rejects_logprobs_and_multiple_outputs_before_forward():
     pytest.importorskip("lm15")
-    lm = dspy.LM15LM("openai/gpt-4o-mini", cache=False)
+    lm = dspy.lm15_lm("openai/gpt-4o-mini", cache=False)
 
     with pytest.raises(dspy.LMUnsupportedFeatureError) as logprobs_error:
         lm("hello", logprobs=True)
@@ -122,10 +156,12 @@ def test_lm15_rejects_logprobs_and_multiple_outputs_before_forward():
 
 def test_lm15_maps_prompt_cache_to_provider_cache_not_dspy_cache():
     pytest.importorskip("lm15")
-    lm = dspy.LM15LM("openai/gpt-4o-mini", cache=False)
+    from dspy.clients.language_models.lm15 import to_lm15_config
+
+    lm = dspy.lm15_lm("openai/gpt-4o-mini", cache=False)
     request = lm.normalize_request("hello", cache=False, prompt_cache=True, prompt_cache_key="prefix-1")
 
-    config = lm._map_config(request.config)
+    config = to_lm15_config(request.config)
 
     assert config.cache is not None
     assert config.cache.mode == "auto"
@@ -133,7 +169,7 @@ def test_lm15_maps_prompt_cache_to_provider_cache_not_dspy_cache():
 
 
 def test_malformed_tool_call_arguments_preserve_raw_provider_data():
-    part = _provider_tool_call_to_part(
+    part = provider_tool_call_to_part(
         {
             "id": "call_1",
             "function": {

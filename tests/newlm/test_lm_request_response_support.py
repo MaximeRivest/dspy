@@ -12,8 +12,11 @@ class TextOnlyLM(dspy.LanguageModel):
 
 
 class ImageLM(TextOnlyLM):
-    def map_request_input_image(self, value):
-        return value
+    def __init__(self):
+        super().__init__()
+        self.support = self.support.with_updates(
+            images=dspy.ImageSupport(urls=True, base64=True, placement="any_message")
+        )
 
 
 def test_request_and_response_support_are_programmatically_accessible():
@@ -63,7 +66,7 @@ def test_require_request_support_raises_structured_error():
         lm.require_request_support(request)
 
     assert exc_info.value.features == ["request.input_image"]
-    assert "map_request_input_image" in exc_info.value.issues[0]
+    assert "does not declare request.input_image" in exc_info.value.issues[0]
 
 
 def test_validate_request_passes_when_shape_is_supported():

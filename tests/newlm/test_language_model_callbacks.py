@@ -36,9 +36,6 @@ class CallbackLM(dspy.LanguageModel):
         assert ACTIVE_CALL_ID.get() is not None
         return dspy.LMResponse.from_text(f"call {self.forward_calls}", model=request.model)
 
-    def map_request_provider_extensions(self, value):
-        return dict(value)
-
     async def aforward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         self.forward_calls += 1
         assert ACTIVE_CALL_ID.get() is not None

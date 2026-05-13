@@ -31,19 +31,21 @@ def test_lm_constructor_returns_router_with_litellm_chat_backend():
 
     assert isinstance(lm, dspy.LMRouter)
     assert isinstance(lm, dspy.LanguageModel)
-    assert isinstance(lm.backend, dspy.LiteLLMChatLM)
+    assert isinstance(lm.backend, dspy.SDKLanguageModel)
+    assert lm.backend.metadata["provider"] == "litellm"
+    assert lm.backend.metadata["protocol"] == "openai_chat"
     assert isinstance(lm.backend, dspy.LanguageModel)
     assert lm.model == "openai/gpt-4o-mini"
     assert lm.backend.model == "openai/gpt-4o-mini"
 
 
-def test_litellm_protocol_lms_can_be_constructed_directly():
-    lm = dspy.LiteLLMChatLM("openai/gpt-4o-mini", cache=False)
+def test_litellm_factory_lms_can_be_constructed_directly():
+    lm = dspy.litellm_chat_lm("openai/gpt-4o-mini", cache=False)
 
-    assert isinstance(lm, dspy.LiteLLMChatLM)
-    assert isinstance(lm, dspy.OpenAIChatLM)
+    assert isinstance(lm, dspy.SDKLanguageModel)
     assert isinstance(lm, dspy.LanguageModel)
     assert not isinstance(lm, dspy.LMRouter)
+    assert lm.metadata["protocol"] == "openai_chat"
     assert lm.model == "openai/gpt-4o-mini"
 
 
@@ -83,7 +85,8 @@ def test_lm_router_copy_wraps_copied_backend():
     copied = lm.copy(temperature=0.9, rollout_id=7)
 
     assert isinstance(copied, dspy.LMRouter)
-    assert isinstance(copied.backend, dspy.LiteLLMChatLM)
+    assert isinstance(copied.backend, dspy.SDKLanguageModel)
+    assert copied.backend.metadata["provider"] == "litellm"
     assert copied is not lm
     assert copied.backend is not lm.backend
     assert copied.kwargs["temperature"] == 0.9

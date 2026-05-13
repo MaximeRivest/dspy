@@ -14,15 +14,8 @@ from dspy.clients.language_models.router import LMRouter, register_lm_backend
 from dspy.clients.lm import LM as LegacyLM
 from dspy.clients.provider import Provider, TrainingJob
 
-_LANGUAGE_MODEL_LAZY_NAMES = {
-    "LiteLLMChatLM",
-    "LiteLLMTextLM",
-    "LiteLLMResponsesLM",
-    "LM15LM",
-    "CompletionLM",
-    "ResponsesLM",
-}
-_LANGUAGE_MODEL_CLIENT_EXPORTS = tuple(name for name in _language_model_all if name != "LM15LM")
+_LANGUAGE_MODEL_LAZY_NAMES = set()
+_LANGUAGE_MODEL_CLIENT_EXPORTS = tuple(_language_model_all)
 for _name in _LANGUAGE_MODEL_CLIENT_EXPORTS:
     if _name not in _LANGUAGE_MODEL_LAZY_NAMES:
         globals()[_name] = getattr(_language_models, _name)
@@ -46,6 +39,29 @@ def LM(*args: Any, **kwargs: Any):
     if settings.get("experimental_lm", False):
         return LMRouter(*args, **kwargs)
     return LegacyLM(*args, **kwargs)
+
+
+def _lm_from_sdk(*args: Any, **kwargs: Any):
+    from dspy.clients.language_models.sdk import SDKLanguageModel
+
+    return SDKLanguageModel(*args, **kwargs)
+
+
+def _lm_from_text(*args: Any, **kwargs: Any):
+    from dspy.clients.language_models.sdk import SDKLanguageModel
+
+    return SDKLanguageModel.from_text(*args, **kwargs)
+
+
+def _lm_from_messages(*args: Any, **kwargs: Any):
+    from dspy.clients.language_models.sdk import SDKLanguageModel
+
+    return SDKLanguageModel.from_messages(*args, **kwargs)
+
+
+LM.from_sdk = _lm_from_sdk
+LM.from_text = _lm_from_text
+LM.from_messages = _lm_from_messages
 
 
 logger = logging.getLogger(__name__)

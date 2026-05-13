@@ -30,6 +30,24 @@ def register_lm_backend(factory: LMBackendFactory) -> LMBackendFactory:
 class LMRouter(LanguageModel):
     """Route one public `dspy.LM` instance to a concrete backend."""
 
+    @classmethod
+    def from_sdk(cls, *args: Any, **kwargs: Any):
+        from dspy.clients.language_models.sdk import SDKLanguageModel
+
+        return SDKLanguageModel(*args, **kwargs)
+
+    @classmethod
+    def from_text(cls, *args: Any, **kwargs: Any):
+        from dspy.clients.language_models.sdk import SDKLanguageModel
+
+        return SDKLanguageModel.from_text(*args, **kwargs)
+
+    @classmethod
+    def from_messages(cls, *args: Any, **kwargs: Any):
+        from dspy.clients.language_models.sdk import SDKLanguageModel
+
+        return SDKLanguageModel.from_messages(*args, **kwargs)
+
     # The router owns public LM lifecycle: callbacks, cache, history, and copy.
     # The backend owns provider/protocol behavior and exposes exact feature
     # support through the `LanguageModel` hooks.
@@ -132,7 +150,7 @@ class LMRouter(LanguageModel):
         return cls(backend=backend)
 
     def copy(self, **overrides: Any) -> Self:
-        return type(self)(backend=self.backend.copy(**overrides))
+        return type(self)(backend=self.backend.copy(**overrides), callbacks=list(self.callbacks))
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.backend, name)
@@ -162,16 +180,16 @@ def _default_litellm_backend(
     model_type: Literal["chat", "text", "responses"] = "chat",
     **kwargs: Any,
 ) -> LanguageModel:
-    from dspy.clients.language_models.litellm import LiteLLMChatLM, LiteLLMResponsesLM, LiteLLMTextLM
+    from dspy.clients.language_models.factories import litellm_chat_lm, litellm_responses_lm, litellm_text_lm
 
-    backend_cls = {
-        "chat": LiteLLMChatLM,
-        "text": LiteLLMTextLM,
-        "responses": LiteLLMResponsesLM,
+    backend_factory = {
+        "chat": litellm_chat_lm,
+        "text": litellm_text_lm,
+        "responses": litellm_responses_lm,
     }.get(model_type)
-    if backend_cls is None:
+    if backend_factory is None:
         raise ValueError(f"Unsupported model_type: {model_type!r}")
-    return backend_cls(model=model, **kwargs)
+    return backend_factory(model=model, **kwargs)
 
 
 def _import_object(path: str) -> Any:

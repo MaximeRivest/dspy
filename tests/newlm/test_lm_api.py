@@ -7,9 +7,7 @@ class EchoLM(dspy.LanguageModel):
     def __init__(self):
         super().__init__(model="test/echo", cache=False)
         self.requests = []
-
-    def map_request_logprobs(self, value):
-        return value
+        self.support = self.support.with_updates(logprobs=True)
 
     def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         self.requests.append(request)
@@ -25,6 +23,10 @@ class ToolCallingLM(dspy.LanguageModel):
     def __init__(self):
         super().__init__(model="test/tools", cache=False)
         self.requests = []
+        self.support = self.support.with_updates(
+            tools=dspy.ToolSupport(schemas=True, calls=True, results=True),
+            reasoning=True,
+        )
 
     def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         self.requests.append(request)
@@ -57,31 +59,14 @@ class ToolCallingLM(dspy.LanguageModel):
             cost=0.001,
         )
 
-    def map_request_tools(self, value):
-        return value
-
-    def map_request_tool_choice(self, value):
-        return value
-
-    def map_request_reasoning_config(self, value):
-        return value
-
 
 class RichInputLM(EchoLM):
-    def map_request_input_image(self, value):
-        return value
-
-    def map_request_tools(self, value):
-        return value
-
-    def map_request_tool_choice(self, value):
-        return value
-
-    def map_request_assistant_tool_calls(self, value):
-        return value
-
-    def map_request_tool_results(self, value):
-        return value
+    def __init__(self):
+        super().__init__()
+        self.support = self.support.with_updates(
+            images=dspy.ImageSupport(urls=True, base64=True, placement="any_message"),
+            tools=dspy.ToolSupport(schemas=True, calls=True, results=True),
+        )
 
 
 def test_simple_call_returns_list_like_lm_response_with_metadata():

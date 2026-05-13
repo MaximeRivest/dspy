@@ -209,8 +209,14 @@ class LMFeatureReporter:
         if name == "native_async":
             return self._method_status(name, "aforward")
         if name == "streaming":
+            support = getattr(self._lm, "support", None) if hasattr(self._lm, "_support") else None
+            if support is not None and getattr(support, "streaming", False):
+                return FeatureStatus(name=name, status="inferred", evidence="Declared in lm.support.")
             return self._method_status(name, "forward_stream")
         if name == "async_streaming":
+            support = getattr(self._lm, "support", None) if hasattr(self._lm, "_support") else None
+            if support is not None and getattr(support, "async_streaming", False):
+                return FeatureStatus(name=name, status="inferred", evidence="Declared in lm.support.")
             return self._method_status(name, "aforward_stream")
         if name == "caching":
             return self._caching_status()
@@ -251,6 +257,8 @@ class LMFeatureReporter:
                     )
                 )
 
+        issues.extend(_rich_support_issues(request, getattr(self._lm, "support", None) if hasattr(self._lm, "_support") else None))
+
         if any(issue.status == "unsupported" for issue in issues):
             status: SupportState = "unsupported"
         elif issues:
@@ -274,6 +282,9 @@ class LMFeatureReporter:
         return json.dumps(self.report(format="json"), **options)
 
     def _request_status(self, name: str) -> FeatureStatus:
+        declared = self._declared_request_status(name)
+        if declared is not None:
+            return declared
         support = getattr(self._lm, "get_request_feature_statuses", lambda: {})()
         feature = support.get(name)
         if feature is not None:
@@ -284,10 +295,42 @@ class LMFeatureReporter:
             evidence=f"No request support status is registered for {name}.",
         )
 
+    def _declared_request_status(self, name: str) -> FeatureStatus | None:
+        if not hasattr(self._lm, "_support"):
+            return None
+        support = getattr(self._lm, "support", None)
+        if support is None:
+            return None
+        table = {
+            "text": bool(getattr(support, "text", False)),
+            "input_image": getattr(support, "images", None) is not None,
+            "input_audio": bool(getattr(support, "audio", False)),
+            "input_file": bool(getattr(support, "files", False)),
+            "tools": getattr(support, "tools", None) is not None and bool(getattr(support.tools, "schemas", False)),
+            "tool_choice": getattr(support, "tools", None) is not None and bool(getattr(support.tools, "schemas", False)),
+            "assistant_tool_calls": getattr(support, "tools", None) is not None and bool(getattr(support.tools, "calls", False)),
+            "tool_results": getattr(support, "tools", None) is not None and bool(getattr(support.tools, "results", False)),
+            "response_schema": bool(getattr(support, "response_schema", False)),
+            "reasoning_config": bool(getattr(support, "reasoning", False)),
+            "prompt_cache": bool(getattr(support, "prompt_cache", False)),
+            "logprobs": bool(getattr(support, "logprobs", False)),
+            "multiple_outputs": bool(getattr(support, "multiple_outputs", False)),
+            "provider_extensions": bool(getattr(support, "provider_extensions", False)),
+        }
+        if name not in table:
+            return None
+        ok = table[name]
+        if ok:
+            return FeatureStatus(f"request.{name}", "inferred", f"Declared in {type(self._lm).__name__}.support.")
+        return FeatureStatus(f"request.{name}", "unsupported", f"{type(self._lm).__name__}.support does not declare request.{name}.")
+
     def _response_status(self, name: str, *, flat_name: str | None = None) -> FeatureStatus:
         observed_name = flat_name or f"response.{name}"
         if observed_name in self._observed:
             return self._observed[observed_name]
+        declared = None if name in {"usage", "cost"} else self._declared_response_status(name, flat_name=flat_name)
+        if declared is not None:
+            return declared
         support = getattr(self._lm, "get_response_feature_statuses", lambda: {})()
         feature = support.get(name)
         if feature is not None:
@@ -299,6 +342,31 @@ class LMFeatureReporter:
             status="unknown",
             evidence=f"No response support status is registered for {name}.",
         )
+
+    def _declared_response_status(self, name: str, *, flat_name: str | None = None) -> FeatureStatus | None:
+        if not hasattr(self._lm, "_support"):
+            return None
+        support = getattr(self._lm, "support", None)
+        if support is None:
+            return None
+        table = {
+            "text": bool(getattr(support, "text", False)),
+            "reasoning": bool(getattr(support, "reasoning", False)),
+            "tool_calls": getattr(support, "tools", None) is not None and bool(getattr(support.tools, "calls", False)),
+            "citations": bool(getattr(support, "citations", False)),
+            "output_image": bool(getattr(support, "output_images", False)),
+            "output_audio": bool(getattr(support, "output_audio", False)),
+            "output_file": bool(getattr(support, "output_files", False)),
+            "refusal": bool(getattr(support, "refusal", False)),
+            "usage": bool(getattr(support, "usage", False)),
+        }
+        if name not in table:
+            return None
+        feature_name = flat_name or f"response.{name}"
+        ok = table[name]
+        if ok:
+            return FeatureStatus(feature_name, "inferred", f"Declared in {type(self._lm).__name__}.support.")
+        return FeatureStatus(feature_name, "unsupported", f"{type(self._lm).__name__}.support does not declare response.{name}.")
 
     def _report_data(self) -> dict[str, Any]:
         return {
@@ -381,6 +449,47 @@ class LMFeatureReporter:
 def feature_status(name: str, status: FeatureState, evidence: str) -> FeatureStatus:
     """Create a `FeatureStatus` with a concise call site."""
     return FeatureStatus(name=name, status=status, evidence=evidence)
+
+
+def _rich_support_issues(request: Any, support: Any) -> list[LMSupportIssue]:
+    if support is None or getattr(support, "images", None) is None:
+        return []
+    image_support = support.images
+    image_locations = []
+    messages = getattr(request, "messages", []) or []
+    latest_user_index = None
+    for idx, message in enumerate(messages):
+        if getattr(message, "role", None) == "user":
+            latest_user_index = idx
+    for idx, message in enumerate(messages):
+        for part in getattr(message, "parts", []) or []:
+            if getattr(part, "type", None) == "image":
+                image_locations.append((idx, part))
+    issues: list[LMSupportIssue] = []
+    if getattr(image_support, "placement", None) == "latest_user_message_only":
+        for idx, _part in image_locations:
+            if idx != latest_user_index:
+                issues.append(
+                    LMSupportIssue(
+                        feature="request.input_image",
+                        status="unsupported",
+                        message="This request contains images outside the latest user message, but lm.support.images.placement is 'latest_user_message_only'.",
+                    )
+                )
+                break
+    for _idx, part in image_locations:
+        if getattr(part, "url", None) is not None and not getattr(image_support, "urls", False):
+            issues.append(LMSupportIssue("request.input_image", "Image URLs are not supported by lm.support.images.", "unsupported"))
+        if getattr(part, "data", None) is not None and not getattr(image_support, "base64", False):
+            issues.append(LMSupportIssue("request.input_image", "Base64 image data is not supported by lm.support.images.", "unsupported"))
+        if getattr(part, "file_id", None) is not None and not getattr(image_support, "file_ids", False):
+            issues.append(LMSupportIssue("request.input_image", "Image file IDs are not supported by lm.support.images.", "unsupported"))
+        if getattr(part, "path", None) is not None and not getattr(image_support, "paths", False):
+            issues.append(LMSupportIssue("request.input_image", "Image paths are not supported by lm.support.images.", "unsupported"))
+        media_types = getattr(image_support, "media_types", None)
+        if media_types is not None and getattr(part, "media_type", None) not in media_types:
+            issues.append(LMSupportIssue("request.input_image", f"Image media type {getattr(part, 'media_type', None)!r} is not supported.", "unsupported"))
+    return issues
 
 
 def _required_request_features(request: Any) -> set[str]:

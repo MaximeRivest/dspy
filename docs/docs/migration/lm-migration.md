@@ -1,15 +1,50 @@
-# Migrating custom LMs to `dspy.LanguageModel`
+# Migrating custom LMs to the normalized LM API
 
-DSPy has a new normalized language model contract: custom LMs receive one
-`dspy.LMRequest` and return one `dspy.LMResponse`.
+DSPy’s normalized language-model path has one core idea:
 
-There are two changes to know about:
+```text
+DSPy task/request  ->  provider SDK call  ->  DSPy response
+```
 
-1. **Direct LM calls are richer.** They accept strings, message constructors,
-   OpenAI-style messages, media, tools, tool results, previous `LMResponse`
-   objects, and explicit `LMRequest` objects.
-2. **Custom LM authors get a typed contract.** New custom LMs should subclass
-   `dspy.LanguageModel`, not `dspy.BaseLM`.
+In code, that means custom integrations should usually be built with
+`dspy.LM.from_sdk(...)`, not by subclassing `dspy.LanguageModel`.
+
+The stable contracts are:
+
+- `dspy.LMRequest`: DSPy’s canonical input to an LM.
+- `dspy.ProviderRequest`: the SDK/provider call you prepared.
+- `dspy.LMResponse`: DSPy’s canonical output from an LM.
+- `dspy.LMSupport`: what your wrapper explicitly supports.
+
+The preferred integration shape is:
+
+```python
+lm = dspy.LM.from_sdk(
+    model="my-sdk/model",
+    support=dspy.LMSupport(...),
+    map_request=map_request,
+    call=call_sdk,
+    map_response=map_response,
+)
+```
+
+Then add features progressively:
+
+```python
+lm = (
+    lm
+    .with_images(...)
+    .with_tools(...)
+    .with_usage(...)
+    .with_streaming(...)
+    .with_errors(...)
+)
+```
+
+Subclassing `dspy.LanguageModel` is still possible for DSPy internals and rare
+escape hatches, but it is no longer the idiomatic custom-SDK path.
+
+## Enable the normalized path
 
 The normalized path is opt-in today. Existing programs keep using the legacy
 LiteLLM-backed `dspy.LM` unless you enable it before constructing the LM.
@@ -26,120 +61,117 @@ response = lm("hello")
 print(response.text)
 ```
 
-`experimental_lm` is read when `dspy.LM(...)` is constructed. Set it first,
-then create the LM. You can also use `dspy.context(experimental_lm=True)` when
-you want to construct a normalized LM for one block without changing the
-process-wide default.
+`experimental_lm` is read when `dspy.LM(...)` is constructed. Set it first, then
+create the LM.
 
-## What changes?
+## The new mental model
 
-The legacy custom LM contract is provider-shaped:
+Legacy custom LMs often implemented provider-shaped methods like:
 
 ```text
-forward(prompt=None, messages=None, **kwargs) -> OpenAI/LiteLLM-shaped response
+forward(prompt=None, messages=None, **kwargs) -> provider response
 ```
 
-The normalized contract is DSPy-shaped:
+The normalized plugin path is more explicit:
 
 ```text
-forward(request: LMRequest) -> LMResponse
+LMRequest -> ProviderRequest -> provider response -> LMResponse
 ```
 
-A minimal custom LM looks like this:
+A provider request is intentionally tiny:
+
+```python
+dspy.ProviderRequest(
+    args=(...),          # positional SDK arguments
+    kwargs={...},        # keyword SDK arguments
+    data=...,            # optional native request object
+    preview=...,         # optional display/debug representation
+    metadata={...},
+)
+```
+
+This works for JSON APIs:
+
+```python
+ProviderRequest(kwargs={"model": "...", "messages": [...]})
+```
+
+and for SDKs that use positional or top-level media arguments:
+
+```python
+ProviderRequest(args=("Describe this image",), kwargs={"images": [...]})
+```
+
+## A minimal text SDK wrapper
+
+Suppose your SDK looks like this:
+
+```python
+response = sdk.generate("hello")
+print(response.text)
+```
+
+Wrap it as a DSPy LM:
 
 ```python
 import dspy
 
 
-class EchoLM(dspy.LanguageModel):
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-        return dspy.LMResponse.from_text("hello", model=request.model)
+def map_request(request: dspy.LMRequest) -> dspy.ProviderRequest:
+    prompt = "\n\n".join(message.text or "" for message in request.messages)
+    return dspy.ProviderRequest(args=(prompt,), preview=prompt)
 
 
+def call_sdk(provider_request: dspy.ProviderRequest):
+    return sdk.generate(*provider_request.args, **provider_request.kwargs)
+
+
+def map_response(response, request: dspy.LMRequest) -> dspy.LMResponse:
+    return dspy.LMResponse.from_text(response.text, model=request.model, provider_response=response)
+
+
+lm = dspy.LM.from_sdk(
+    model="my-sdk/model",
+    support=dspy.LMSupport(text=True, messages=True),
+    map_request=map_request,
+    call=call_sdk,
+    map_response=map_response,
+)
+```
+
+Now DSPy modules can use it:
+
+```python
 dspy.configure(experimental_lm=True)
-dspy.configure(lm=EchoLM(model="test/echo"))
+dspy.configure(lm=lm)
 
 predict = dspy.Predict("question -> answer")
 result = predict(question="Say hello")
+print(result.answer)
 ```
 
-This text-only LM supports text requests because `forward()` is implemented. It
-does **not** support images, audio, files, tools, tool results, structured
-outputs, reasoning controls, prompt caching, logprobs, or multiple outputs until
-you implement the relevant mapping hooks described below.
+## Inspect before calling
 
-## Try the normalized `dspy.LM` path
-
-With `experimental_lm=True`, `dspy.LM(...)` returns an `LMRouter`. The router is
-itself a `LanguageModel`, but delegates provider behavior to a backend such as
-`LiteLLMChatLM`, `LiteLLMTextLM`, or `LiteLLMResponsesLM`.
+Diagnostics are first-class. You can inspect both DSPy’s normalized request and
+the provider-shaped request without calling the SDK.
 
 ```python
-import dspy
+request = lm.explain_request("hello", temperature=0.2)
+provider_request = lm.explain_provider_request("hello", temperature=0.2)
 
-dspy.configure(experimental_lm=True)
-
-chat_lm = dspy.LM("openai/gpt-4o-mini")
-text_lm = dspy.LM("openai/davinci", model_type="text")
-responses_lm = dspy.LM("openai/gpt-4o-mini", model_type="responses")
+print(request.messages)
+print(provider_request)
 ```
 
-You can also construct normalized backends directly:
+Use `preview()` when a wrapper provides a nicer display representation:
 
 ```python
-lm = dspy.LiteLLMChatLM("openai/gpt-4o-mini", cache=False)
+lm.preview("hello")
 ```
-
-To compare with the legacy path, opt out before construction:
-
-```python
-dspy.configure(experimental_lm=False)
-lm = dspy.LM("openai/gpt-4o-mini")
-```
-
-## Direct calls
-
-The normalized path accepts several public input shapes and immediately turns
-them into one `LMRequest`.
-
-```python
-lm("hello")
-lm(prompt="hello")
-lm(messages=[{"role": "user", "content": "hello"}])
-
-lm(
-    dspy.System("Be terse."),
-    dspy.User("What is DSPy?"),
-    dspy.Assistant("DSPy is a framework for programming LM pipelines."),
-    dspy.User("Say that in five words."),
-)
-
-lm("describe this", dspy.Image("https://example.com/dog.png"))
-lm(dspy.Reasoning("Prior reasoning supplied by the caller."), dspy.User("Continue."))
-lm(dspy.ToolResult(content='{"temperature": 22}', call_id="call_1", name="weather"))
-lm(dspy.LMRequest(model="test/model", messages=[dspy.User("hello")]))
-```
-
-You can inspect the normalized request without calling the provider:
-
-```python
-request = lm.normalize_request(
-    dspy.System("Be concise."),
-    dspy.User("Explain DSPy in one sentence."),
-    temperature=0.2,
-)
-
-request.messages
-request.config.temperature
-```
-
-Do not mix an explicit `LMRequest` with direct-call inputs, and do not mix
-`messages=` with positional prompt or media inputs. DSPy raises `ValueError` for
-those ambiguous calls.
 
 ## `LMRequest`
 
-A `LanguageModel` receives one `LMRequest`:
+A custom SDK mapper receives one `LMRequest`:
 
 ```python
 request.model       # str
@@ -157,7 +189,7 @@ for message in request.messages:
     print(message.parts)
 ```
 
-Common request part types are:
+Common part types:
 
 - `LMTextPart`
 - `LMImagePart`
@@ -169,7 +201,7 @@ Common request part types are:
 - `LMCitationPart`
 - `LMRefusalPart`
 
-Common config fields are:
+Common config fields:
 
 ```python
 request.config.temperature
@@ -186,34 +218,12 @@ request.config.prompt_cache
 request.config.extensions
 ```
 
-Unknown generation kwargs are preserved in `request.config.extensions`, so a
-provider backend can still use provider-specific options. Common secret and
-endpoint fields such as `api_key`, `api_base`, and `base_url` are sanitized from
-saved LM state and normalized cache keys.
-
-### DSPy cache vs provider prompt cache
-
-DSPy's memoization cache and provider prompt caching are separate.
-
-```python
-request = lm.normalize_request(
-    "hello",
-    cache=False,                 # DSPy memoization cache
-    prompt_cache=True,            # provider-side prompt/token cache
-    prompt_cache_key="prefix-1",
-)
-
-request.config.cache.enabled          # False
-request.config.prompt_cache.enabled   # True
-request.config.prompt_cache.key       # "prefix-1"
-```
-
-DSPy's cache can skip the provider call entirely. Provider prompt caching still
-sends a provider request, but may reuse prompt prefixes or KV state.
+Unknown generation kwargs are preserved in `request.config.extensions` so your
+wrapper can pass provider-specific options through.
 
 ## `LMResponse`
 
-A `LanguageModel.forward()` returns one `LMResponse`:
+Return one `LMResponse`:
 
 ```python
 return dspy.LMResponse(
@@ -225,7 +235,7 @@ return dspy.LMResponse(
 )
 ```
 
-For text-only responses, use `from_text()`:
+For text-only responses:
 
 ```python
 return dspy.LMResponse.from_text("Hello!", model=request.model)
@@ -243,8 +253,6 @@ response.to_legacy_outputs()
 It also exposes normalized views:
 
 ```python
-response.output
-response.parts
 response.text
 response.reasoning_content
 response.tool_calls
@@ -257,133 +265,169 @@ response.cost
 response.cache_hit
 ```
 
-A response can contain richer candidate parts:
+## Explicit support
+
+DSPy validates a request before calling your SDK. Validation uses `lm.support`.
+Do not make DSPy guess.
+
+A text-only wrapper can declare:
 
 ```python
-return dspy.LMResponse(
-    model=request.model,
-    outputs=[
-        dspy.LMOutput(
-            parts=[
-                dspy.LMThinkingPart(text="I should call the weather tool."),
-                dspy.LMTextPart(text="I will check Paris now."),
-                dspy.LMToolCallPart(
-                    id="call_1",
-                    name="get_current_weather",
-                    args={"location": "Paris"},
-                ),
-            ],
-            finish_reason="tool_calls",
-        )
-    ],
+dspy.LMSupport(text=True, messages=True)
+```
+
+A richer wrapper can declare:
+
+```python
+dspy.LMSupport(
+    text=True,
+    messages=True,
+    images=dspy.ImageSupport(
+        urls=True,
+        base64=True,
+        media_types=("image/png", "image/jpeg", "image/webp"),
+        placement="any_message",
+    ),
+    tools=dspy.ToolSupport(schemas=True, calls=True, results=True),
+    response_schema=True,
+    reasoning=True,
+    prompt_cache=True,
+    streaming=True,
+    citations=True,
 )
 ```
 
-Usage and cost are first-class:
+If a request needs something unsupported, DSPy raises
+`LMUnsupportedFeatureError` before your SDK is called.
 
 ```python
-usage = dspy.LMUsage(input_tokens=12, output_tokens=8, total_tokens=20)
-return dspy.LMResponse.from_text("Hello!", model=request.model, usage=usage, cost=0.00012)
-```
-
-On a DSPy cache hit, the base class marks the returned response as a cache hit
-and removes new accounting. In practice, cached responses report
-`cache_hit=True`, no new cost, and empty usage accounting.
-
-## Request support and mapping hooks
-
-`LanguageModel` validates request shape before calling `forward()`. If the
-request uses a feature your implementation cannot map, DSPy raises
-`LMUnsupportedFeatureError` before the provider call.
-
-For example, a text-only LM rejects image input before `forward()` runs.
-
-Text generation support is inferred from `forward()`. For every richer request
-shape, implement the corresponding hook:
-
-| Request feature | Hook |
-| --- | --- |
-| text | `map_request_text()` |
-| image input | `map_request_input_image()` |
-| audio input | `map_request_input_audio()` |
-| file input | `map_request_input_file()` |
-| tools | `map_request_tools()` |
-| tool choice | `map_request_tool_choice()` |
-| assistant tool calls | `map_request_assistant_tool_calls()` |
-| tool results | `map_request_tool_results()` |
-| response schema | `map_request_response_schema()` |
-| reasoning config | `map_request_reasoning_config()` |
-| provider prompt cache | `map_request_prompt_cache()` |
-| logprobs | `map_request_logprobs()` |
-| multiple outputs | `map_request_multiple_outputs()` |
-| provider extensions | `map_request_provider_extensions()` |
-
-To support a response feature, implement the corresponding response hook:
-
-| Response feature | Hook |
-| --- | --- |
-| text | `map_response_text()` |
-| reasoning | `map_response_reasoning()` |
-| tool calls | `map_response_tool_calls()` |
-| citations | `map_response_citations()` |
-| generated images | `map_response_output_image()` |
-| generated audio | `map_response_output_audio()` |
-| generated files | `map_response_output_file()` |
-| refusal | `map_response_refusal()` |
-
-Start with the smallest set your provider truly supports. DSPy will explain the
-rest through feature reports and unsupported-feature errors.
-
-## Feature reports and capabilities
-
-The normalized path has two related concepts:
-
-- `lm.capabilities`: model- or deployment-level hints, such as whether a model
-  can use tools, images, reasoning, or streaming.
-- `lm.features`: implementation support and observed runtime behavior.
-
-Request validation uses implementation support. A model may be capable of
-vision, but a custom LM still rejects images unless it implements
-`map_request_input_image()`.
-
-```python
+print(lm.support.report())
 print(lm.features.report())
-
-lm.features.request.input_image
-lm.features.response.tool_calls
-lm.features.supports("streaming")
-lm.features.explain("usage")
-lm.features.report(format="json")
-lm.features.to_json()
 ```
 
-Feature states are:
+`support` is declared capability of the wrapper. `features` includes runtime
+observations such as usage/cost appearing in responses.
 
-- `inferred`: DSPy can infer support from implemented hooks or overridden methods.
-- `observed`: DSPy saw the feature work at runtime.
-- `unsupported`: DSPy knows the implementation cannot support the feature.
-- `unknown`: DSPy has not observed enough information yet.
+## DSPy cache vs provider prompt cache
 
-## Streaming
-
-Normalized streaming uses DSPy event objects, not provider chunks.
-
-A streaming LM implements `forward_stream()`:
+DSPy memoization and provider prompt caching are separate.
 
 ```python
-class StreamingEchoLM(dspy.LanguageModel):
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-        return dspy.LMResponse.from_text("hello", model=request.model)
+request = lm.normalize_request(
+    "hello",
+    cache=False,                 # DSPy memoization cache
+    prompt_cache=True,            # provider-side prompt/token cache
+    prompt_cache_key="prefix-1",
+)
 
-    def forward_stream(self, request: dspy.LMRequest):
-        yield dspy.LMStreamStartEvent(model=request.model)
+request.config.cache.enabled          # False
+request.config.prompt_cache.enabled   # True
+request.config.prompt_cache.key       # "prefix-1"
+```
+
+DSPy’s cache can skip the provider call entirely. Provider prompt caching still
+sends a request, but may reuse prompt prefixes or KV state.
+
+## Direct calls
+
+The normalized path accepts several input shapes and immediately turns them into
+one `LMRequest`.
+
+```python
+lm("hello")
+lm(prompt="hello")
+lm(messages=[{"role": "user", "content": "hello"}])
+
+lm(
+    dspy.System("Be terse."),
+    dspy.User("What is DSPy?"),
+    dspy.Assistant("DSPy is a framework for programming LM pipelines."),
+    dspy.User("Say that in five words."),
+)
+
+lm("describe this", dspy.Image("https://example.com/dog.png"))
+lm(dspy.ToolResult(content='{"temperature": 22}', call_id="call_1", name="weather"))
+lm(dspy.LMRequest(model="test/model", messages=[dspy.User("hello")]))
+```
+
+Do not mix an explicit `LMRequest` with direct-call inputs, and do not mix
+`messages=` with positional prompt or media inputs. DSPy raises `ValueError` for
+ambiguous calls.
+
+## Add images
+
+Images have two concerns:
+
+1. mapping one `LMImagePart` into the SDK’s image object/block, and
+2. placing those mapped images where the SDK expects them.
+
+For OpenAI-style APIs, images live inside message content. For Agno-style APIs,
+images might be a top-level `images=` argument.
+
+```python
+import base64
+import dspy
+
+
+def map_image(image: dspy.LMImagePart):
+    if image.url:
+        return SDKImage(url=image.url)
+    return SDKImage(
+        content=base64.b64decode(image.data),
+        format=image.media_type.removeprefix("image/"),
+    )
+
+
+def place_images(request: dspy.LMRequest, images: list, provider_request: dspy.ProviderRequest):
+    return dspy.ProviderRequest(
+        args=(request.messages[-1].text or "",),
+        kwargs={"images": images},
+        preview={"message": request.messages[-1].text, "images": images},
+    )
+
+
+lm = lm.with_images(
+    map_image=map_image,
+    place_images=place_images,
+    support=dspy.ImageSupport(urls=True, base64=True, placement="latest_user_message_only"),
+)
+```
+
+If a multi-turn request contains images outside the latest user message, DSPy
+will reject it for this wrapper before the SDK call.
+
+## Add usage
+
+```python
+def extract_usage(response):
+    return dspy.LMUsage(
+        input_tokens=response.usage.prompt_tokens,
+        output_tokens=response.usage.completion_tokens,
+        total_tokens=response.usage.total_tokens,
+    )
+
+
+lm = lm.with_usage(extract_usage=extract_usage)
+```
+
+## Add streaming
+
+Streaming uses DSPy event objects, not provider chunks.
+
+```python
+def stream(request: dspy.LMRequest):
+    yield dspy.LMStreamStartEvent(model=request.model)
+    for chunk in sdk.stream(request.messages[-1].text):
         yield dspy.LMStreamDeltaEvent(
             output_index=0,
             part_index=0,
-            delta=dspy.LMTextDelta(text="hello"),
+            delta=dspy.LMTextDelta(text=chunk.text),
         )
-        yield dspy.LMStreamOutputEndEvent(output_index=0, finish_reason="stop")
-        yield dspy.LMStreamEndEvent()
+    yield dspy.LMStreamOutputEndEvent(output_index=0, finish_reason="stop")
+    yield dspy.LMStreamEndEvent()
+
+
+lm = lm.with_streaming(stream=stream)
 ```
 
 Callers iterate the stream, then read the final response:
@@ -397,81 +441,27 @@ response = stream.result()
 print(response.text)
 ```
 
-Async streaming uses `aforward_stream()` and `astream()`:
-
-```python
-stream = lm.astream("hello")
-async for event in stream:
-    print(event.type)
-
-response = stream.result()
-```
-
-`astream()` returns an async iterator directly. Do not `await lm.astream(...)`
-before iterating it.
-
-The core event types are:
-
-- `LMStreamStartEvent`
-- `LMStreamDeltaEvent`
-- `LMStreamOutputEndEvent`
-- `LMStreamEndEvent`
-- `LMStreamErrorEvent`
-
-`LMOutputBuilder` assembles deltas into a final `LMResponse`. Use stable
-`output_index` and `part_index` values so reasoning, text, and tool-call parts
-remain distinct during interleaved streams.
-
-## Callbacks
-
-Normalized LMs use DSPy's callback system for sync calls, async calls, cache
-hits, normalized exceptions, and streams.
-
-Callbacks receive a normalized request under `inputs["request"]`. Raw call
-inputs are included under `inputs["raw"]`. API keys and common auth fields are
-redacted before callbacks see them.
-
-For regular sync and async calls, callbacks fire around the call:
-
-```text
-on_lm_start(...)
-on_lm_end(...)
-```
-
-For cache hits, callbacks still fire. For streaming calls, callbacks start when
-the stream is consumed and end after the stream finishes or errors.
-
-If `normalize_error()` maps a provider exception to a DSPy exception, callbacks
-receive the normalized exception.
+Use stable `output_index` and `part_index` values so reasoning, text, and tool
+call parts remain distinct during interleaved streams.
 
 ## Error normalization
 
-Custom LMs should map provider errors that DSPy understands. The most important
-one is context-window overflow.
+Normalize provider errors that DSPy understands.
 
 ```python
-class MyLM(dspy.LanguageModel):
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-        try:
-            ...
-        except ProviderContextError as error:
-            raise dspy.ContextWindowExceededError(model=request.model, provider="my-provider") from error
+def normalize_error(error: Exception, request: dspy.LMRequest) -> Exception:
+    if error.__class__.__name__ == "ContextLengthError":
+        return dspy.ContextWindowExceededError(model=request.model, provider="my-sdk")
+    return error
+
+
+lm = lm.with_errors(normalize=normalize_error)
 ```
 
-You can also centralize this in `normalize_error()`:
-
-```python
-class MyLM(dspy.LanguageModel):
-    def normalize_error(self, error: Exception, request: dspy.LMRequest) -> Exception:
-        if isinstance(error, ProviderContextError):
-            return dspy.ContextWindowExceededError(model=request.model, provider="my-provider")
-        return error
-```
-
-When DSPy observes a normalized context-window error, it records that support in
+When DSPy observes a normalized context-window error, it records that in
 `lm.features.context_window_errors`.
 
-## History
+## History, copy, save, and load
 
 `LanguageModel.__call__()` records normalized request and response objects in
 history unless history is disabled.
@@ -480,31 +470,11 @@ history unless history is disabled.
 entry = lm.history[-1]
 entry.request
 entry.response
-```
-
-History entries also support legacy dictionary-style keys:
-
-```python
 entry["outputs"]
 entry["usage"]
-entry["cost"]
 entry["prompt"]
 entry["messages"]
-entry["kwargs"]
-entry["model"]
-entry["response_model"]
-entry["timestamp"]
-entry["uuid"]
 ```
-
-`entry["prompt"]` is present for a single plain user text prompt.
-`entry["messages"]` is derived from the normalized messages in an OpenAI-style
-shape for compatibility.
-
-Use `lm.inspect_history()` or `dspy.inspect_history()` to print recent
-interactions.
-
-## Copy, save, and load
 
 Optimizers rely on `lm.copy(...)` to create variants:
 
@@ -512,784 +482,507 @@ Optimizers rely on `lm.copy(...)` to create variants:
 hot_lm = lm.copy(temperature=1.0, rollout_id=7)
 ```
 
-The expected behavior is:
-
-- inference defaults are copied and can be overridden
-- history is reset
-- feature observations are reset on the copy
-- provider resources remain valid for the concrete LM
-
-The default `copy()` uses `deepcopy`. Override it if your LM holds SDK clients,
-HTTP sessions, sockets, local model weights, subprocesses, or other non-copyable
-state.
-
-The default `dump_state()` returns a sanitized constructor state:
-
-```python
-{
-    "model": self.model,
-    "cache": self.cache,
-    **filtered_kwargs,
-}
-```
-
-API keys and `api_*` values are not saved by the default implementation. If your
-LM needs custom save/load behavior, override both `dump_state()` and
-`load_state()`.
+`SDKLanguageModel` handles the common case. If you write a custom
+`LanguageModel` subclass with non-copyable state, override `copy()`.
 
 ## Using provider SDKs directly
 
-A custom LM is a small adapter from `LMRequest` to your SDK call, and from your
-SDK response back to `LMResponse`.
+!!! info "Direct SDK wrappers with `LM.from_sdk`"
 
-The examples below are intentionally text-first. They support normal DSPy
-modules and direct text calls. Add mapping hooks when you want images, files,
-tools, structured outputs, provider prompt caching, logprobs, or multiple
-outputs.
-
-!!! info "A few direct SDK-backed `LanguageModel` subclasses"
-
-    === "OpenAI SDK"
-        OpenAI's SDK returns OpenAI Chat Completions-shaped objects, so you can
-        subclass `OpenAIChatLM` and implement only the transport method.
-
+    === "OpenAI Responses"
         ```python linenums="1"
         import os
-
         from openai import OpenAI
         import dspy
 
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-        class OpenAISDKLM(dspy.OpenAIChatLM):
-            def __init__(self, model: str, api_key: str | None = None, **kwargs):
-                super().__init__(model=model, **kwargs)
-                self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
-
-            def completion(self, request: dict):
-                return self.client.chat.completions.create(**request)
-
-            async def acompletion(self, request: dict):
-                from openai import AsyncOpenAI
-
-                client = AsyncOpenAI(api_key=self.client.api_key)
-                return await client.chat.completions.create(**request)
-
-
-        dspy.configure(experimental_lm=True)
-        dspy.configure(lm=OpenAISDKLM("gpt-4o-mini"))
+        lm = dspy.openai_responses_lm(
+            "gpt-4o-mini",
+            responses=client.responses.create,
+            temperature=0.2,
+        )
         ```
 
-        If you prefer the Responses API, subclass `OpenAIResponsesLM` and
-        implement `responses()` instead.
+    === "OpenAI-compatible Chat"
+        ```python linenums="1"
+        from openai import OpenAI
+        import dspy
+        from dspy.clients.language_models.openai_format import (
+            completion_to_lm_response,
+            to_openai_chat_provider_request,
+        )
 
-    === "Anthropic SDK"
-        Anthropic's native Messages API is not OpenAI-shaped, so subclass
-        `LanguageModel` directly and map messages yourself.
+        client = OpenAI(base_url="http://localhost:8000/v1", api_key="EMPTY")
 
+        lm = dspy.LM.from_sdk(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            support=dspy.LMSupport(
+                images=dspy.ImageSupport(urls=True, base64=True, placement="any_message"),
+                tools=dspy.ToolSupport(schemas=True, calls=True, results=True),
+                response_schema=True,
+            ),
+            map_request=to_openai_chat_provider_request,
+            call=lambda provider_request: client.chat.completions.create(**provider_request.kwargs),
+            map_response=completion_to_lm_response,
+        )
+        ```
+
+    === "Anthropic text"
         ```python linenums="1"
         import os
-
         import anthropic
         import dspy
 
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-        class AnthropicSDKLM(dspy.LanguageModel):
-            def __init__(self, model: str, api_key: str | None = None, **kwargs):
-                super().__init__(model=model, **kwargs)
-                self.client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+        def map_request(request: dspy.LMRequest) -> dspy.ProviderRequest:
+            system = []
+            messages = []
+            for message in request.messages:
+                text = message.text or ""
+                if message.role in {"system", "developer"}:
+                    system.append(text)
+                elif message.role in {"user", "assistant"}:
+                    messages.append({"role": message.role, "content": [{"type": "text", "text": text}]})
+            kwargs = {
+                "model": request.model,
+                "system": "\n\n".join(system) or None,
+                "messages": messages,
+                "max_tokens": request.config.max_tokens or 1024,
+                "temperature": request.config.temperature,
+            }
+            return dspy.ProviderRequest(kwargs={k: v for k, v in kwargs.items() if v is not None})
 
-            def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-                system = []
-                messages = []
-                for message in request.messages:
-                    text = message.text or ""
-                    if message.role == "system":
-                        system.append(text)
-                    elif message.role in {"user", "assistant"}:
-                        messages.append({"role": message.role, "content": text})
+        def map_response(response, request: dspy.LMRequest) -> dspy.LMResponse:
+            usage = response.usage
+            return dspy.LMResponse.from_text(
+                response.content[0].text,
+                model=response.model,
+                usage=dspy.LMUsage(input_tokens=usage.input_tokens, output_tokens=usage.output_tokens),
+                provider_response=response,
+            )
 
-                response = self.client.messages.create(
-                    model=request.model,
-                    system="\n\n".join(system) or None,
-                    messages=messages,
-                    max_tokens=request.config.max_tokens or 1024,
-                    temperature=request.config.temperature,
-                )
-
-                return dspy.LMResponse.from_text(
-                    response.content[0].text,
-                    model=response.model,
-                    usage=dspy.LMUsage(
-                        input_tokens=response.usage.input_tokens,
-                        output_tokens=response.usage.output_tokens,
-                    ),
-                    provider_response=response,
-                )
-
-            def normalize_error(self, error: Exception, request: dspy.LMRequest) -> Exception:
-                if error.__class__.__name__ == "BadRequestError" and "context" in str(error).lower():
-                    return dspy.ContextWindowExceededError(model=request.model, provider="anthropic")
-                return error
-
-
-        dspy.configure(experimental_lm=True)
-        dspy.configure(lm=AnthropicSDKLM("claude-sonnet-4-5-20250929"))
+        lm = dspy.LM.from_sdk(
+            model="claude-sonnet-4-5-20250929",
+            support=dspy.LMSupport(text=True, messages=True),
+            map_request=map_request,
+            call=lambda provider_request: client.messages.create(**provider_request.kwargs),
+            map_response=map_response,
+        )
         ```
 
-    === "Gemini / Google GenAI"
-        The GenAI SDK accepts text prompts directly. This wrapper flattens the
-        normalized messages into one prompt.
-
+    === "Gemini text"
         ```python linenums="1"
         import os
-
         from google import genai
         import dspy
 
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-        class GenAILM(dspy.LanguageModel):
-            def __init__(self, model: str, api_key: str | None = None, **kwargs):
-                super().__init__(model=model, **kwargs)
-                self.client = genai.Client(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
-
-            def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-                prompt = "\n\n".join(
-                    f"{message.role}: {message.text or ''}" for message in request.messages
-                )
-                response = self.client.models.generate_content(
-                    model=request.model,
-                    contents=prompt,
-                    config={
+        def map_request(request: dspy.LMRequest) -> dspy.ProviderRequest:
+            prompt = "\n\n".join(f"{m.role}: {m.text or ''}" for m in request.messages)
+            return dspy.ProviderRequest(
+                kwargs={
+                    "model": request.model,
+                    "contents": prompt,
+                    "config": {
                         "temperature": request.config.temperature,
                         "max_output_tokens": request.config.max_tokens,
                     },
-                )
-                return dspy.LMResponse.from_text(
-                    response.text,
-                    model=request.model,
-                    provider_response=response,
-                )
+                }
+            )
 
-
-        dspy.configure(experimental_lm=True)
-        dspy.configure(lm=GenAILM("gemini-2.5-pro"))
+        lm = dspy.LM.from_sdk(
+            model="gemini-2.5-pro",
+            support=dspy.LMSupport(text=True, messages=True),
+            map_request=map_request,
+            call=lambda provider_request: client.models.generate_content(**provider_request.kwargs),
+            map_response=lambda response, request: dspy.LMResponse.from_text(
+                response.text,
+                model=request.model,
+                provider_response=response,
+            ),
+        )
         ```
 
-    === "Groq SDK"
-        Groq's SDK follows the OpenAI Chat Completions shape, so reuse
-        `OpenAIChatLM`'s mapping and supply Groq's transport.
-
-        ```python linenums="1"
-        import os
-
-        from groq import Groq
-        import dspy
-
-
-        class GroqSDKLM(dspy.OpenAIChatLM):
-            def __init__(self, model: str, api_key: str | None = None, **kwargs):
-                super().__init__(model=model, **kwargs)
-                self.client = Groq(api_key=api_key or os.environ.get("GROQ_API_KEY"))
-
-            def completion(self, request: dict):
-                return self.client.chat.completions.create(**request)
-
-
-        dspy.configure(experimental_lm=True)
-        dspy.configure(lm=GroqSDKLM("llama-3.3-70b-versatile"))
-        ```
-
-    === "Mistral SDK"
-        Mistral's SDK has its own response objects, but the text mapping is
-        small.
-
-        ```python linenums="1"
-        import os
-
-        from mistralai import Mistral
-        import dspy
-
-
-        class MistralSDKLM(dspy.LanguageModel):
-            def __init__(self, model: str, api_key: str | None = None, **kwargs):
-                super().__init__(model=model, **kwargs)
-                self.client = Mistral(api_key=api_key or os.environ.get("MISTRAL_API_KEY"))
-
-            def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-                messages = [
-                    {"role": message.role, "content": message.text or ""}
-                    for message in request.messages
-                    if message.role in {"system", "user", "assistant"}
-                ]
-                response = self.client.chat.complete(
-                    model=request.model,
-                    messages=messages,
-                    temperature=request.config.temperature,
-                    max_tokens=request.config.max_tokens,
-                )
-                usage = getattr(response, "usage", None)
-                return dspy.LMResponse.from_text(
-                    response.choices[0].message.content,
-                    model=request.model,
-                    usage=(
-                        dspy.LMUsage(
-                            input_tokens=usage.prompt_tokens,
-                            output_tokens=usage.completion_tokens,
-                            total_tokens=usage.total_tokens,
-                        )
-                        if usage is not None
-                        else None
-                    ),
-                    provider_response=response,
-                )
-
-
-        dspy.configure(experimental_lm=True)
-        dspy.configure(lm=MistralSDKLM("mistral-small-latest"))
-        ```
-
-    === "Ollama Python SDK"
-        For local models, the Ollama SDK can be wrapped directly without going
-        through LiteLLM.
-
-        ```python linenums="1"
-        import ollama
-        import dspy
-
-
-        class OllamaSDKLM(dspy.LanguageModel):
-            def __init__(self, model: str, host: str = "http://localhost:11434", **kwargs):
-                super().__init__(model=model, **kwargs)
-                self.client = ollama.Client(host=host)
-
-            def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-                messages = [
-                    {"role": message.role, "content": message.text or ""}
-                    for message in request.messages
-                    if message.role in {"system", "user", "assistant"}
-                ]
-                response = self.client.chat(
-                    model=request.model,
-                    messages=messages,
-                    options={
-                        "temperature": request.config.temperature,
-                        "num_predict": request.config.max_tokens,
-                    },
-                )
-                return dspy.LMResponse.from_text(
-                    response["message"]["content"],
-                    model=request.model,
-                    usage=dspy.LMUsage(
-                        input_tokens=response.get("prompt_eval_count"),
-                        output_tokens=response.get("eval_count"),
-                    ),
-                    provider_response=response,
-                )
-
-
-        dspy.configure(experimental_lm=True)
-        dspy.configure(lm=OllamaSDKLM("llama3.2"))
-        ```
-
-    === "Internal SDK or gateway"
-        Use the same pattern for an in-house SDK. Keep authentication and client
-        objects on the LM instance, and keep provider secrets out of `kwargs` so
-        they do not enter normalized request config.
-
+    === "Internal SDK"
         ```python linenums="1"
         import dspy
 
+        def map_request(request: dspy.LMRequest) -> dspy.ProviderRequest:
+            prompt = "\n\n".join(message.text or "" for message in request.messages)
+            return dspy.ProviderRequest(
+                kwargs={
+                    "model": request.model,
+                    "prompt": prompt,
+                    "temperature": request.config.temperature,
+                    "max_tokens": request.config.max_tokens,
+                }
+            )
 
-        class AcmeLM(dspy.LanguageModel):
-            def __init__(self, model: str, client, **kwargs):
-                super().__init__(model=model, **kwargs)
-                self.client = client
-
-            def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-                response = self.client.generate(
-                    model=request.model,
-                    prompt="\n\n".join(message.text or "" for message in request.messages),
-                    temperature=request.config.temperature,
-                    max_tokens=request.config.max_tokens,
-                )
-                return dspy.LMResponse.from_text(
-                    response.text,
-                    model=request.model,
-                    usage=dspy.LMUsage(
-                        input_tokens=response.input_tokens,
-                        output_tokens=response.output_tokens,
-                    ),
-                    cost=response.cost,
-                    provider_response=response,
-                )
+        lm = dspy.LM.from_sdk(
+            model="acme/small",
+            support=dspy.LMSupport(text=True, messages=True),
+            map_request=map_request,
+            call=lambda provider_request: acme_client.generate(**provider_request.kwargs),
+            map_response=lambda response, request: dspy.LMResponse.from_text(
+                response.text,
+                model=request.model,
+                usage=dspy.LMUsage(
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                ),
+                cost=response.cost,
+                provider_response=response,
+            ),
+        )
         ```
-
 
 ## Anthropic modality mapping examples
 
-Anthropic's native SDK is a good example of when to subclass
-`dspy.LanguageModel` directly. The SDK has its own message, content-block, tool,
-and usage shapes, so your LM should map each normalized DSPy part explicitly.
+These examples show the function-first style for a provider with native content
+blocks. They build one wrapper progressively by adding plain functions and
+support declarations.
 
-Read these examples left to right. Each tab defines one class that subclasses the
-class from the previous tab. Start with text, then add images, tools, built-in
-tools, reasoning, citations, and streaming.
-
-!!! info "A progressive Anthropic `LanguageModel`"
+!!! info "A progressive Anthropic plugin"
 
     === "1. Text"
-        Start with text. This class supports system/user/assistant text and
-        returns text plus usage.
-
         ```python linenums="1"
         import os
-
         import anthropic
         import dspy
 
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-        class AnthropicTextLM(dspy.LanguageModel):
-            def __init__(self, model: str, api_key: str | None = None, **kwargs):
-                super().__init__(model=model, **kwargs)
-                self.client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+        def get(value, name, default=None):
+            return value.get(name, default) if isinstance(value, dict) else getattr(value, name, default)
 
-            def map_request_text(self, value):
-                return {"type": "text", "text": str(value)}
+        def anthropic_text(part: dspy.LMTextPart):
+            return {"type": "text", "text": part.text}
 
-            def map_response_text(self, value):
-                return dspy.LMTextPart(text=str(value))
+        def anthropic_blocks(parts):
+            return [anthropic_text(part) for part in parts if isinstance(part, dspy.LMTextPart)]
 
-            def _message_content_blocks(self, message: dspy.LMMessage) -> list[dict]:
-                return [
-                    self.map_request_text(part.text)
-                    for part in message.parts
-                    if isinstance(part, dspy.LMTextPart)
-                ]
+        def anthropic_request(request: dspy.LMRequest) -> dspy.ProviderRequest:
+            system = []
+            messages = []
+            for message in request.messages:
+                if message.role in {"system", "developer"}:
+                    system.extend(block["text"] for block in anthropic_blocks(message.parts))
+                elif message.role in {"user", "assistant"}:
+                    messages.append({"role": message.role, "content": anthropic_blocks(message.parts)})
+            kwargs = {
+                "model": request.model,
+                "system": "\n\n".join(system) or None,
+                "messages": messages,
+                "max_tokens": request.config.max_tokens or 1024,
+                "temperature": request.config.temperature,
+            }
+            return dspy.ProviderRequest(kwargs={key: value for key, value in kwargs.items() if value is not None})
 
-            def _message_kwargs(self, request: dspy.LMRequest) -> dict:
-                system = []
-                messages = []
-                for message in request.messages:
-                    if message.role in {"system", "developer"}:
-                        system.extend(block["text"] for block in self._message_content_blocks(message))
-                    elif message.role in {"user", "assistant"}:
-                        messages.append({"role": message.role, "content": self._message_content_blocks(message)})
-                    elif message.role == "tool":
-                        # Anthropic carries tool results as user content blocks.
-                        messages.append({"role": "user", "content": self._message_content_blocks(message)})
-                data = {"system": "\n\n".join(system) or None, "messages": messages}
-                return {key: value for key, value in data.items() if value is not None}
+        def anthropic_response(response, request: dspy.LMRequest) -> dspy.LMResponse:
+            parts = [dspy.LMTextPart(text=get(block, "text", "")) for block in get(response, "content", []) if get(block, "type") == "text"]
+            usage = get(response, "usage")
+            return dspy.LMResponse(
+                model=get(response, "model", request.model),
+                outputs=[dspy.LMOutput(parts=parts, finish_reason=get(response, "stop_reason"))],
+                usage=dspy.LMUsage(input_tokens=get(usage, "input_tokens"), output_tokens=get(usage, "output_tokens")),
+                provider_response=response,
+            )
 
-            def _request_kwargs(self, request: dspy.LMRequest) -> dict:
-                data = {
-                    "model": request.model,
-                    "max_tokens": request.config.max_tokens or 1024,
-                    "temperature": request.config.temperature,
-                    **self._message_kwargs(request),
-                }
-                return {key: value for key, value in data.items() if value is not None}
+        AnthropicTextLM = dspy.LM.from_sdk(
+            model="claude-sonnet-4-5-20250929",
+            support=dspy.LMSupport(text=True, messages=True),
+            map_request=anthropic_request,
+            call=lambda provider_request: client.messages.create(**provider_request.kwargs),
+            map_response=anthropic_response,
+        )
 
-            def _parts_from_response(self, response) -> list[dspy.LMPart]:
-                parts = []
-                for block in self._get(response, "content", []):
-                    if self._get(block, "type") == "text":
-                        parts.append(self.map_response_text(self._get(block, "text", "")))
-                return parts
-
-            def _usage_from_response(self, response):
-                usage = self._get(response, "usage")
-                return dspy.LMUsage(
-                    input_tokens=self._get(usage, "input_tokens"),
-                    output_tokens=self._get(usage, "output_tokens"),
-                )
-
-            def _get(self, value, name, default=None):
-                if isinstance(value, dict):
-                    return value.get(name, default)
-                return getattr(value, name, default)
-
-            def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-                response = self.client.messages.create(**self._request_kwargs(request))
-                return dspy.LMResponse(
-                    model=self._get(response, "model", request.model),
-                    outputs=[
-                        dspy.LMOutput(
-                            parts=self._parts_from_response(response),
-                            finish_reason=self._get(response, "stop_reason"),
-                        )
-                    ],
-                    usage=self._usage_from_response(response),
-                    provider_response=response,
-                )
-
-
-        lm = AnthropicTextLM("claude-sonnet-4-5-20250929")
+        lm = AnthropicTextLM
         print(lm("Say hello").text)
         ```
 
     === "2. Add images"
-        Add `map_request_input_image()`. Because this hook exists, DSPy will
-        allow image parts through request validation before `forward()` runs.
-
         ```python linenums="1"
         import base64
-
         import dspy
 
+        def anthropic_image(part: dspy.LMImagePart):
+            if part.data is None:
+                raise ValueError("This example accepts base64 image data only.")
+            return {
+                "type": "image",
+                "source": {"type": "base64", "media_type": part.media_type, "data": part.data},
+            }
 
-        class AnthropicVisionLM(AnthropicTextLM):
-            def map_request_input_image(self, value: dspy.LMImagePart):
-                if value.data is None:
-                    raise ValueError("This example accepts base64 image data only.")
-                return {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": value.media_type,
-                        "data": value.data,
-                    },
-                }
+        def anthropic_blocks(parts):
+            blocks = []
+            for part in parts:
+                if isinstance(part, dspy.LMTextPart):
+                    blocks.append(anthropic_text(part))
+                elif isinstance(part, dspy.LMImagePart):
+                    blocks.append(anthropic_image(part))
+            return blocks
 
-            def _message_content_blocks(self, message: dspy.LMMessage) -> list[dict]:
-                blocks = []
-                for part in message.parts:
-                    if isinstance(part, dspy.LMTextPart):
-                        blocks.append(self.map_request_text(part.text))
-                    elif isinstance(part, dspy.LMImagePart):
-                        blocks.append(self.map_request_input_image(part))
-                return blocks
-
+        AnthropicVisionLM = AnthropicTextLM.with_images(
+            map_image=anthropic_image,
+            support=dspy.ImageSupport(base64=True, placement="any_message"),
+        ).with_request_mapper(anthropic_request, support=dspy.LMSupport(
+            text=True,
+            messages=True,
+            images=dspy.ImageSupport(base64=True, placement="any_message"),
+        ))
 
         image = base64.b64encode(open("dog.png", "rb").read()).decode()
-        lm = AnthropicVisionLM("claude-sonnet-4-5-20250929")
+        lm = AnthropicVisionLM
         response = lm("Describe this image.", dspy.Image(f"data:image/png;base64,{image}"))
         ```
 
-        This example rejects URL images on purpose. If your provider path can
-        fetch URLs, map `value.url` too.
-
     === "3. Add native tool calls"
-        Add tool request hooks, tool-continuation hooks, and tool-call response
-        mapping. This supports Python tools normalized to `LMToolSpec`, plus
-        multi-turn `Assistant(ToolCall(...))` and `ToolResult(...)` messages.
-
         ```python linenums="1"
         import dspy
 
+        def anthropic_tool(tool: dspy.LMToolSpec):
+            return {"name": tool.name, "description": tool.description or "", "input_schema": tool.parameters}
 
-        class AnthropicToolLM(AnthropicVisionLM):
-            def map_request_tools(self, value: dspy.LMToolSpec):
-                return {
-                    "name": value.name,
-                    "description": value.description or "",
-                    "input_schema": value.parameters,
-                }
+        def anthropic_tool_choice(choice: dspy.LMToolChoice):
+            if choice.mode == "required":
+                return {"type": "any"}
+            if choice.mode == "none":
+                return {"type": "none"}
+            return {"type": "auto"}
 
-            def map_request_tool_choice(self, value: dspy.LMToolChoice):
-                if value.mode == "required":
-                    return {"type": "any"}
-                if value.mode == "none":
-                    return {"type": "none"}
-                return {"type": "auto"}
+        def anthropic_tool_call(part: dspy.LMToolCallPart):
+            return {"type": "tool_use", "id": part.id, "name": part.name, "input": part.args}
 
-            def map_request_assistant_tool_calls(self, value: dspy.LMToolCallPart):
-                if value.id is None:
-                    raise ValueError("Anthropic tool-use continuations require a tool call id.")
-                return {
-                    "type": "tool_use",
-                    "id": value.id,
-                    "name": value.name,
-                    "input": value.args,
-                }
+        def text_from_parts(parts):
+            return "".join(part.text for part in parts if isinstance(part, dspy.LMTextPart))
 
-            def map_request_tool_results(self, value: dspy.LMToolResultPart):
-                if value.call_id is None:
-                    raise ValueError("Anthropic tool results require the matching tool call id.")
-                return {
-                    "type": "tool_result",
-                    "tool_use_id": value.call_id,
-                    "content": self._text_from_parts(value.content),
-                    "is_error": value.is_error,
-                }
+        def anthropic_tool_result(part: dspy.LMToolResultPart):
+            return {"type": "tool_result", "tool_use_id": part.call_id, "content": text_from_parts(part.content), "is_error": part.is_error}
 
-            def map_response_tool_calls(self, value):
-                return dspy.LMToolCallPart(
-                    id=self._get(value, "id"),
-                    name=self._get(value, "name", ""),
-                    args=dict(self._get(value, "input", {}) or {}),
-                    provider_data={"raw_type": self._get(value, "type")},
-                )
+        def anthropic_blocks(parts):
+            blocks = []
+            for part in parts:
+                if isinstance(part, dspy.LMTextPart):
+                    blocks.append(anthropic_text(part))
+                elif isinstance(part, dspy.LMImagePart):
+                    blocks.append(anthropic_image(part))
+                elif isinstance(part, dspy.LMToolCallPart):
+                    blocks.append(anthropic_tool_call(part))
+                elif isinstance(part, dspy.LMToolResultPart):
+                    blocks.append(anthropic_tool_result(part))
+            return blocks
 
-            def _text_from_parts(self, parts: list[dspy.LMPart]) -> str:
-                texts = []
-                for part in parts:
-                    if not isinstance(part, dspy.LMTextPart):
-                        raise ValueError("This example maps text-only tool results.")
-                    texts.append(part.text)
-                return "".join(texts)
+        def anthropic_request(request: dspy.LMRequest) -> dspy.ProviderRequest:
+            provider_request = AnthropicVisionLM.explain_provider_request(request=request)
+            kwargs = dict(provider_request.kwargs)
+            if request.tools:
+                kwargs["tools"] = [anthropic_tool(tool) for tool in request.tools]
+            if request.config.tool_choice is not None:
+                kwargs["tool_choice"] = anthropic_tool_choice(request.config.tool_choice)
+            return dspy.ProviderRequest(kwargs=kwargs)
 
-            def _message_content_blocks(self, message: dspy.LMMessage) -> list[dict]:
-                blocks = []
-                for part in message.parts:
-                    if isinstance(part, dspy.LMTextPart):
-                        blocks.append(self.map_request_text(part.text))
-                    elif isinstance(part, dspy.LMImagePart):
-                        blocks.append(self.map_request_input_image(part))
-                    elif isinstance(part, dspy.LMToolCallPart):
-                        blocks.append(self.map_request_assistant_tool_calls(part))
-                    elif isinstance(part, dspy.LMToolResultPart):
-                        blocks.append(self.map_request_tool_results(part))
-                return blocks
+        def anthropic_response(response, request: dspy.LMRequest) -> dspy.LMResponse:
+            parts = []
+            for block in get(response, "content", []):
+                if get(block, "type") == "text":
+                    parts.append(dspy.LMTextPart(text=get(block, "text", "")))
+                elif get(block, "type") == "tool_use":
+                    parts.append(dspy.LMToolCallPart(id=get(block, "id"), name=get(block, "name", ""), args=dict(get(block, "input", {}) or {})))
+            usage = get(response, "usage")
+            return dspy.LMResponse(
+                model=get(response, "model", request.model),
+                outputs=[dspy.LMOutput(parts=parts, finish_reason=get(response, "stop_reason"))],
+                usage=dspy.LMUsage(input_tokens=get(usage, "input_tokens"), output_tokens=get(usage, "output_tokens")),
+                provider_response=response,
+            )
 
-            def _request_kwargs(self, request: dspy.LMRequest) -> dict:
-                kwargs = super()._request_kwargs(request)
-                if request.tools:
-                    kwargs["tools"] = [self.map_request_tools(tool) for tool in request.tools]
-                if request.config.tool_choice is not None:
-                    kwargs["tool_choice"] = self.map_request_tool_choice(request.config.tool_choice)
-                return kwargs
-
-            def _parts_from_response(self, response) -> list[dspy.LMPart]:
-                parts = []
-                for block in self._get(response, "content", []):
-                    block_type = self._get(block, "type")
-                    if block_type == "text":
-                        parts.append(self.map_response_text(self._get(block, "text", "")))
-                    elif block_type == "tool_use":
-                        parts.append(self.map_response_tool_calls(block))
-                return parts
-
-
-        def get_weather(city: str) -> str:
-            """Get the weather for a city."""
-            return "sunny"
-
-
-        lm = AnthropicToolLM("claude-sonnet-4-5-20250929")
-        response = lm("What is the weather in Paris?", tools=[dspy.Tool(get_weather)])
-        response.tool_calls
+        AnthropicToolLM = dspy.LM.from_sdk(
+            model="claude-sonnet-4-5-20250929",
+            support=dspy.LMSupport(
+                text=True,
+                messages=True,
+                images=dspy.ImageSupport(base64=True, placement="any_message"),
+                tools=dspy.ToolSupport(schemas=True, calls=True, results=True),
+            ),
+            map_request=anthropic_request,
+            call=lambda provider_request: client.messages.create(**provider_request.kwargs),
+            map_response=anthropic_response,
+        )
         ```
 
     === "4. Add built-in tools"
-        Provider built-in tools are not Python functions. Keep their raw
-        provider shape in `LMToolSpec.provider_data`, then let
-        `map_request_tools()` pass that shape through.
-
         ```python linenums="1"
         import dspy
-
 
         web_search = dspy.LMToolSpec(
             name="web_search",
             description="Search the web with Anthropic's hosted tool.",
             parameters={},
-            provider_data={
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": 3,
-            },
+            provider_data={"type": "web_search_20250305", "name": "web_search", "max_uses": 3},
         )
 
+        def anthropic_tool(tool: dspy.LMToolSpec):
+            if tool.provider_data:
+                return dict(tool.provider_data)
+            return {"name": tool.name, "description": tool.description or "", "input_schema": tool.parameters}
 
-        class AnthropicBuiltinToolLM(AnthropicToolLM):
-            def map_request_tools(self, value: dspy.LMToolSpec):
-                if value.provider_data:
-                    return dict(value.provider_data)
-                return super().map_request_tools(value)
-
-
-        lm = AnthropicBuiltinToolLM("claude-sonnet-4-5-20250929")
-        response = lm("Find the latest DSPy release notes.", tools=[web_search])
+        AnthropicBuiltinToolLM = AnthropicToolLM.with_request_mapper(
+            anthropic_request,
+            support=AnthropicToolLM.support,
+        )
         ```
 
     === "5. Add native reasoning"
-        Add `map_request_reasoning_config()` for DSPy's `reasoning=` and
-        `reasoning_effort=` kwargs, then map provider thinking blocks to
-        `LMThinkingPart`.
-
         ```python linenums="1"
         import dspy
 
+        def anthropic_reasoning(reasoning: dspy.LMReasoningConfig):
+            thinking = {"type": "enabled"}
+            if reasoning.max_tokens is not None:
+                thinking["budget_tokens"] = reasoning.max_tokens
+            return thinking
 
-        class AnthropicReasoningLM(AnthropicBuiltinToolLM):
-            def map_request_reasoning_config(self, value: dspy.LMReasoningConfig):
-                thinking = {"type": "enabled"}
-                if value.max_tokens is not None:
-                    thinking["budget_tokens"] = value.max_tokens
-                return thinking
+        def anthropic_request(request: dspy.LMRequest) -> dspy.ProviderRequest:
+            provider_request = AnthropicBuiltinToolLM.explain_provider_request(request=request)
+            kwargs = dict(provider_request.kwargs)
+            if request.config.reasoning is not None:
+                kwargs["thinking"] = anthropic_reasoning(request.config.reasoning)
+            return dspy.ProviderRequest(kwargs=kwargs)
 
-            def map_response_reasoning(self, value):
-                return dspy.LMThinkingPart(text=str(value))
+        def anthropic_response(response, request: dspy.LMRequest) -> dspy.LMResponse:
+            parts = []
+            for block in get(response, "content", []):
+                if get(block, "type") == "thinking":
+                    parts.append(dspy.LMThinkingPart(text=get(block, "thinking", "")))
+                elif get(block, "type") == "text":
+                    parts.append(dspy.LMTextPart(text=get(block, "text", "")))
+                elif get(block, "type") == "tool_use":
+                    parts.append(dspy.LMToolCallPart(id=get(block, "id"), name=get(block, "name", ""), args=dict(get(block, "input", {}) or {})))
+            usage = get(response, "usage")
+            return dspy.LMResponse(
+                model=get(response, "model", request.model),
+                outputs=[dspy.LMOutput(parts=parts, finish_reason=get(response, "stop_reason"))],
+                usage=dspy.LMUsage(input_tokens=get(usage, "input_tokens"), output_tokens=get(usage, "output_tokens")),
+                provider_response=response,
+            )
 
-            def _request_kwargs(self, request: dspy.LMRequest) -> dict:
-                kwargs = super()._request_kwargs(request)
-                if request.config.reasoning is not None:
-                    kwargs["thinking"] = self.map_request_reasoning_config(request.config.reasoning)
-                return kwargs
-
-            def _parts_from_response(self, response) -> list[dspy.LMPart]:
-                parts = []
-                for block in self._get(response, "content", []):
-                    block_type = self._get(block, "type")
-                    if block_type == "thinking":
-                        parts.append(self.map_response_reasoning(self._get(block, "thinking", "")))
-                    elif block_type == "text":
-                        parts.append(self.map_response_text(self._get(block, "text", "")))
-                    elif block_type == "tool_use":
-                        parts.append(self.map_response_tool_calls(block))
-                return parts
-
-
-        lm = AnthropicReasoningLM("claude-sonnet-4-5-20250929")
-        response = lm("Think briefly, then answer.", reasoning=dspy.LMReasoningConfig(max_tokens=1024))
-        response.reasoning_content
+        AnthropicReasoningLM = dspy.LM.from_sdk(
+            model="claude-sonnet-4-5-20250929",
+            support=AnthropicToolLM.support.with_updates(reasoning=True),
+            map_request=anthropic_request,
+            call=lambda provider_request: client.messages.create(**provider_request.kwargs),
+            map_response=anthropic_response,
+        )
         ```
 
     === "6. Add documents + citations"
-        Add file input for documents and map provider citations back to
-        `LMCitationPart`.
-
         ```python linenums="1"
         import dspy
 
+        def anthropic_file(part: dspy.LMFilePart):
+            if part.data is None:
+                raise ValueError("This example accepts base64 document data only.")
+            return {
+                "type": "document",
+                "source": {"type": "base64", "media_type": part.media_type, "data": part.data},
+                "title": part.filename,
+                "citations": {"enabled": True},
+            }
 
-        class AnthropicCitationLM(AnthropicReasoningLM):
-            def map_request_input_file(self, value: dspy.LMFilePart):
-                if value.data is None:
-                    raise ValueError("This example accepts base64 document data only.")
-                return {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": value.media_type,
-                        "data": value.data,
-                    },
-                    "title": value.filename,
-                    "citations": {"enabled": True},
-                }
+        def anthropic_blocks(parts):
+            blocks = []
+            for part in parts:
+                if isinstance(part, dspy.LMFilePart):
+                    blocks.append(anthropic_file(part))
+                elif isinstance(part, dspy.LMTextPart):
+                    blocks.append(anthropic_text(part))
+                elif isinstance(part, dspy.LMImagePart):
+                    blocks.append(anthropic_image(part))
+                elif isinstance(part, dspy.LMToolCallPart):
+                    blocks.append(anthropic_tool_call(part))
+                elif isinstance(part, dspy.LMToolResultPart):
+                    blocks.append(anthropic_tool_result(part))
+            return blocks
 
-            def map_response_citations(self, value):
-                return dspy.LMCitationPart(
-                    text=self._get(value, "cited_text") or self._get(value, "text"),
-                    title=self._get(value, "document_title") or self._get(value, "title"),
-                    url=self._get(value, "url"),
-                    metadata={
-                        key: item
-                        for key in ("document_index", "start_char_index", "end_char_index")
-                        if (item := self._get(value, key)) is not None
-                    },
-                )
+        def citation_part(citation):
+            return dspy.LMCitationPart(
+                text=get(citation, "cited_text") or get(citation, "text"),
+                title=get(citation, "document_title") or get(citation, "title"),
+                url=get(citation, "url"),
+                metadata={key: item for key in ("document_index", "start_char_index", "end_char_index") if (item := get(citation, key)) is not None},
+            )
 
-            def _message_content_blocks(self, message: dspy.LMMessage) -> list[dict]:
-                blocks = []
-                for part in message.parts:
-                    if isinstance(part, dspy.LMFilePart):
-                        blocks.append(self.map_request_input_file(part))
-                    else:
-                        blocks.extend(super()._message_content_blocks(dspy.LMMessage(role=message.role, parts=[part])))
-                return blocks
+        def anthropic_request(request: dspy.LMRequest) -> dspy.ProviderRequest:
+            system = []
+            messages = []
+            for message in request.messages:
+                if message.role in {"system", "developer"}:
+                    system.extend(block["text"] for block in anthropic_blocks(message.parts) if block["type"] == "text")
+                elif message.role in {"user", "assistant"}:
+                    messages.append({"role": message.role, "content": anthropic_blocks(message.parts)})
+                elif message.role == "tool":
+                    messages.append({"role": "user", "content": anthropic_blocks(message.parts)})
+            kwargs = {
+                "model": request.model,
+                "system": "\n\n".join(system) or None,
+                "messages": messages,
+                "max_tokens": request.config.max_tokens or 1024,
+                "temperature": request.config.temperature,
+            }
+            if request.tools:
+                kwargs["tools"] = [anthropic_tool(tool) for tool in request.tools]
+            if request.config.tool_choice is not None:
+                kwargs["tool_choice"] = anthropic_tool_choice(request.config.tool_choice)
+            if request.config.reasoning is not None:
+                kwargs["thinking"] = anthropic_reasoning(request.config.reasoning)
+            return dspy.ProviderRequest(kwargs={key: value for key, value in kwargs.items() if value is not None})
 
-            def _parts_from_response(self, response) -> list[dspy.LMPart]:
-                parts = super()._parts_from_response(response)
-                for block in self._get(response, "content", []):
-                    for citation in self._get(block, "citations", []) or []:
-                        parts.append(self.map_response_citations(citation))
-                return parts
+        def anthropic_response(response, request: dspy.LMRequest) -> dspy.LMResponse:
+            base = AnthropicReasoningLM._map_response_fn(response, request)
+            citations = []
+            for block in get(response, "content", []):
+                citations.extend(citation_part(citation) for citation in get(block, "citations", []) or [])
+            base.outputs[0].parts.extend(citations)
+            return base
+
+        AnthropicCitationLM = dspy.LM.from_sdk(
+            model="claude-sonnet-4-5-20250929",
+            support=AnthropicReasoningLM.support.with_updates(files=True, citations=True),
+            map_request=anthropic_request,
+            call=lambda provider_request: client.messages.create(**provider_request.kwargs),
+            map_response=anthropic_response,
+        )
         ```
 
-        The exact citation shape depends on the SDK response. Keep anything not
-        represented by `text`, `title`, or `url` in `metadata`.
-
     === "7. Add streaming"
-        Finally, add `forward_stream()`. It reuses the same request mapping and
-        converts provider stream events into normalized `LMStreamEvent` objects.
-
         ```python linenums="1"
         import dspy
 
+        def anthropic_stream(request: dspy.LMRequest):
+            yield dspy.LMStreamStartEvent(model=request.model)
+            with client.messages.stream(**AnthropicCitationLM.explain_provider_request(request=request).kwargs) as stream:
+                for event in stream:
+                    if get(event, "type") != "content_block_delta":
+                        continue
+                    delta = get(event, "delta")
+                    if get(delta, "type") == "thinking_delta":
+                        yield dspy.LMStreamDeltaEvent(output_index=0, part_index=0, delta=dspy.LMThinkingDelta(text=get(delta, "thinking", "")))
+                    elif get(delta, "type") == "text_delta":
+                        yield dspy.LMStreamDeltaEvent(output_index=0, part_index=1, delta=dspy.LMTextDelta(text=get(delta, "text", "")))
+            yield dspy.LMStreamOutputEndEvent(output_index=0)
+            yield dspy.LMStreamEndEvent()
 
-        class AnthropicStreamingLM(AnthropicCitationLM):
-            def forward_stream(self, request: dspy.LMRequest):
-                yield dspy.LMStreamStartEvent(model=request.model)
+        AnthropicStreamingLM = AnthropicCitationLM.with_streaming(stream=anthropic_stream)
 
-                with self.client.messages.stream(**self._request_kwargs(request)) as stream:
-                    for event in stream:
-                        if self._get(event, "type") != "content_block_delta":
-                            continue
-                        delta = self._get(event, "delta")
-                        delta_type = self._get(delta, "type")
-                        if delta_type == "thinking_delta":
-                            yield dspy.LMStreamDeltaEvent(
-                                output_index=0,
-                                part_index=0,
-                                delta=dspy.LMThinkingDelta(text=self._get(delta, "thinking", "")),
-                            )
-                        elif delta_type == "text_delta":
-                            yield dspy.LMStreamDeltaEvent(
-                                output_index=0,
-                                part_index=1,
-                                delta=dspy.LMTextDelta(text=self._get(delta, "text", "")),
-                            )
-
-                yield dspy.LMStreamOutputEndEvent(output_index=0)
-                yield dspy.LMStreamEndEvent()
-
-
-        lm = AnthropicStreamingLM("claude-sonnet-4-5-20250929")
+        lm = AnthropicStreamingLM
         stream = lm.stream("Say hello")
         for event in stream:
             print(event.type)
         print(stream.result().text)
         ```
-
-        Use stable `part_index` values. Here reasoning is part `0` and text is
-        part `1`; add separate indexes for tool-call deltas if your stream emits
-        them.
-
-
-## OpenAI-compatible endpoints
-
-If your provider exposes an OpenAI-compatible Chat Completions endpoint, reuse
-DSPy's OpenAI-format mapping and provide only the transport.
-
-```python
-from openai import OpenAI
-import dspy
-
-
-dspy.configure(experimental_lm=True)
-
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="EMPTY")
-
-lm = dspy.CompletionLM(
-    "meta-llama/Llama-3.1-8B-Instruct",
-    completion=client.chat.completions.create,
-)
-
-dspy.configure(lm=lm)
-```
-
-For the Responses API, use `ResponsesLM`:
-
-```python
-lm = dspy.ResponsesLM(
-    "openai/gpt-4o-mini",
-    responses=client.responses.create,
-)
-```
-
-For text completions, use `TextCompletionLM`:
-
-```python
-lm = dspy.TextCompletionLM(
-    "my-text-model",
-    completion=client.completions.create,
-)
-```
-
-If you need more control, subclass `dspy.OpenAIChatLM`,
-`dspy.OpenAIResponsesLM`, or `dspy.OpenAITextLM` and implement only the
-transport method: `completion()`, `responses()`, or `text_completion()`.
 
 ## Registering a backend for `dspy.LM`
 
@@ -1303,7 +996,7 @@ import dspy
 @dspy.register_lm_backend
 def route_acme(model: str, *args, **kwargs):
     if model.startswith("acme/"):
-        return AcmeLM(model, *args, **kwargs)
+        return make_acme_lm(model, *args, **kwargs)
     return None
 
 
@@ -1316,33 +1009,23 @@ factory does not own the model.
 
 ## Migration checklist
 
-- [ ] Set `dspy.configure(experimental_lm=True)` before constructing normalized
-      `dspy.LM(...)` objects.
-- [ ] Change custom LM subclasses from `dspy.BaseLM` to `dspy.LanguageModel`.
-- [ ] Change `forward(prompt=None, messages=None, **kwargs)` to
-      `forward(request: dspy.LMRequest)`.
-- [ ] Convert `request.messages`, `request.tools`, and `request.config` to your
-      provider request.
-- [ ] Return `dspy.LMResponse`, not a provider-shaped response.
-- [ ] Put generated text, reasoning, tool calls, citations, files, and media in
-      `LMOutput.parts`.
+- [ ] Enable `dspy.configure(experimental_lm=True)` before constructing normalized `dspy.LM(...)` objects.
+- [ ] Prefer `dspy.LM.from_sdk(...)` over subclassing.
+- [ ] Write `map_request(request) -> ProviderRequest`.
+- [ ] Write `call(provider_request)`.
+- [ ] Write `map_response(response, request) -> LMResponse`.
+- [ ] Declare `support` explicitly.
+- [ ] Use `explain_request(...)` and `explain_provider_request(...)` while debugging.
+- [ ] Put generated text, reasoning, tool calls, citations, files, and media in `LMOutput.parts`.
 - [ ] Put usage on `response.usage` and cost on `response.cost` when available.
-- [ ] Implement request mapping hooks for every non-text request shape you
-      support.
-- [ ] Implement response mapping hooks for every non-text response part you
-      support.
 - [ ] Normalize recognizable provider errors, especially context-window errors.
-- [ ] Implement streaming with normalized `LMStreamEvent` objects if your
-      provider streams.
-- [ ] Override `copy()` if your LM holds non-copyable runtime resources.
-- [ ] Override `dump_state()` and `load_state()` if your LM should round-trip
-      through program save/load.
+- [ ] Add streaming with normalized `LMStreamEvent` objects if your provider streams.
 
 ## Legacy `BaseLM`
 
 `dspy.BaseLM` remains the legacy prompt/messages contract. Existing custom LMs
 can continue to use it during the migration window, but new custom LMs should
-use `dspy.LanguageModel`.
+use the normalized `LM.from_sdk(...)` path.
 
 Subclassing `dspy.BaseLM` outside DSPy may emit a `DeprecationWarning`. You can
 silence it while migrating:

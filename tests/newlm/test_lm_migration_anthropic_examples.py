@@ -90,7 +90,7 @@ def test_anthropic_migration_examples_compile_and_run(monkeypatch, tmp_path):
         compile(block, f"anthropic-migration-block-{index}", "exec")
         exec(block, namespace)
 
-    lm = namespace["AnthropicCitationLM"]("claude-sonnet-4-5-20250929", cache=False)
+    lm = namespace["AnthropicCitationLM"]
     request = lm.normalize_request(
         namespace["dspy"].User(
             "Use this document.",
@@ -101,7 +101,7 @@ def test_anthropic_migration_examples_compile_and_run(monkeypatch, tmp_path):
             ),
         )
     )
-    provider_request = lm._request_kwargs(request)
+    provider_request = lm.explain_provider_request(request=request).kwargs
 
     assert provider_request["messages"][0]["content"][1]["type"] == "document"
     assert provider_request["messages"][0]["content"][1]["citations"] == {"enabled": True}
