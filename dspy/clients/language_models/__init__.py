@@ -1,18 +1,10 @@
 """Normalized language model implementations and types."""
 
+from dspy.clients.language_models.anthropic import AnthropicLM
 from dspy.clients.language_models.base import LanguageModel, LMCapabilities
-from dspy.clients.language_models.factories import (
-    litellm_chat_lm,
-    litellm_responses_lm,
-    litellm_text_lm,
-    lm15_lm,
-    openai_responses_lm,
-)
-from dspy.clients.language_models.features import FeatureStatus, LMFeatureReporter, LMRequestSupport, LMSupportIssue
-from dspy.clients.language_models.provider import ProviderRequest
+from dspy.clients.language_models.gemini import GenAILM
+from dspy.clients.language_models.openai import OpenAICompletionsLM, OpenAIResponsesLM
 from dspy.clients.language_models.router import LM, LMRouter, register_lm_backend
-from dspy.clients.language_models.sdk import SDKLanguageModel
-from dspy.clients.language_models.support import ImageSupport, LMSupport, ToolSupport
 from dspy.clients.language_models.types import (
     Assistant,
     AsyncLMStream,
@@ -64,23 +56,13 @@ from dspy.clients.language_models.types import (
 __all__ = [
     "LanguageModel",
     "LMCapabilities",
-    "ProviderRequest",
-    "SDKLanguageModel",
-    "LMSupport",
-    "ImageSupport",
-    "ToolSupport",
+    "OpenAICompletionsLM",
+    "OpenAIResponsesLM",
+    "AnthropicLM",
+    "GenAILM",
     "LM",
     "LMRouter",
     "register_lm_backend",
-    "FeatureStatus",
-    "LMFeatureReporter",
-    "LMRequestSupport",
-    "LMSupportIssue",
-    "openai_responses_lm",
-    "litellm_chat_lm",
-    "litellm_text_lm",
-    "litellm_responses_lm",
-    "lm15_lm",
     "LMBasePart",
     "LMTextPart",
     "LMImagePart",

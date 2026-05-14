@@ -50,7 +50,7 @@ def test_context_window_error_is_a_normalized_lm_error():
     assert str(error) == "[test/model] Context window exceeded"
 
 
-def test_language_model_normalizes_errors_and_observes_context_window_support():
+def test_language_model_normalizes_errors():
     lm = NormalizingLM()
 
     with pytest.raises(dspy.ContextWindowExceededError) as exc_info:
@@ -58,8 +58,6 @@ def test_language_model_normalizes_errors_and_observes_context_window_support():
 
     assert exc_info.value.model == "test/context"
     assert exc_info.value.provider == "test"
-    assert lm.features.context_window_errors.status == "observed"
-    assert lm.features.context_window_errors
 
 
 def test_language_model_leaves_unknown_errors_unchanged():
@@ -67,5 +65,3 @@ def test_language_model_leaves_unknown_errors_unchanged():
 
     with pytest.raises(NativeContextError):
         lm("hello")
-
-    assert lm.features.context_window_errors.status == "unknown"

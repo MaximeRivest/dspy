@@ -1451,14 +1451,6 @@ def _coerce_tool_spec(tool: Any) -> LMToolSpec:
         return tool
     if hasattr(tool, "to_lm_tool_spec"):
         return tool.to_lm_tool_spec()
-    if hasattr(tool, "format_as_litellm_function_call"):
-        formatted = tool.format_as_litellm_function_call()
-        function = formatted.get("function", {})
-        return LMToolSpec(
-            name=function.get("name"),
-            description=function.get("description"),
-            parameters=function.get("parameters", {}),
-        )
     if isinstance(tool, dict):
         if "function" in tool:
             function = tool["function"]

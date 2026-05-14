@@ -7,7 +7,6 @@ class EchoLM(dspy.LanguageModel):
     def __init__(self):
         super().__init__(model="test/echo", cache=False)
         self.requests = []
-        self.support = self.support.with_updates(logprobs=True)
 
     def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         self.requests.append(request)
@@ -23,10 +22,6 @@ class ToolCallingLM(dspy.LanguageModel):
     def __init__(self):
         super().__init__(model="test/tools", cache=False)
         self.requests = []
-        self.support = self.support.with_updates(
-            tools=dspy.ToolSupport(schemas=True, calls=True, results=True),
-            reasoning=True,
-        )
 
     def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         self.requests.append(request)
@@ -61,12 +56,7 @@ class ToolCallingLM(dspy.LanguageModel):
 
 
 class RichInputLM(EchoLM):
-    def __init__(self):
-        super().__init__()
-        self.support = self.support.with_updates(
-            images=dspy.ImageSupport(urls=True, base64=True, placement="any_message"),
-            tools=dspy.ToolSupport(schemas=True, calls=True, results=True),
-        )
+    pass
 
 
 def test_simple_call_returns_list_like_lm_response_with_metadata():

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from typing import Any, Literal
 
-from typing_extensions import Self
-
 from dspy.clients.language_models.base import LanguageModel
-from dspy.clients.language_models.features import FeatureStatus, LMFeatureReporter
-from dspy.clients.language_models.types import LMRequest, LMResponse, LMStreamEvent
 
 LMBackendFactory = Callable[..., LanguageModel | None]
 
@@ -27,178 +24,85 @@ def register_lm_backend(factory: LMBackendFactory) -> LMBackendFactory:
     return factory
 
 
-class LMRouter(LanguageModel):
-    """Route one public `dspy.LM` instance to a concrete backend."""
+def LMRouter(  # noqa: N802
+    model: str | None = None,
+    *args: Any,
+    backend: LanguageModel | None = None,
+    **kwargs: Any,
+) -> LanguageModel:
+    """Create a concrete normalized language model backend.
 
-    @classmethod
-    def from_sdk(cls, *args: Any, **kwargs: Any):
-        from dspy.clients.language_models.sdk import SDKLanguageModel
+    Args:
+        model: Model name or deployment identifier. Required unless `backend`
+            is supplied.
+        *args: Positional arguments forwarded to registered backend constructors.
+        backend: Optional prebuilt backend. When supplied, returned as-is.
+        **kwargs: Constructor arguments for the selected backend.
 
-        return SDKLanguageModel(*args, **kwargs)
-
-    @classmethod
-    def from_text(cls, *args: Any, **kwargs: Any):
-        from dspy.clients.language_models.sdk import SDKLanguageModel
-
-        return SDKLanguageModel.from_text(*args, **kwargs)
-
-    @classmethod
-    def from_messages(cls, *args: Any, **kwargs: Any):
-        from dspy.clients.language_models.sdk import SDKLanguageModel
-
-        return SDKLanguageModel.from_messages(*args, **kwargs)
-
-    # The router owns public LM lifecycle: callbacks, cache, history, and copy.
-    # The backend owns provider/protocol behavior and exposes exact feature
-    # support through the `LanguageModel` hooks.
-
-    def __init__(
-        self,
-        model: str | None = None,
-        *,
-        backend: LanguageModel | None = None,
-        model_type: Literal["chat", "text", "responses"] = "chat",
-        cache: bool = True,
-        callbacks: list[Any] | None = None,
-        **kwargs: Any,
-    ):
-        if backend is None:
-            if model is None:
-                raise TypeError("LM requires `model` unless `backend` is provided.")
-            backend = _route_lm_backend(
-                model,
-                model_type=model_type,
-                cache=cache,
-                callbacks=callbacks,
-                **kwargs,
-            )
-        self.backend = backend
-        self.callbacks = list(callbacks if callbacks is not None else getattr(backend, "callbacks", []) or [])
-        self.history: list[dict[str, Any]] = []
-        self.features = LMFeatureReporter(self)
-
-    @property
-    def model(self) -> str:
-        return self.backend.model
-
-    @model.setter
-    def model(self, value: str) -> None:
-        self.backend.model = value
-
-    @property
-    def cache(self) -> bool:
-        return self.backend.cache
-
-    @cache.setter
-    def cache(self, value: bool) -> None:
-        self.backend.cache = value
-
-    @property
-    def kwargs(self) -> dict[str, Any]:
-        return self.backend.kwargs
-
-    @kwargs.setter
-    def kwargs(self, value: dict[str, Any]) -> None:
-        self.backend.kwargs = value
-
-    @property
-    def model_type(self) -> str | None:
-        return getattr(self.backend, "model_type", None)
-
-    @property
-    def capabilities(self):
-        return self.backend.capabilities
-
-    def get_capabilities(self):
-        return self.backend.get_capabilities()
-
-    def get_request_feature_statuses(self) -> dict[str, FeatureStatus]:
-        return self.backend.get_request_feature_statuses()
-
-    def get_response_feature_statuses(self) -> dict[str, FeatureStatus]:
-        return self.backend.get_response_feature_statuses()
-
-    def validate_request(self, request: LMRequest):
-        return self.backend.validate_request(request)
-
-    def forward(self, request: LMRequest) -> LMResponse:
-        return self.backend.forward(request)
-
-    async def aforward(self, request: LMRequest) -> LMResponse:
-        return await self.backend.aforward(request)
-
-    def forward_stream(self, request: LMRequest):
-        yield from self.backend.forward_stream(request)
-
-    async def aforward_stream(self, request: LMRequest):
-        async for event in self.backend.aforward_stream(request):
-            yield event
-
-    def normalize_error(self, error: Exception, request: LMRequest) -> Exception:
-        return self.backend.normalize_error(error, request)
-
-    def dump_state(self) -> dict[str, Any]:
-        return {
-            "backend_class": f"{type(self.backend).__module__}.{type(self.backend).__qualname__}",
-            "backend_state": self.backend.dump_state(),
-        }
-
-    @classmethod
-    def load_state(cls, state: dict[str, Any]) -> Self:
-        backend_class = _import_object(state["backend_class"])
-        backend = backend_class.load_state(state["backend_state"])
-        return cls(backend=backend)
-
-    def copy(self, **overrides: Any) -> Self:
-        return type(self)(backend=self.backend.copy(**overrides), callbacks=list(self.callbacks))
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.backend, name)
+    Returns:
+        A concrete `LanguageModel` instance.
+    """
+    if backend is not None:
+        return backend
+    if model is None:
+        raise TypeError("LM requires `model` unless `backend` is provided.")
+    protocol = _deprecated_model_type(kwargs)
+    return _route_lm_backend(model, *args, protocol=protocol, **kwargs)
 
 
 LM = LMRouter
 
 
+def _deprecated_model_type(kwargs: dict[str, Any]) -> Literal["chat", "text", "responses"]:
+    model_type = kwargs.pop("model_type", None)
+    if model_type is None:
+        return "chat"
+    warnings.warn(
+        "`model_type` is deprecated for `dspy.LM` and `dspy.LMRouter`. "
+        "Instantiate `OpenAIResponsesLM` or `OpenAICompletionsLM` directly when you need a specific OpenAI API.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    if model_type not in {"chat", "text", "responses"}:
+        raise ValueError(f"Unsupported model_type: {model_type!r}")
+    return model_type
+
+
 def _route_lm_backend(
     model: str,
     *args: Any,
-    model_type: Literal["chat", "text", "responses"] = "chat",
+    protocol: Literal["chat", "text", "responses"] = "chat",
     **kwargs: Any,
 ) -> LanguageModel:
-    # `model_type` selects DSPy's default LiteLLM protocol backend. Custom
-    # factories should not receive it as a generation kwarg by accident.
+    # `protocol` selects DSPy's default built-in OpenAI backend. Custom
+    # registered backends should not receive public routing options by accident.
     for factory in reversed(_BACKEND_FACTORIES):
         backend = factory(model, *args, **kwargs)
         if backend is not None:
             return backend
-    return _default_litellm_backend(model, *args, model_type=model_type, **kwargs)
+    return _default_builtin_backend(model, *args, protocol=protocol, **kwargs)
 
 
-def _default_litellm_backend(
+def _default_builtin_backend(
     model: str,
     *,
-    model_type: Literal["chat", "text", "responses"] = "chat",
+    protocol: Literal["chat", "text", "responses"] = "chat",
     **kwargs: Any,
 ) -> LanguageModel:
-    from dspy.clients.language_models.factories import litellm_chat_lm, litellm_responses_lm, litellm_text_lm
+    from dspy.clients.language_models.anthropic import AnthropicLM
+    from dspy.clients.language_models.gemini import GenAILM
+    from dspy.clients.language_models.openai import OpenAICompletionsLM, OpenAIResponsesLM
 
-    backend_factory = {
-        "chat": litellm_chat_lm,
-        "text": litellm_text_lm,
-        "responses": litellm_responses_lm,
-    }.get(model_type)
-    if backend_factory is None:
-        raise ValueError(f"Unsupported model_type: {model_type!r}")
-    return backend_factory(model=model, **kwargs)
+    provider = model.split("/", 1)[0] if "/" in model else "openai"
+    if provider == "anthropic":
+        return AnthropicLM(model=model, **kwargs)
+    if provider in {"gemini", "google", "genai"}:
+        return GenAILM(model=model, **kwargs)
 
-
-def _import_object(path: str) -> Any:
-    module_name, _, qualname = path.rpartition(".")
-    if not module_name:
-        raise ImportError(f"Cannot import object from {path!r}.")
-    import importlib
-
-    obj = importlib.import_module(module_name)
-    for part in qualname.split("."):
-        obj = getattr(obj, part)
-    return obj
+    if protocol == "responses":
+        return OpenAIResponsesLM(model=model, **kwargs)
+    if protocol == "chat":
+        return OpenAICompletionsLM(model=model, protocol="chat", **kwargs)
+    if protocol == "text":
+        return OpenAICompletionsLM(model=model, protocol="text", **kwargs)
+    raise ValueError(f"Unsupported protocol: {protocol!r}")

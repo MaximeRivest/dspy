@@ -7,8 +7,8 @@ LMRequest -> OpenAI Chat / Responses / text-completion kwargs
 provider response -> LMResponse
 ```
 
-The LiteLLM factories and other SDK wrappers import these functions, then add
-transport, retries, cost tracking, and caching around them. Read the file in
+The concrete OpenAI backends import these functions, then add transport,
+streaming, and caching around them. Read the file in
 this order when learning it:
 
 1. `to_openai_chat_request()` maps chat-completion requests.
@@ -26,7 +26,6 @@ from typing import Any
 
 import pydantic
 
-from dspy.clients.language_models.provider import ProviderRequest
 from dspy.clients.language_models.types import (
     LMAudioPart,
     LMCitationPart,
@@ -48,11 +47,8 @@ from dspy.clients.language_models.types import (
 )
 
 __all__ = [
-    "to_openai_chat_provider_request",
     "to_openai_chat_request",
-    "to_openai_responses_provider_request",
     "to_openai_responses_request",
-    "to_openai_text_provider_request",
     "to_openai_text_request",
     "completion_to_lm_response",
     "responses_to_lm_response",
@@ -70,12 +66,6 @@ __all__ = [
 # Each DSPy message stays one OpenAI message, except assistant tool calls are
 # split into OpenAI's top-level `tool_calls` field on the assistant message.
 # ---------------------------------------------------------------------------
-
-
-def to_openai_chat_provider_request(request: LMRequest) -> ProviderRequest:
-    """Wrap an OpenAI Chat request in DSPy's provider-call container."""
-    data = to_openai_chat_request(request)
-    return ProviderRequest(kwargs=data, preview=data, metadata={"protocol": "openai_chat"})
 
 
 def to_openai_chat_request(request: LMRequest) -> dict[str, Any]:
@@ -123,12 +113,6 @@ def message_to_openai_chat(message: LMMessage) -> dict[str, Any]:
 # DSPy assistant message can therefore become two kinds of input items: one
 # message item for content and one function_call item for each tool call.
 # ---------------------------------------------------------------------------
-
-
-def to_openai_responses_provider_request(request: LMRequest) -> ProviderRequest:
-    """Wrap an OpenAI Responses request in DSPy's provider-call container."""
-    data = to_openai_responses_request(request)
-    return ProviderRequest(kwargs=data, preview=data, metadata={"protocol": "openai_responses"})
 
 
 def to_openai_responses_request(request: LMRequest) -> dict[str, Any]:
@@ -217,12 +201,6 @@ def content_block_to_responses(block: dict[str, Any]) -> dict[str, Any]:
 # Text completions have no native message roles. We concatenate text-only
 # messages with blank lines and append DSPy's historical response marker.
 # ---------------------------------------------------------------------------
-
-
-def to_openai_text_provider_request(request: LMRequest) -> ProviderRequest:
-    """Wrap an OpenAI text-completion request in DSPy's provider-call container."""
-    data = to_openai_text_request(request)
-    return ProviderRequest(kwargs=data, preview=data, metadata={"protocol": "openai_text"})
 
 
 def to_openai_text_request(request: LMRequest) -> dict[str, Any]:

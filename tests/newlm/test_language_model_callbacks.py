@@ -135,19 +135,18 @@ def test_language_model_callback_receives_normalized_exception():
     assert [call[0] for call in callback.calls] == ["start", "end"]
     assert callback.calls[1][2] is None
     assert isinstance(callback.calls[1][3], dspy.ContextWindowExceededError)
-    assert lm.features.context_window_errors.status == "observed"
 
 
 def test_language_model_stream_construction_errors_emit_callbacks():
     callback = RecordingCallback()
     lm = CallbackLM(callbacks=[callback])
 
-    with pytest.raises(dspy.LMUnsupportedFeatureError):
+    with pytest.raises(NotImplementedError):
         lm.stream("hello")
 
     assert [call[0] for call in callback.calls] == ["start", "end"]
     assert callback.calls[1][2] is None
-    assert isinstance(callback.calls[1][3], dspy.LMUnsupportedFeatureError)
+    assert isinstance(callback.calls[1][3], NotImplementedError)
 
 
 def test_language_model_stream_callbacks_end_after_consumption():

@@ -12,12 +12,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
 
 from typing_extensions import Self
 
-from dspy.clients.language_models.features import FeatureStatus, LMFeatureReporter
-from dspy.clients.language_models.provider import ProviderRequest
-from dspy.clients.language_models.support import LMSupport
 from dspy.dsp.utils import settings
 from dspy.utils.callback import ACTIVE_CALL_ID
-from dspy.utils.exceptions import LMError
 from dspy.utils.inspect_history import pretty_print_history
 
 if TYPE_CHECKING:
@@ -36,14 +32,14 @@ GLOBAL_LANGUAGE_MODEL_HISTORY: list[Mapping[str, Any]] = []
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass(frozen=True)
 class LMCapabilities:
-    """The model features a language model can use for its current backend.
+    """Optional model and deployment metadata for an LM backend.
 
-    Capabilities are intentionally descriptive, not prescriptive. They tell
-    adapters and modules which native paths are worth trying. A concrete
-    backend still owns the final request validation because deployments can
-    differ even when model names look the same.
+    Capabilities are descriptive hints. They can help adapters choose a native
+    path, but the concrete `LanguageModel` still decides how to handle each
+    request in `forward()`.
 
     Attributes:
         function_calling: Whether the model can return native tool calls.
@@ -57,7 +53,7 @@ class LMCapabilities:
         output_image: Whether responses may contain generated image parts.
         output_audio: Whether responses may contain generated audio parts.
         tool_results: Whether request messages may contain tool-result parts.
-        extensions: Extra backend-specific capability flags.
+        extensions: Extra backend-specific metadata.
     """
 
     function_calling: bool = False
@@ -129,8 +125,6 @@ class LanguageModel:
         self.callbacks = callbacks or []
         self.kwargs = dict(kwargs)
         self.history: list[dict[str, Any]] = []
-        self.support = self.get_support()
-        self.features = LMFeatureReporter(self)
 
     # ---------------------------------------------------------------------
     # Model and deployment metadata
@@ -138,51 +132,11 @@ class LanguageModel:
 
     @property
     def capabilities(self) -> LMCapabilities:
-        """The native features available for this model instance."""
+        """The native metadata available for this model instance."""
         return self.get_capabilities()
 
-    @property
-    def support(self) -> LMSupport:
-        """The normalized request and response shapes this wrapper declares it can handle."""
-        return getattr(self, "_support", self.get_support())
-
-    @support.setter
-    def support(self, value: LMSupport) -> None:
-        self._support = value
-
-    def get_support(self) -> LMSupport:
-        """Return explicit wrapper support.
-
-        Subclasses and SDK wrappers should prefer explicit support declarations.
-        A small transitional bridge recognizes old mapper method names when a
-        subclass defines them directly, but `LanguageModel` no longer exposes
-        those hooks as base-class API.
-        """
-        legacy = _legacy_mapper_support(type(self))
-        return LMSupport(
-            text=True,
-            messages=True,
-            images=legacy.get("images"),
-            audio=legacy.get("audio", False),
-            files=legacy.get("files", False),
-            tools=legacy.get("tools"),
-            response_schema=legacy.get("response_schema", False),
-            reasoning=legacy.get("reasoning", False),
-            prompt_cache=legacy.get("prompt_cache", False),
-            logprobs=legacy.get("logprobs", False),
-            multiple_outputs=legacy.get("multiple_outputs", False),
-            provider_extensions=True,
-            native_async=self._method_overridden("aforward"),
-            streaming=self._method_overridden("forward_stream"),
-            async_streaming=self._method_overridden("aforward_stream"),
-        )
-
     def get_capabilities(self) -> LMCapabilities:
-        """Return optional native model/deployment hints.
-
-        This is retained as provider metadata for existing integrations. Request
-        validation is based on `support`, not on these coarse booleans.
-        """
+        """Return optional native model and deployment hints."""
         return LMCapabilities()
 
     # ---------------------------------------------------------------------
@@ -192,26 +146,10 @@ class LanguageModel:
     def forward(self, request: LMRequest) -> LMResponse:
         """Run one normalized language model request.
 
-        The default implementation uses the plugin pipeline:
-        `map_request()` -> `call_provider()` -> `map_response()`. Subclasses may
-        still override `forward()` for special cases, but SDK/plugin authors
-        should usually provide the three smaller functions instead.
+        Subclasses must implement this method. Translate `request` into the
+        provider format, call the provider, and return an `LMResponse`.
         """
-        provider_request = self.map_request(request)
-        provider_response = self.call_provider(provider_request)
-        return self.map_response(provider_response, request)
-
-    def map_request(self, request: LMRequest) -> ProviderRequest:
-        """Map an `LMRequest` to an SDK/provider call description."""
-        raise NotImplementedError(f"{type(self).__name__} must implement map_request(request).")
-
-    def call_provider(self, provider_request: ProviderRequest) -> Any:
-        """Call the SDK/provider with a prepared `ProviderRequest`."""
-        raise NotImplementedError(f"{type(self).__name__} must implement call_provider(provider_request).")
-
-    def map_response(self, provider_response: Any, request: LMRequest) -> LMResponse:
-        """Map an SDK/provider response back to an `LMResponse`."""
-        raise NotImplementedError(f"{type(self).__name__} must implement map_response(provider_response, request).")
+        raise NotImplementedError(f"{type(self).__name__} must implement forward(request).")
 
     async def aforward(self, request: LMRequest) -> LMResponse:
         """Run one normalized language model request asynchronously.
@@ -238,26 +176,6 @@ class LanguageModel:
         failures. The default returns the original exception unchanged.
         """
         return error
-
-    # ---------------------------------------------------------------------
-    # Implementation support introspection
-    # ---------------------------------------------------------------------
-
-    def get_request_feature_statuses(self) -> dict[str, FeatureStatus]:
-        """Return legacy request support statuses.
-
-        New integrations should declare `self.support`; this hook remains only
-        for transitional subclasses.
-        """
-        return {}
-
-    def get_response_feature_statuses(self) -> dict[str, FeatureStatus]:
-        """Return legacy response support statuses.
-
-        New integrations should declare `self.support`; this hook remains only
-        for transitional subclasses.
-        """
-        return {}
 
     # ---------------------------------------------------------------------
     # State, serialization, and lifecycle hooks
@@ -288,10 +206,10 @@ class LanguageModel:
         """Return a runtime copy of this LM with updated inference defaults.
 
         The copy keeps provider/runtime resources by reference, then isolates
-        mutable DSPy-owned state such as history, callbacks, feature reporting,
-        and default request kwargs. This makes ``lm.copy(...)`` safe for SDK
-        clients, sessions, local model handles, and other resources that cannot
-        or should not be deep-copied.
+        mutable DSPy-owned state such as history, callbacks, and default request
+        kwargs. This makes `lm.copy(...)` safe for provider clients, sessions,
+        local model handles, and other resources that cannot or should not be
+        deep-copied.
 
         Subclasses with unusual resource ownership can override this method, but
         should preserve the same public semantics: no provider call, fresh
@@ -302,7 +220,6 @@ class LanguageModel:
         new_instance.history = []
         new_instance.callbacks = list(getattr(self, "callbacks", []) or [])
         new_instance.kwargs = dict(getattr(self, "kwargs", {}) or {})
-        new_instance.features = LMFeatureReporter(new_instance)
 
         for key, value in overrides.items():
             if hasattr(new_instance, key):
@@ -314,37 +231,6 @@ class LanguageModel:
                     new_instance.kwargs[key] = value
 
         return new_instance
-
-    # ---------------------------------------------------------------------
-    # Request support validation
-    # ---------------------------------------------------------------------
-
-    def validate_request(self, request: LMRequest):
-        """Return whether this implementation can map every shape used by `request`."""
-        return self.features.validate_request(request)
-
-    def _method_overridden(self, method_name: str) -> bool:
-        method = getattr(type(self), method_name, None)
-        base_method = getattr(LanguageModel, method_name, None)
-        return method is not None and base_method is not None and method is not base_method
-
-    def supports_request(self, request: LMRequest) -> bool:
-        """Return whether this LM supports every shape used by `request`."""
-        return bool(self.validate_request(request))
-
-    def require_request_support(self, request: LMRequest) -> None:
-        """Raise if this LM cannot map every shape used by `request`."""
-        support = self.validate_request(request)
-        if support:
-            return
-        from dspy.utils.exceptions import LMUnsupportedFeatureError
-
-        raise LMUnsupportedFeatureError(
-            "This LanguageModel does not support the normalized request shape.",
-            model=self.model,
-            features=[issue.feature for issue in support.issues],
-            issues=[issue.message for issue in support.issues],
-        )
 
     # ---------------------------------------------------------------------
     # Public call API
@@ -393,7 +279,6 @@ class LanguageModel:
         result = None
         exception = None
         try:
-            self.require_request_support(normalized_request)
             response = self._forward_with_cache(normalized_request)
             result = self._finalize_response(normalized_request, response)
             return result
@@ -437,7 +322,6 @@ class LanguageModel:
         result = None
         exception = None
         try:
-            self.require_request_support(normalized_request)
             response = await self._aforward_with_cache(normalized_request)
             result = self._finalize_response(normalized_request, response)
             return result
@@ -527,7 +411,6 @@ class LanguageModel:
         callbacks = self._get_active_callbacks()
         raw_inputs = self._raw_callback_inputs(items=items, prompt=prompt, messages=messages, kwargs=kwargs)
         try:
-            self.require_request_support(normalized_request)
             self._require_stream_support(async_=False)
         except Exception as error:
             self._observe_failed_stream_construction(
@@ -572,7 +455,6 @@ class LanguageModel:
         callbacks = self._get_active_callbacks()
         raw_inputs = self._raw_callback_inputs(items=items, prompt=prompt, messages=messages, kwargs=kwargs)
         try:
-            self.require_request_support(normalized_request)
             self._require_stream_support(async_=True)
         except Exception as error:
             self._observe_failed_stream_construction(
@@ -737,21 +619,6 @@ class LanguageModel:
     # History and internal execution machinery
     # ---------------------------------------------------------------------
 
-    def explain_request(self, *items: Any, prompt: str | None = None, messages: list[dict[str, Any]] | None = None, request: LMRequest | None = None, **kwargs: Any) -> LMRequest:
-        """Return the normalized `LMRequest` without calling the provider."""
-        return self.normalize_request(*items, prompt=prompt, messages=messages, request=request, **kwargs)
-
-    def explain_provider_request(self, *items: Any, prompt: str | None = None, messages: list[dict[str, Any]] | None = None, request: LMRequest | None = None, **kwargs: Any) -> ProviderRequest:
-        """Return the provider-shaped request without calling the provider."""
-        normalized_request = self.explain_request(*items, prompt=prompt, messages=messages, request=request, **kwargs)
-        self.require_request_support(normalized_request)
-        return self.map_request(normalized_request)
-
-    def preview(self, *items: Any, **kwargs: Any) -> Any:
-        """Preview the provider request, preferring a display-friendly representation."""
-        provider_request = self.explain_provider_request(*items, **kwargs)
-        return provider_request.preview if provider_request.preview is not None else provider_request
-
     def inspect_history(self, n: int = 1, file: Any | None = None) -> None:
         """Print recent LM interactions recorded on this instance."""
         pretty_print_history(self.history, n, file=file)
@@ -816,21 +683,14 @@ class LanguageModel:
         raise TypeError("LMRequest overrides require with_config_overrides() or Pydantic model_copy().")
 
     def _require_stream_support(self, *, async_: bool) -> None:
-        feature = self.features.async_streaming if async_ else self.features.streaming
-        if feature:
+        method_name = "aforward_stream" if async_ else "forward_stream"
+        if self._method_overridden(method_name):
             return
-        from dspy.utils.exceptions import LMUnsupportedFeatureError
 
-        name = "async_streaming" if async_ else "streaming"
-        raise LMUnsupportedFeatureError(
-            f"This LanguageModel implementation does not support {name}.",
-            model=self.model,
-            features=[name],
-            issues=[feature.evidence or f"{name} is not supported."],
-        )
+        name = "async streaming" if async_ else "streaming"
+        raise NotImplementedError(f"{type(self).__name__} does not support {name}; {method_name}() is not overridden.")
 
     def _finalize_response(self, request: LMRequest, response: LMResponse) -> LMResponse:
-        self._observe_response_features(response)
         self._track_usage(response)
 
         if not settings.disable_history:
@@ -846,21 +706,8 @@ class LanguageModel:
 
         return response
 
-    def _observe_response_features(self, response: LMResponse) -> None:
-        usage = _response_usage_as_dict(response)
-        if usage:
-            self.features.observe("usage", "Latest LMResponse included usage.")
-            self.features.observe("response.usage", "Latest LMResponse included usage.")
-
-        if getattr(response, "cost", None) is not None:
-            self.features.observe("cost", "Latest LMResponse included cost.")
-            self.features.observe("response.cost", "Latest LMResponse included cost.")
-
     def _normalize_and_observe_error(self, error: Exception, request: LMRequest) -> Exception:
-        normalized_error = self.normalize_error(error, request)
-        if isinstance(normalized_error, LMError):
-            self.features.observe_error(normalized_error)
-        return normalized_error
+        return self.normalize_error(error, request)
 
     def _track_usage(self, response: LMResponse) -> None:
         if getattr(response, "cache_hit", False):
@@ -872,40 +719,10 @@ class LanguageModel:
         if usage:
             settings.usage_tracker.add_usage(self.model, usage)
 
-
-def _legacy_mapper_support(cls: type) -> dict[str, Any]:
-    """Infer support from old mapper methods defined by a subclass.
-
-    This is a private migration bridge. New integrations should set
-    `lm.support` or use `SDKLanguageModel.with_*()`.
-    """
-    from dspy.clients.language_models.support import ImageSupport, ToolSupport
-
-    has = lambda name: any(name in base.__dict__ for base in cls.__mro__ if base.__name__ != "LanguageModel")
-    data: dict[str, Any] = {}
-    if has("map_request_input_image"):
-        data["images"] = ImageSupport(urls=True, base64=True, file_ids=True, paths=True, placement="any_message")
-    if has("map_request_input_audio"):
-        data["audio"] = True
-    if has("map_request_input_file"):
-        data["files"] = True
-    if has("map_request_tools") or has("map_request_tool_choice") or has("map_request_assistant_tool_calls") or has("map_request_tool_results"):
-        data["tools"] = ToolSupport(
-            schemas=has("map_request_tools"),
-            calls=has("map_request_assistant_tool_calls"),
-            results=has("map_request_tool_results"),
-        )
-    if has("map_request_response_schema"):
-        data["response_schema"] = True
-    if has("map_request_reasoning_config"):
-        data["reasoning"] = True
-    if has("map_request_prompt_cache"):
-        data["prompt_cache"] = True
-    if has("map_request_logprobs"):
-        data["logprobs"] = True
-    if has("map_request_multiple_outputs"):
-        data["multiple_outputs"] = True
-    return data
+    def _method_overridden(self, method_name: str) -> bool:
+        method = getattr(type(self), method_name, None)
+        base_method = getattr(LanguageModel, method_name, None)
+        return method is not None and base_method is not None and method is not base_method
 
 
 def inspect_history(n: int = 1, file: Any | None = None) -> None:

@@ -31,37 +31,14 @@ def LM(*args: Any, **kwargs: Any):
 
     By default this returns the existing LiteLLM-backed legacy LM. Set
     `dspy.configure(experimental_lm=True)` or use
-    `dspy.context(experimental_lm=True)` to route through the normalized
-    `LanguageModel` router.
+    `dspy.context(experimental_lm=True)` to return a normalized
+    `LanguageModel` backend.
     """
     from dspy.dsp.utils import settings
 
     if settings.get("experimental_lm", False):
         return LMRouter(*args, **kwargs)
     return LegacyLM(*args, **kwargs)
-
-
-def _lm_from_sdk(*args: Any, **kwargs: Any):
-    from dspy.clients.language_models.sdk import SDKLanguageModel
-
-    return SDKLanguageModel(*args, **kwargs)
-
-
-def _lm_from_text(*args: Any, **kwargs: Any):
-    from dspy.clients.language_models.sdk import SDKLanguageModel
-
-    return SDKLanguageModel.from_text(*args, **kwargs)
-
-
-def _lm_from_messages(*args: Any, **kwargs: Any):
-    from dspy.clients.language_models.sdk import SDKLanguageModel
-
-    return SDKLanguageModel.from_messages(*args, **kwargs)
-
-
-LM.from_sdk = _lm_from_sdk
-LM.from_text = _lm_from_text
-LM.from_messages = _lm_from_messages
 
 
 logger = logging.getLogger(__name__)

@@ -17,7 +17,7 @@ assert request == dspy.LMRequest(
 )
 
 lm = make_lm()
-lm.normalize_request(dspy.User('hello'))
+lm.normalize_request(dspy.User("hello"))
 #def test_normalize_prompt_keyword_call():
 request = make_lm().normalize_request(prompt="hello")
 
@@ -82,13 +82,13 @@ def test_normalize_provider_specific_kwargs_into_extensions():
     request = make_lm().normalize_request(
         "hello",
         service_tier="auto",
-        extra_body={"provider_feature": True},
+        extra_body={"provider_option": True},
         headers={"X-Trace-ID": "abc"},
     )
 
     assert request.config.extensions == {
         "service_tier": "auto",
-        "extra_body": {"provider_feature": True},
+        "extra_body": {"provider_option": True},
         "headers": {"X-Trace-ID": "abc"},
     }
 
