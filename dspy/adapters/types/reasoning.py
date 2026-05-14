@@ -21,6 +21,13 @@ class Reasoning(Type):
 
     content: str
 
+    def __init__(self, content: str | None = None, **data: Any):
+        if content is not None:
+            if "content" in data:
+                raise TypeError("Pass `content` either positionally or by keyword, not both.")
+            data["content"] = content
+        super().__init__(**data)
+
     def format(self):
         return f"{self.content}"
 

@@ -8,6 +8,7 @@ from pydantic_core import PydanticUndefined
 
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.clients.base_lm import BaseLM
+from dspy.clients.language_models.base import LanguageModel
 from dspy.clients.lm import LM
 from dspy.dsp.utils.settings import settings
 from dspy.predict.parameter import Parameter
@@ -158,7 +159,7 @@ class Predict(Module, Parameter):
                 f"LM must be an instance of `dspy.BaseLM`, not a string. Instead of using a string like "
                 f"'dspy.configure(lm=\"{lm}\")', please configure the LM like 'dspy.configure(lm=dspy.LM(\"{lm}\"))'"
             )
-        elif not isinstance(lm, BaseLM):
+        elif not isinstance(lm, BaseLM | LanguageModel):
             raise ValueError(f"LM must be an instance of `dspy.BaseLM`, not {type(lm)}. Received `lm={lm}`.")
 
         # If temperature is unset or <=0.15, and n > 1, set temperature to 0.7 to keep randomness.

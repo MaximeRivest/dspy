@@ -31,6 +31,7 @@ Every DSPy module will use these defaults unless you override them with
 | `allow_tool_async_sync_conversion` | `False` | Let async tools run in synchronous code. See [Async](../../tutorials/async/index.md). |
 | `provide_traceback` | `False` | Include Python tracebacks in error logs. |
 | `warn_on_type_mismatch` | `True` | Warn when a module input type does not match the signature. |
+| `warn_legacy_lm` | `True` | Warn when external code subclasses the legacy `dspy.BaseLM` prompt/messages contract. Set to `False` while migrating custom LMs to `dspy.LanguageModel`. |
 
 ## Examples
 
@@ -67,6 +68,15 @@ dspy.configure(
     track_usage=True,
     async_max_workers=4,
 )
+```
+
+### Silence legacy LM subclass warnings
+
+```python
+import dspy
+
+# Useful while migrating a custom dspy.BaseLM subclass to dspy.LanguageModel.
+dspy.configure(warn_legacy_lm=False)
 ```
 
 ## When to use `dspy.configure`

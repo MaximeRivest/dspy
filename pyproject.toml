@@ -114,6 +114,7 @@ filterwarnings = [
     # The issue has been fixed repeatedly, but still keeps showing up.
     # For examples, see litellm PRs #6903, #7300, #8096, #9372, and #12528.
     "ignore:.+class-based `config` is deprecated, use ConfigDict:DeprecationWarning",
+    "ignore::DeprecationWarning:dspy"
 ]
 
 [tool.ruff]
