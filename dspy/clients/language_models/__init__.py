@@ -1,6 +1,7 @@
 """Normalized language model implementations and types."""
 
 from dspy.clients.language_models.base import LanguageModel, LMCapabilities
+from dspy.clients.language_models.openai import OpenAIChatLM, OpenAIResponsesLM, OpenAITextLM
 from dspy.clients.language_models.types import (
     Assistant,
     AsyncLMStream,
@@ -52,6 +53,9 @@ from dspy.clients.language_models.types import (
 __all__ = [
     "LanguageModel",
     "LMCapabilities",
+    "OpenAIChatLM",
+    "OpenAITextLM",
+    "OpenAIResponsesLM",
     "LMBasePart",
     "LMTextPart",
     "LMImagePart",
