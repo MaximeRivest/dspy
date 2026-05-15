@@ -21,7 +21,10 @@ this order when learning it:
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
+import os
 from typing import Any
 
 import pydantic
@@ -71,7 +74,7 @@ __all__ = [
 def to_openai_chat_request(request: LMRequest) -> dict[str, Any]:
     """Convert a normalized DSPy request into Chat Completions kwargs."""
     data = {"model": request.model, "messages": [message_to_openai_chat(message) for message in request.messages]}
-    data.update(common_config_kwargs(request.config))
+    data.update(common_config_kwargs(request.config, model=request.model, endpoint="chat"))
     if request.config.tool_choice is not None:
         data.update(tool_choice_to_openai(request.config.tool_choice))
     if request.tools:
@@ -122,7 +125,7 @@ def to_openai_responses_request(request: LMRequest) -> dict[str, Any]:
         "model": request.model,
         "input": [item for message in request.messages for item in message_to_responses_input_items(message)],
     }
-    data.update(responses_config_kwargs(config))
+    data.update(responses_config_kwargs(config, model=request.model))
     if config.tool_choice is not None:
         data.update(tool_choice_to_openai(config.tool_choice))
     if request.tools:
@@ -274,17 +277,26 @@ def image_to_openai(image: LMImagePart) -> dict[str, Any]:
 
 
 def audio_to_openai(audio: LMAudioPart) -> dict[str, Any]:
-    if audio.data is None:
-        raise ValueError("OpenAI-format audio input requires base64 `data`; url, file_id, and path are not supported.")
-    return {"type": "input_audio", "input_audio": {"data": audio.data, "format": media_format(audio.media_type)}}
+    if audio.data is not None:
+        data = audio.data
+        media_type = audio.media_type
+    elif audio.path is not None:
+        data = read_path_base64(audio.path)
+        media_type = media_type_for_path(audio.path, fallback=audio.media_type)
+    else:
+        raise ValueError("OpenAI-format audio input requires base64 `data` or local `path`.")
+    return {"type": "input_audio", "input_audio": {"data": data, "format": media_format(media_type)}}
 
 
 def file_to_openai(file: LMFilePart) -> dict[str, Any]:
     file_data: dict[str, Any] = {}
     if file.data is not None:
         file_data["file_data"] = data_uri(file.media_type, file.data)
-    elif file.url is not None or file.path is not None:
-        file_data["file_data"] = media_source(file)
+    elif file.path is not None:
+        file_data["file_data"] = data_uri_from_path(file.path, fallback_media_type=file.media_type)
+        file_data["filename"] = file.filename or os.path.basename(file.path)
+    elif file.url is not None:
+        file_data["file_data"] = file.url
     if file.file_id is not None:
         file_data["file_id"] = file.file_id
     if file.filename is not None:
@@ -324,13 +336,17 @@ def tool_result_to_openai(result: LMToolResultPart) -> dict[str, Any]:
     return {"content": parts_to_openai_content(result.content)}
 
 
-def common_config_kwargs(config: LMConfig) -> dict[str, Any]:
+def common_config_kwargs(config: LMConfig, *, model: str | None = None, endpoint: str = "chat") -> dict[str, Any]:
     """Convert shared DSPy config fields into Chat Completions kwargs."""
     data = dict(config.extensions)
-    for key in ("temperature", "max_tokens", "top_p"):
+    _validate_openai_reasoning_temperature(config, model=model, endpoint=endpoint)
+    for key in ("temperature", "top_p"):
         value = getattr(config, key)
         if value is not None:
             data[key] = value
+    if config.max_tokens is not None:
+        token_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
+        data[token_key] = config.max_tokens
     if config.stop:
         data["stop"] = config.stop
     if config.logprobs is not None:
@@ -346,9 +362,10 @@ def common_config_kwargs(config: LMConfig) -> dict[str, Any]:
     return data
 
 
-def responses_config_kwargs(config: LMConfig) -> dict[str, Any]:
+def responses_config_kwargs(config: LMConfig, *, model: str | None = None) -> dict[str, Any]:
     """Convert shared DSPy config fields into Responses API kwargs."""
     data = dict(config.extensions) if config.extensions else {}
+    _validate_openai_reasoning_temperature(config, model=model, endpoint="responses")
     for key in ("temperature", "top_p"):
         value = getattr(config, key)
         if value is not None:
@@ -391,10 +408,6 @@ def reasoning_to_chat_kwargs(reasoning: Any) -> dict[str, Any]:
     data = {}
     if reasoning.effort is not None:
         data["reasoning_effort"] = reasoning.effort
-    if reasoning.max_tokens is not None:
-        data["thinking_budget"] = reasoning.max_tokens
-    if reasoning.summary is not None:
-        data["reasoning_summary"] = reasoning.summary
     return data
 
 
@@ -402,13 +415,45 @@ def reasoning_to_responses_kwargs(reasoning: Any) -> dict[str, Any]:
     data = {}
     if reasoning.effort is not None:
         data["effort"] = reasoning.effort
-    if reasoning.max_tokens is not None:
-        data["max_tokens"] = reasoning.max_tokens
     if reasoning.summary is not None:
         data["summary"] = reasoning.summary
-    elif data:
-        data["summary"] = "auto"
     return {"reasoning": data} if data else {}
+
+
+def _validate_openai_reasoning_temperature(config: LMConfig, *, model: str | None, endpoint: str) -> None:
+    if not _is_openai_reasoning_model(model):
+        return
+    effort = getattr(config.reasoning, "effort", None) if config.reasoning is not None else None
+    if effort in {None, "none"}:
+        return
+    if config.temperature in {None, 1, 1.0}:
+        return
+
+    from dspy.utils.exceptions import LMUnsupportedFeatureError
+
+    raise LMUnsupportedFeatureError(
+        "OpenAI reasoning models only support the default temperature when reasoning effort is active. "
+        "Use temperature=None or temperature=1, or set reasoning_effort='none'.",
+        model=model,
+        provider="openai",
+        features=["temperature", "reasoning"],
+        issues=[
+            f"{endpoint} request used reasoning effort {effort!r} with temperature={config.temperature!r}.",
+        ],
+    )
+
+
+def _uses_max_completion_tokens(model: str | None) -> bool:
+    return _is_openai_reasoning_model(model)
+
+
+def _is_openai_reasoning_model(model: str | None) -> bool:
+    if not isinstance(model, str):
+        return False
+    model_name = model.removeprefix("openai/").lower()
+    if "chat" in model_name:
+        return False
+    return model_name.startswith(("o1", "o3", "o4", "gpt-5"))
 
 
 def prompt_cache_to_kwargs(cache: Any) -> dict[str, Any]:
@@ -711,8 +756,21 @@ def media_source(part: LMImagePart | LMAudioPart | LMFilePart) -> str:
     if part.file_id is not None:
         return part.file_id
     if part.path is not None:
-        return part.path
+        return data_uri_from_path(part.path, fallback_media_type=part.media_type)
     raise ValueError(f"{type(part).__name__} has no media source.")
+
+
+def read_path_base64(path: str) -> str:
+    with open(path, "rb") as file:
+        return base64.b64encode(file.read()).decode("ascii")
+
+
+def media_type_for_path(path: str, *, fallback: str) -> str:
+    return mimetypes.guess_type(path)[0] or fallback
+
+
+def data_uri_from_path(path: str, *, fallback_media_type: str) -> str:
+    return data_uri(media_type_for_path(path, fallback=fallback_media_type), read_path_base64(path))
 
 
 def data_uri(media_type: str, data: str) -> str:
@@ -730,7 +788,8 @@ def split_data_uri(value: str) -> tuple[str, str]:
 
 
 def media_format(media_type: str) -> str:
-    return media_type.split("/", 1)[1] if "/" in media_type else media_type
+    format_ = media_type.split("/", 1)[1] if "/" in media_type else media_type
+    return {"x-wav": "wav", "mpeg": "mp3"}.get(format_, format_)
 
 
 def part_text(value: Any) -> str:

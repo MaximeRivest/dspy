@@ -277,6 +277,39 @@ def test_tool_results_can_be_sent_back_as_normalized_tool_messages():
     ]
 
 
+def test_history_messages_project_tool_calls_to_openai_chat_shape():
+    lm = EchoLM()
+
+    lm(
+        dspy.User("What's the weather in Paris?"),
+        dspy.Assistant(dspy.ToolCall(id="call_paris", name="get_weather", args={"location": "Paris"})),
+        dspy.ToolResult('{"temperature": "22"}', call_id="call_paris", name="get_weather"),
+        dspy.User("Summarize."),
+    )
+
+    assert lm.history[-1]["messages"] == [
+        {"role": "user", "content": "What's the weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_paris",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"location": "Paris"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": "22"}',
+            "tool_call_id": "call_paris",
+            "name": "get_weather",
+        },
+        {"role": "user", "content": "Summarize."},
+    ]
+
+
 def test_history_stores_normalized_request_response_and_compatibility_keys():
     lm = EchoLM()
 

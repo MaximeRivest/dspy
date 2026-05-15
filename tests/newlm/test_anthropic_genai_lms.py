@@ -93,6 +93,23 @@ def test_genai_class_maps_request_and_response():
     assert response.usage.total_tokens == 5
 
 
+def test_anthropic_stream_emits_start_before_delta_when_provider_omits_message_start():
+    def requester(payload, stream):
+        assert stream is True
+        return [
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hello"}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+            {"type": "message_stop"},
+        ]
+
+    lm = dspy.AnthropicLM("anthropic/claude-3-5-haiku-latest", requester=requester, cache=False)
+
+    events = list(lm.stream("say hello"))
+
+    assert events[0].type == "start"
+    assert events[1].type == "delta"
+
+
 @pytest.mark.asyncio
 async def test_anthropic_async_call_and_stream_use_anyio_thread_bridge():
     def requester(payload, stream):

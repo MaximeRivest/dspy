@@ -15,7 +15,7 @@ from litellm import ModelResponseStream
 from dspy.clients.language_models.types import LMStreamEvent
 from dspy.dsp.utils.settings import settings
 from dspy.primitives.prediction import Prediction
-from dspy.streaming.messages import StatusMessage, StatusMessageProvider, StatusStreamingCallback
+from dspy.streaming.messages import StatusMessage, StatusMessageProvider, StatusStreamingCallback, StreamResponse
 from dspy.streaming.streaming_listener import StreamListener, find_predictor_for_stream_listeners
 from dspy.utils.asyncify import asyncify
 
@@ -283,6 +283,19 @@ async def streaming_response(streamer: AsyncGenerator) -> AsyncGenerator:
             yield f"data: {orjson.dumps(data).decode()}\n\n"
         elif isinstance(value, LMStreamEvent):
             data = {"event": value.model_dump(mode="json")}
+            yield f"data: {orjson.dumps(data).decode()}\n\n"
+        elif isinstance(value, StreamResponse):
+            data = {
+                "stream_response": {
+                    "predict_name": value.predict_name,
+                    "signature_field_name": value.signature_field_name,
+                    "chunk": value.chunk,
+                    "is_last_chunk": value.is_last_chunk,
+                }
+            }
+            yield f"data: {orjson.dumps(data).decode()}\n\n"
+        elif isinstance(value, StatusMessage):
+            data = {"status": {"message": value.message}}
             yield f"data: {orjson.dumps(data).decode()}\n\n"
         elif isinstance(value, litellm.ModelResponseStream):
             data = {"chunk": value.json()}

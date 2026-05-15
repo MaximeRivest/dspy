@@ -57,3 +57,11 @@ def test_unknown_prefixed_models_fall_back_to_litellm_backend():
     assert isinstance(lm, dspy.LiteLLMLM)
     assert lm.model == "bedrock/anthropic.claude-3-sonnet"
     assert lm.model_type == "chat"
+
+
+def test_router_omitted_num_retries_preserves_backend_default():
+    with dspy.context(experimental=True):
+        lm = dspy.LM("bedrock/anthropic.claude-3-sonnet", cache=False)
+
+    assert isinstance(lm, dspy.LiteLLMLM)
+    assert lm.num_retries == 3

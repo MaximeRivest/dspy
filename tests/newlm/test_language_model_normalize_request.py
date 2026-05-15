@@ -83,6 +83,12 @@ def test_normalize_cache_config():
     assert request.config.temperature == 1.0
 
 
+def test_normalize_cache_config_object_merges_rollout_id():
+    request = make_lm().normalize_request("hello", cache=dspy.LMCacheConfig(enabled=True), rollout_id=123)
+
+    assert request.config.cache == dspy.LMCacheConfig(enabled=True, rollout_id=123)
+
+
 def test_normalize_provider_specific_kwargs_into_extensions():
     request = make_lm().normalize_request(
         "hello",

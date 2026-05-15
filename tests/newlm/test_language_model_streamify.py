@@ -135,3 +135,25 @@ async def test_streaming_response_serializes_normalized_lm_stream_events():
     assert json.loads(chunks[0].removeprefix("data: ")) == {"event": {"type": "start", "model": "test/model"}}
     assert json.loads(chunks[1].removeprefix("data: "))["event"]["delta"] == {"type": "text_delta", "text": "hello"}
     assert chunks[-1] == "data: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+async def test_streaming_response_serializes_stream_responses_and_status_messages():
+    async def streamer():
+        yield dspy.streaming.StatusMessage("working")
+        yield dspy.streaming.StreamResponse("predict", "answer", "Par", is_last_chunk=False)
+        yield dspy.streaming.StreamResponse("predict", "answer", "is", is_last_chunk=True)
+
+    chunks = [chunk async for chunk in dspy.streaming.streaming_response(streamer())]
+
+    assert json.loads(chunks[0].removeprefix("data: ")) == {"status": {"message": "working"}}
+    assert json.loads(chunks[1].removeprefix("data: ")) == {
+        "stream_response": {
+            "predict_name": "predict",
+            "signature_field_name": "answer",
+            "chunk": "Par",
+            "is_last_chunk": False,
+        }
+    }
+    assert json.loads(chunks[2].removeprefix("data: "))["stream_response"]["is_last_chunk"] is True
+    assert chunks[-1] == "data: [DONE]\n\n"

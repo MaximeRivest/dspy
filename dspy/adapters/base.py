@@ -447,7 +447,12 @@ class Adapter:
         messages: list[dict[str, Any]],
         lm_kwargs: dict[str, Any],
     ) -> LMRequest:
-        return LMRequest.from_call(model=lm.model, messages=messages, **lm_kwargs)
+        # Delegate request construction to the LM so module calls preserve the
+        # same constructor defaults as direct calls (temperature, max_tokens,
+        # provider extensions, cache defaults, etc.). Constructing LMRequest
+        # directly here would bypass lm.kwargs because lm(request=...) treats
+        # the request as already normalized.
+        return lm.normalize_request(messages=messages, **lm_kwargs)
 
     def __call__(
         self,

@@ -14,9 +14,12 @@ dspy.configure(lm=lm)
 
 ## Automatic routing vs. explicit backend control
 
-Use `dspy.LM(...)` when you want DSPy to make its best routing decision from the model name and provider metadata. This is the default path most users should start with.
+!!! warning "Normalized LM routing is experimental"
+    The normalized `LanguageModel` router is enabled with `dspy.configure(experimental=True)` or `dspy.context(experimental=True)`. In the current stable path, `dspy.LM(...)` returns the legacy LiteLLM-backed LM. The normalized router is planned to become the default in a future DSPy release.
 
-Use a concrete LM class when you need exact control over the endpoint family:
+With normalized routing enabled, use `dspy.LM(...)` when you want DSPy to make its best routing decision from the model name and provider metadata.
+
+Use a concrete normalized LM class when you need exact control over the endpoint family:
 
 ```python linenums="1"
 # OpenAI-compatible Chat Completions endpoint.
@@ -42,9 +45,6 @@ Think of the split this way:
 - `dspy.OpenAIResponsesLM(...)`: force an OpenAI-compatible `/responses` endpoint.
 - `dspy.AnthropicLM(...)` and `dspy.GenAILM(...)`: force native Anthropic or Google GenAI backends.
 - Custom `dspy.LanguageModel` subclasses: use only when the provider is not OpenAI-compatible and needs a different request or response shape.
-
-!!! warning "Normalized LM routing is experimental"
-    The normalized `LanguageModel` router is enabled with `dspy.configure(experimental=True)` or `dspy.context(experimental=True)`. In the current stable path, `dspy.LM(...)` returns the legacy LiteLLM-backed LM. The normalized router is planned to become the default in a future DSPy release.
 
 With normalized routing enabled, common OpenAI-compatible providers can be selected by prefix:
 
@@ -524,5 +524,5 @@ Use `OpenAIChatLM` when the provider supports `/chat/completions` but not `/resp
 
 ## Advanced: Building custom LMs and writing your own Adapters.
 
-Though rarely needed, you can write custom LMs by inheriting from `dspy.BaseLM`. Another advanced layer in the DSPy ecosystem is that of _adapters_, which sit between DSPy signatures and LMs. A future version of this guide will discuss these advanced features, though you likely don't need them.
+Though rarely needed, new custom LMs should inherit from `dspy.LanguageModel` and implement `forward(request: dspy.LMRequest) -> dspy.LMResponse`. This gives your LM the normalized request, response, usage, cost, history, caching, and streaming contracts used by DSPy's built-in normalized backends. Inherit from `dspy.BaseLM` only when maintaining an existing legacy prompt/messages LM. Another advanced layer in the DSPy ecosystem is that of _adapters_, which sit between DSPy signatures and LMs. A future version of this guide will discuss these advanced features, though you likely don't need them.
 

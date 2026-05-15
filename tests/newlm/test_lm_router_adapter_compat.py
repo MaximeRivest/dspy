@@ -139,6 +139,22 @@ def test_baml_adapter_accepts_normalized_language_model_outputs():
     assert isinstance(lm.requests[0], dspy.LMRequest)
 
 
+def test_adapter_language_model_branch_preserves_constructor_defaults():
+    class DefaultConfigLM(AdapterEchoLM):
+        def __init__(self):
+            super().__init__(temperature=0.2, max_tokens=123, service_tier="auto")
+
+    signature = dspy.make_signature("question -> answer")
+    lm = DefaultConfigLM()
+
+    dspy.ChatAdapter()(lm, {}, signature, [], {"question": "What is the capital of France?"})
+
+    request = lm.requests[0]
+    assert request.config.temperature == 0.2
+    assert request.config.max_tokens == 123
+    assert request.config.extensions["service_tier"] == "auto"
+
+
 def test_json_adapter_uses_language_model_capabilities_not_legacy_properties():
     signature = dspy.make_signature("question -> answer")
     adapter = dspy.JSONAdapter()

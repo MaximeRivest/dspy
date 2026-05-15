@@ -234,10 +234,14 @@ class AnthropicLM(LanguageModel):
         cost = None
         for event in _iter_sse_payloads(stream):
             event_type = event.get("type")
-            if event_type == "message_start":
-                message = event.get("message", {}) if isinstance(event.get("message"), dict) else {}
+            if event_type != "message_start" and not yielded_start:
                 yielded_start = True
-                yield LMStreamStartEvent(model=message.get("model") or request.model)
+                yield LMStreamStartEvent(model=request.model)
+            if event_type == "message_start":
+                if not yielded_start:
+                    message = event.get("message", {}) if isinstance(event.get("message"), dict) else {}
+                    yielded_start = True
+                    yield LMStreamStartEvent(model=message.get("model") or request.model)
             elif event_type == "content_block_start":
                 block = event.get("content_block", {}) if isinstance(event.get("content_block"), dict) else {}
                 if block.get("type") == "tool_use":

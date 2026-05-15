@@ -70,7 +70,7 @@ def LMRouter(  # noqa: N802
     max_tokens: int | None = None,
     cache: bool = True,
     callbacks: list[Any] | None = None,
-    num_retries: int = 0,
+    num_retries: int | None = None,
     backend: LanguageModel | None = None,
     **kwargs: Any
 ) -> LanguageModel:
@@ -90,7 +90,7 @@ def LMRouter(  # noqa: N802
         max_tokens: Default output-token budget for this LM.
         cache: Whether DSPy request memoization is enabled by default.
         callbacks: Optional DSPy callbacks attached to this LM instance.
-        num_retries: Number of retry attempts for retryable provider errors.
+        num_retries: Number of retry attempts for retryable provider errors. If omitted, the selected backend uses its own default.
         backend: Optional prebuilt backend. When supplied, returned as-is.
         **kwargs: Additional constructor arguments for the selected backend.
 
@@ -129,9 +129,9 @@ def _explicit_router_kwargs(
     max_tokens: int | None,
     cache: bool,
     callbacks: list[Any] | None,
-    num_retries: int,
+    num_retries: int | None,
 ) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {"cache": cache, "num_retries": num_retries}
+    kwargs: dict[str, Any] = {"cache": cache}
     if api_key is not None:
         kwargs["api_key"] = api_key
     if api_base is not None:
@@ -144,6 +144,8 @@ def _explicit_router_kwargs(
         kwargs["max_tokens"] = max_tokens
     if callbacks is not None:
         kwargs["callbacks"] = callbacks
+    if num_retries is not None:
+        kwargs["num_retries"] = num_retries
     return kwargs
 
 

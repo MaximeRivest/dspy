@@ -1,3 +1,4 @@
+import base64
 import json
 from types import SimpleNamespace
 
@@ -91,6 +92,160 @@ def test_openai_responses_class_calls_responses_and_maps_response():
     assert calls[0]["input"] == [{"role": "user", "content": [{"type": "input_text", "text": "say hello"}]}]
     assert response.text == "hello"
     assert response.usage.total_tokens == 2
+
+
+def test_openai_responses_maps_max_tokens_to_max_output_tokens_for_gpt_5_reasoning_models():
+    calls = []
+
+    def responses(**kwargs):
+        calls.append(kwargs)
+        return {
+            "model": "gpt-5.2",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "hello"}]}],
+        }
+
+    dspy.OpenAIResponsesLM("openai/gpt-5.2", responses=responses, cache=False)("say hello", max_tokens=80)
+
+    assert calls[0]["max_output_tokens"] == 80
+    assert "max_tokens" not in calls[0]
+    assert "max_completion_tokens" not in calls[0]
+
+
+def test_openai_chat_maps_max_tokens_to_max_completion_tokens_for_gpt_5_reasoning_models():
+    calls = []
+
+    def completions(**kwargs):
+        calls.append(kwargs)
+        return {"model": "gpt-5.2", "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}]}
+
+    dspy.OpenAIChatLM("openai/gpt-5.2", completions=completions, cache=False)("say hello", max_tokens=80)
+
+    assert calls[0]["max_completion_tokens"] == 80
+    assert "max_tokens" not in calls[0]
+
+
+def test_openai_chat_uses_max_tokens_for_gpt_5_chat_models():
+    calls = []
+
+    def completions(**kwargs):
+        calls.append(kwargs)
+        return {"model": "gpt-5.2-chat-latest", "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}]}
+
+    dspy.OpenAIChatLM("openai/gpt-5.2-chat-latest", completions=completions, cache=False)(
+        "say hello", max_tokens=80
+    )
+
+    assert calls[0]["max_tokens"] == 80
+    assert "max_completion_tokens" not in calls[0]
+
+
+def test_openai_reasoning_models_reject_custom_temperature_when_effort_is_active():
+    lm = dspy.OpenAIResponsesLM("openai/gpt-5.2", responses=lambda **kwargs: {}, cache=False)
+
+    with pytest.raises(dspy.LMUnsupportedFeatureError, match="default temperature"):
+        lm("say hello", temperature=0, reasoning_effort="low")
+
+
+def test_openai_reasoning_models_allow_temperature_zero_when_effort_is_none():
+    calls = []
+
+    def responses(**kwargs):
+        calls.append(kwargs)
+        return {
+            "model": "gpt-5.2",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "hello"}]}],
+        }
+
+    dspy.OpenAIResponsesLM("openai/gpt-5.2", responses=responses, cache=False)(
+        "say hello", temperature=0, reasoning_effort="none"
+    )
+
+    assert calls[0]["temperature"] == 0
+    assert calls[0]["reasoning"] == {"effort": "none"}
+
+
+def test_openai_format_reads_local_image_paths_as_data_uris(tmp_path):
+    image_path = tmp_path / "cat.jpg"
+    image_path.write_bytes(b"fake jpg")
+    calls = []
+
+    def completions(**kwargs):
+        calls.append(kwargs)
+        return {"model": "gpt-4o-mini", "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    dspy.OpenAIChatLM("openai/gpt-4o-mini", completions=completions, cache=False)(
+        dspy.User("describe", dspy.LMImagePart(path=str(image_path)))
+    )
+
+    image_url = calls[0]["messages"][0]["content"][1]["image_url"]["url"]
+    assert image_url == f"data:image/jpeg;base64,{base64.b64encode(b'fake jpg').decode('ascii')}"
+    assert str(image_path) not in json.dumps(calls[0])
+
+
+def test_openai_format_reads_local_file_paths_as_data_uris(tmp_path):
+    file_path = tmp_path / "notes.txt"
+    file_path.write_text("hello file")
+    calls = []
+
+    def responses(**kwargs):
+        calls.append(kwargs)
+        return {
+            "model": "gpt-4o-mini",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        }
+
+    dspy.OpenAIResponsesLM("openai/gpt-4o-mini", responses=responses, cache=False)(
+        dspy.User("read", dspy.LMFilePart(path=str(file_path)))
+    )
+
+    file_block = calls[0]["input"][0]["content"][1]
+    assert file_block["file_data"] == f"data:text/plain;base64,{base64.b64encode(b'hello file').decode('ascii')}"
+    assert file_block["filename"] == "notes.txt"
+    assert str(file_path) not in json.dumps(calls[0])
+
+
+def test_openai_format_reads_local_audio_paths_as_base64(tmp_path):
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"fake wav")
+    calls = []
+
+    def completions(**kwargs):
+        calls.append(kwargs)
+        return {"model": "gpt-4o-mini", "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    dspy.OpenAIChatLM("openai/gpt-4o-mini", completions=completions, cache=False)(
+        dspy.User("transcribe", dspy.LMAudioPart(path=str(audio_path)))
+    )
+
+    audio = calls[0]["messages"][0]["content"][1]["input_audio"]
+    assert audio == {"data": base64.b64encode(b"fake wav").decode("ascii"), "format": "wav"}
+    assert str(audio_path) not in json.dumps(calls[0])
+
+
+def test_openai_reasoning_config_does_not_forward_unsupported_budget_or_chat_summary_fields():
+    chat_calls = []
+    responses_calls = []
+
+    def completions(**kwargs):
+        chat_calls.append(kwargs)
+        return {"model": "gpt-5.2", "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}]}
+
+    def responses(**kwargs):
+        responses_calls.append(kwargs)
+        return {
+            "model": "gpt-5.2",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "hello"}]}],
+        }
+
+    reasoning = dspy.LMReasoningConfig(effort="none", max_tokens=123, summary="auto")
+    dspy.OpenAIChatLM("openai/gpt-5.2", completions=completions, cache=False)("say hello", reasoning=reasoning)
+    dspy.OpenAIResponsesLM("openai/gpt-5.2", responses=responses, cache=False)("say hello", reasoning=reasoning)
+
+    assert chat_calls[0]["reasoning_effort"] == "none"
+    assert "thinking_budget" not in chat_calls[0]
+    assert "reasoning_summary" not in chat_calls[0]
+    assert responses_calls[0]["reasoning"] == {"effort": "none", "summary": "auto"}
+    assert "max_tokens" not in responses_calls[0]["reasoning"]
 
 
 def test_openai_backends_do_not_forward_dspy_rollout_id_to_provider():

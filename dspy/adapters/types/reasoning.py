@@ -73,7 +73,7 @@ class Reasoning(Type):
             # native reasoning.
             return signature
 
-        if "gpt-5" in lm.model and lm.model_type == "chat":
+        if "gpt-5" in lm.model and getattr(lm, "model_type", None) == "chat":
             # There is a caveat of Litellm as 1.79.0 that when using the chat completion API on GPT-5 family models,
             # the reasoning content is not available in the response. As a workaround, we don't enable the native
             # reasoning feature for GPT-5 family models when using the chat completion API.

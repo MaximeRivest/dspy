@@ -332,9 +332,10 @@ class LMConfig(BaseModel):
         cache = data.pop("cache", None) if "cache" in data else None
         rollout_id = data.pop("rollout_id", None) if "rollout_id" in data else None
         if cache is not None or rollout_id is not None:
-            data["cache"] = (
-                cache if isinstance(cache, LMCacheConfig) else LMCacheConfig(enabled=cache, rollout_id=rollout_id)
-            )
+            if isinstance(cache, LMCacheConfig):
+                data["cache"] = cache.model_copy(update={"rollout_id": rollout_id}) if rollout_id is not None else cache
+            else:
+                data["cache"] = LMCacheConfig(enabled=cache, rollout_id=rollout_id)
 
         prompt_cache = data.pop("prompt_cache", None) if "prompt_cache" in data else None
         prompt_cache_key = data.pop("prompt_cache_key", None) if "prompt_cache_key" in data else None
@@ -1347,14 +1348,54 @@ def _history_request_prompt(request: LMRequest) -> str | None:
 def _history_request_messages_as_openai(request: LMRequest) -> list[dict[str, Any]]:
     messages = []
     for message in request.messages:
-        item: dict[str, Any] = {
-            "role": message.role,
-            "content": _history_message_parts_as_openai_content(message.parts),
-        }
-        if message.name is not None:
+        if message.role == "assistant":
+            tool_calls = [part for part in message.parts if isinstance(part, LMToolCallPart)]
+            content_parts = [part for part in message.parts if not isinstance(part, LMToolCallPart)]
+            item: dict[str, Any] = {
+                "role": "assistant",
+                "content": _history_message_parts_as_openai_content(content_parts) if content_parts else None,
+            }
+            if tool_calls:
+                item["tool_calls"] = [_history_tool_call_as_openai(call) for call in tool_calls]
+        elif message.role == "tool" and len(message.parts) == 1 and isinstance(message.parts[0], LMToolResultPart):
+            result = message.parts[0]
+            item = {"role": "tool", "content": _history_tool_result_content(result)}
+            if result.call_id is not None:
+                item["tool_call_id"] = result.call_id
+            if result.name is not None:
+                item["name"] = result.name
+        else:
+            item = {
+                "role": message.role,
+                "content": _history_message_parts_as_openai_content(message.parts),
+            }
+        if message.name is not None and "name" not in item:
             item["name"] = message.name
         messages.append(item)
     return messages
+
+
+def _history_tool_call_as_openai(call: LMToolCallPart) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "type": "function",
+        "function": {
+            "name": call.name,
+            "arguments": json.dumps(call.args),
+        },
+    }
+    if call.id is not None:
+        data["id"] = call.id
+    return data
+
+
+def _history_tool_result_content(result: LMToolResultPart) -> str:
+    chunks = []
+    for part in result.content:
+        if isinstance(part, LMTextPart):
+            chunks.append(part.text)
+        else:
+            chunks.append(json.dumps(part.model_dump(mode="json", exclude_none=True), ensure_ascii=False))
+    return "".join(chunks)
 
 
 def _history_message_parts_as_openai_content(parts: list[LMPart]) -> str | list[dict[str, Any]]:
