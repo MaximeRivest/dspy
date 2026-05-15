@@ -110,6 +110,7 @@ nav:
         - Models:
             - Embedder: api/models/Embedder.md
             - LM: api/models/LM.md
+            - LM messages: api/models/LMMessage.md
         - Modules:
             - BestOfN: api/modules/BestOfN.md
             - ChainOfThought: api/modules/ChainOfThought.md
