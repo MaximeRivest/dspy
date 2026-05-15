@@ -1,3 +1,4 @@
+import importlib
 import logging
 import random
 import types
@@ -8,6 +9,7 @@ from pydantic_core import PydanticUndefined
 
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.clients.base_lm import BaseLM
+from dspy.clients.language_models.base import LanguageModel
 from dspy.clients.lm import LM
 from dspy.dsp.utils.settings import settings
 from dspy.predict.parameter import Parameter
@@ -20,6 +22,7 @@ from dspy.utils.constants import IS_TYPE_UNDEFINED
 logger = logging.getLogger(__name__)
 
 UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
+_LM_CLASS_STATE_KEY = "_dspy_lm_class"
 
 
 def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
@@ -86,7 +89,7 @@ class Predict(Module, Parameter):
                 state["demos"].append(demo.toDict())
 
         state["signature"] = self.signature.dump_state()
-        state["lm"] = self.lm.dump_state() if self.lm else None
+        state["lm"] = _dump_lm_state(self.lm) if self.lm else None
         return state
 
     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> "Predict":
@@ -108,7 +111,7 @@ class Predict(Module, Parameter):
 
         self.signature = self.signature.load_state(state["signature"])
         sanitized_lm_state = _sanitize_lm_state(state["lm"], allow_unsafe_lm_state) if state["lm"] else None
-        self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None
+        self.lm = _load_lm_from_state(sanitized_lm_state) if sanitized_lm_state else None
 
         if "extended_signature" in state:  # legacy, up to and including 2.5, for CoT.
             raise NotImplementedError("Loading extended_signature is no longer supported in DSPy 2.6+")
@@ -158,7 +161,7 @@ class Predict(Module, Parameter):
                 f"LM must be an instance of `dspy.BaseLM`, not a string. Instead of using a string like "
                 f"'dspy.configure(lm=\"{lm}\")', please configure the LM like 'dspy.configure(lm=dspy.LM(\"{lm}\"))'"
             )
-        elif not isinstance(lm, BaseLM):
+        elif not isinstance(lm, BaseLM | LanguageModel):
             raise ValueError(f"LM must be an instance of `dspy.BaseLM`, not {type(lm)}. Received `lm={lm}`.")
 
         # If temperature is unset or <=0.15, and n > 1, set temperature to 0.7 to keep randomness.
@@ -276,6 +279,58 @@ class Predict(Module, Parameter):
     def __repr__(self):
         return f"{self.__class__.__name__}({self.signature})"
 
+def _dump_lm_state(lm: BaseLM | LanguageModel) -> dict[str, Any]:
+    """Return LM state with enough type information to reconstruct it."""
+    lm_state = dict(lm.dump_state())
+    lm_state.setdefault(_LM_CLASS_STATE_KEY, f"{type(lm).__module__}.{type(lm).__qualname__}")
+    return lm_state
+
+
+def _load_lm_from_state(lm_state: dict[str, Any]) -> BaseLM | LanguageModel:
+    """Reconstruct a legacy or normalized LM from serialized state.
+
+    Older saved programs did not record the concrete LM class, so they are
+    loaded through the legacy LiteLLM-backed `dspy.clients.lm.LM` constructor.
+    Newer states record the concrete class so `Predict` can round-trip any
+    importable `BaseLM` or `LanguageModel` subclass.
+    """
+    lm_state = dict(lm_state)
+    class_path = lm_state.pop(_LM_CLASS_STATE_KEY, None)
+    if class_path is None:
+        return LM(**lm_state)
+
+    lm_cls = _import_lm_class(class_path)
+    if not issubclass(lm_cls, BaseLM | LanguageModel):
+        raise TypeError(
+            f"Serialized LM class `{class_path}` must be a subclass of dspy.BaseLM or dspy.LanguageModel."
+        )
+
+    load_state = getattr(lm_cls, "load_state", None)
+    if callable(load_state):
+        return load_state(lm_state)
+    return lm_cls(**lm_state)
+
+
+def _import_lm_class(class_path: str) -> type:
+    try:
+        module_name, class_name = class_path.rsplit(".", 1)
+    except ValueError as exc:
+        raise ValueError(f"Invalid serialized LM class path: {class_path!r}") from exc
+
+    try:
+        module = importlib.import_module(module_name)
+        lm_cls = getattr(module, class_name)
+    except (ImportError, AttributeError) as exc:
+        raise ImportError(
+            f"Could not import serialized LM class `{class_path}`. Ensure the class is importable, "
+            "or load an older state without the concrete LM class marker."
+        ) from exc
+
+    if not isinstance(lm_cls, type):
+        raise TypeError(f"Serialized LM class `{class_path}` did not resolve to a class.")
+    return lm_cls
+
+
 def _get_type_name(type_annotation) -> str:
     """Helper method to get the name for a type annotation."""
 
@@ -354,7 +409,7 @@ def _check_type(value: Any, expected: type) -> bool:
                 return all(_check_type(item, args[0]) for item in value)
             if len(value) != len(args):
                 return False
-            return all(_check_type(item, arg) for item, arg in zip(value, args))
+            return all(_check_type(item, arg) for item, arg in zip(value, args, strict=True))
         return True
 
     # set / frozenset

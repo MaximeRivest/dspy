@@ -1,5 +1,6 @@
 import datetime
 import uuid
+import warnings
 from typing import Any, TextIO
 
 from dspy.dsp.utils import settings
@@ -11,12 +12,17 @@ GLOBAL_HISTORY = []
 
 
 class BaseLM:
-    """Base class for handling LLM calls.
+    """Implement the legacy prompt/messages LM contract.
 
-    Most users can directly use the `dspy.LM` class, which is a subclass of `BaseLM`. Users can also implement their
-    own subclasses of `BaseLM` to support custom LLM providers and inject custom logic. To do so, simply override the
-    `forward` method and make sure the return format is identical to the
-    [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+    `BaseLM` is kept for existing custom LMs. A subclass receives either `prompt` or OpenAI-style `messages` in
+    `forward()`, then returns an OpenAI/LiteLLM-shaped response object. `BaseLM.__call__()` turns that provider-shaped
+    response into DSPy's legacy output shape, `list[str] | list[dict]`.
+
+    New LM implementations should use `dspy.LanguageModel` instead. `LanguageModel` receives one normalized
+    `LMRequest` and returns one `LMResponse`, which gives custom LMs access to the same typed request, response, usage,
+    cost, history, and streaming contracts as DSPy's built-in LMs.
+
+    Most users can directly use `dspy.LM`. Existing concrete subclass of `BaseLM` can continue to be used during the migration window.
 
     Examples:
 
@@ -59,6 +65,22 @@ class BaseLM:
     print(dspy.Predict("q->a")(q="Why did the chicken cross the kitchen?"))
     ```
     """
+
+    is_legacy_lm = True
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.__module__.startswith("dspy."):
+            return
+        warnings.warn(
+            "Subclassing dspy.BaseLM uses the legacy prompt/messages LM contract. "
+            "For new custom LMs, subclass dspy.LanguageModel and implement "
+            "forward(request: LMRequest) -> LMResponse. The normalized LM system is available "
+            "in DSPy 3.3 with dspy.settings.experimental=True and is planned to become the "
+            "default in DSPy 3.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     def __init__(self, model, model_type="chat", temperature=0.0, max_tokens=1000, cache=True, **kwargs):
         self.model = model

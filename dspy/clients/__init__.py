@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from dspy.clients._litellm import get_litellm
-from dspy.clients.base_lm import BaseLM, inspect_history
+from dspy.clients.base_lm import BaseLM
 from dspy.clients.language_models import *
 from dspy.clients.language_models import __all__ as _language_model_all
 from dspy.clients.cache import Cache
@@ -49,6 +49,17 @@ class LM(_legacy_lm_cls):
 
 DISK_CACHE_DIR = os.environ.get("DSPY_CACHEDIR") or os.path.join(Path.home(), ".dspy_cache")
 DISK_CACHE_LIMIT = int(os.environ.get("DSPY_CACHE_LIMIT", 3e10))  # 30 GB default
+
+
+def inspect_history(n: int = 1, file: Any | None = None) -> None:
+    """Print recent interactions from legacy and normalized language models."""
+    from dspy.clients.base_lm import GLOBAL_HISTORY
+    from dspy.clients.language_models.base import GLOBAL_LANGUAGE_MODEL_HISTORY
+    from dspy.utils.inspect_history import pretty_print_history
+
+    history = [*GLOBAL_HISTORY, *GLOBAL_LANGUAGE_MODEL_HISTORY]
+    history.sort(key=lambda entry: entry.get("timestamp", ""))
+    pretty_print_history(history, n, file=file)
 
 
 def configure_cache(
