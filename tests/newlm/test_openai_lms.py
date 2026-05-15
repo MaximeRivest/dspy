@@ -32,7 +32,7 @@ def test_openai_completions_class_calls_chat_completions_and_maps_response():
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
 
-    lm = dspy.OpenAICompletionsLM("openai/gpt-4o-mini", completions=completions, cache=False)
+    lm = dspy.OpenAIChatLM("openai/gpt-4o-mini", completions=completions, cache=False)
 
     response = lm("say hello", temperature=0.1)
 
@@ -43,7 +43,7 @@ def test_openai_completions_class_calls_chat_completions_and_maps_response():
     assert response.usage.total_tokens == 2
 
 
-def test_openai_completions_class_can_use_text_protocol():
+def test_openai_text_lm_calls_text_completions_and_maps_response():
     calls = []
 
     def completions(**kwargs):
@@ -53,10 +53,9 @@ def test_openai_completions_class_can_use_text_protocol():
             "choices": [{"text": "hello", "finish_reason": "stop"}],
         }
 
-    lm = dspy.OpenAICompletionsLM(
+    lm = dspy.OpenAITextLM(
         "openai/gpt-3.5-turbo-instruct",
         completions=completions,
-        protocol="text",
         cache=False,
     )
 
@@ -94,6 +93,41 @@ def test_openai_responses_class_calls_responses_and_maps_response():
     assert response.usage.total_tokens == 2
 
 
+def test_openai_backends_do_not_forward_dspy_rollout_id_to_provider():
+    chat_calls = []
+    text_calls = []
+    responses_calls = []
+
+    def chat_completions(**kwargs):
+        chat_calls.append(kwargs)
+        return {"model": "gpt-4o-mini", "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}]}
+
+    def text_completions(**kwargs):
+        text_calls.append(kwargs)
+        return {"model": "gpt-3.5-turbo-instruct", "choices": [{"text": "hello", "finish_reason": "stop"}]}
+
+    def responses(**kwargs):
+        responses_calls.append(kwargs)
+        return {
+            "model": "gpt-4o-mini",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "hello"}]}],
+        }
+
+    dspy.OpenAIChatLM("openai/gpt-4o-mini", completions=chat_completions, cache=False)(
+        "say hello", rollout_id="rollout-1"
+    )
+    dspy.OpenAITextLM("openai/gpt-3.5-turbo-instruct", completions=text_completions, cache=False)(
+        "say hello", rollout_id="rollout-1"
+    )
+    dspy.OpenAIResponsesLM("openai/gpt-4o-mini", responses=responses, cache=False)(
+        "say hello", rollout_id="rollout-1"
+    )
+
+    assert "rollout_id" not in chat_calls[0]
+    assert "rollout_id" not in text_calls[0]
+    assert "rollout_id" not in responses_calls[0]
+
+
 def test_openai_completions_class_calls_openai_compatible_endpoint_directly(monkeypatch):
     calls = []
 
@@ -108,7 +142,7 @@ def test_openai_completions_class_calls_openai_compatible_endpoint_directly(monk
         )
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    lm = dspy.OpenAICompletionsLM("local-model", api_key="local", base_url="http://localhost:8000/v1", cache=False)
+    lm = dspy.OpenAIChatLM("local-model", api_key="local", api_base="http://localhost:8000/v1", cache=False)
 
     response = lm("say hello")
 
@@ -135,7 +169,7 @@ def test_openai_responses_class_calls_openai_compatible_endpoint_directly(monkey
         )
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    lm = dspy.OpenAIResponsesLM("local-model", api_key="local", base_url="http://localhost:8000/v1", cache=False)
+    lm = dspy.OpenAIResponsesLM("local-model", api_key="local", api_base="http://localhost:8000/v1", cache=False)
 
     response = lm("say hello")
 
@@ -157,7 +191,7 @@ async def test_openai_async_call_and_stream_use_anyio_thread_bridge():
             ]
         return {"model": "gpt-4o-mini", "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}]}
 
-    lm = dspy.OpenAICompletionsLM("openai/gpt-4o-mini", completions=completions, cache=False)
+    lm = dspy.OpenAIChatLM("openai/gpt-4o-mini", completions=completions, cache=False)
 
     response = await lm.acall("say hello")
     stream = lm.astream("say hello")

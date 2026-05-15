@@ -7,21 +7,26 @@ def make_lm():
     return dspy.LanguageModel(model="test/model", cache=True, temperature=0.1)
 
 
-#def test_normalize_simple_text_positional_call():
-request = make_lm().normalize_request("hello")
+def test_normalize_simple_text_positional_call():
+    request = make_lm().normalize_request("hello")
 
-assert request == dspy.LMRequest(
-    model="test/model",
-    messages=[dspy.User("hello")],
-    config=dspy.LMConfig(temperature=0.1, cache=dspy.LMCacheConfig(enabled=True)),
-)
+    assert request == dspy.LMRequest(
+        model="test/model",
+        messages=[dspy.User("hello")],
+        config=dspy.LMConfig(temperature=0.1, cache=dspy.LMCacheConfig(enabled=True)),
+    )
 
-lm = make_lm()
-lm.normalize_request(dspy.User("hello"))
-#def test_normalize_prompt_keyword_call():
-request = make_lm().normalize_request(prompt="hello")
 
-assert request.messages == [dspy.User("hello")]
+def test_normalize_single_message_positional_call():
+    request = make_lm().normalize_request(dspy.User("hello"))
+
+    assert request.messages == [dspy.User("hello")]
+
+
+def test_normalize_prompt_keyword_call():
+    request = make_lm().normalize_request(prompt="hello")
+
+    assert request.messages == [dspy.User("hello")]
 
 
 def test_normalize_text_with_generation_config():
@@ -189,6 +194,62 @@ def test_normalize_message_constructors_for_multiturn():
     ]
 
 
+def test_normalize_named_messages_list_is_canonical_conversation_form():
+    request = make_lm().normalize_request(
+        messages=[
+            dspy.System("You are concise."),
+            dspy.User("What is DSPy?"),
+        ],
+        temperature=0.2,
+    )
+
+    assert request.messages == [
+        dspy.System("You are concise."),
+        dspy.User("What is DSPy?"),
+    ]
+    assert request.config.temperature == 0.2
+
+
+def test_normalize_single_inner_list_of_messages_is_one_conversation_not_batch():
+    request = make_lm().normalize_request([
+        dspy.System("You are concise."),
+        dspy.User("What is DSPy?"),
+    ])
+
+    assert request.messages == [
+        dspy.System("You are concise."),
+        dspy.User("What is DSPy?"),
+    ]
+
+
+def test_normalize_bare_parts_are_one_implicit_user_message():
+    request = make_lm().normalize_request(
+        "Describe this image.",
+        dspy.Image("https://example.com/dog.png"),
+    )
+
+    assert request.messages == [
+        dspy.User(
+            "Describe this image.",
+            dspy.LMImagePart(url="https://example.com/dog.png", media_type="image/png"),
+        )
+    ]
+
+
+def test_normalize_rejects_ambiguous_positional_list_of_bare_parts():
+    with pytest.raises(TypeError, match="Cannot convert"):
+        make_lm().normalize_request(["hello", "world"])
+
+
+def test_normalize_rejects_mixed_explicit_messages_and_bare_parts():
+    with pytest.raises(TypeError, match="Cannot convert"):
+        make_lm().normalize_request(
+            dspy.System("You are concise."),
+            dspy.User("Describe this image."),
+            dspy.Image("https://example.com/dog.png"),
+        )
+
+
 def test_normalize_previous_lm_response_as_assistant_message():
     previous = dspy.LMResponse(
         model="test/model",
@@ -343,6 +404,90 @@ def test_normalize_explicit_lm_request_and_kwarg_overrides():
     assert request.messages == [dspy.User("hello")]
     assert request.config.temperature == 0.8
     assert request.config.max_tokens == 50
+
+
+def test_explicit_lm_request_override_preserves_unspecified_config_fields():
+    explicit = dspy.LMRequest(
+        model="test/explicit",
+        messages=[dspy.User("hello")],
+        config=dspy.LMConfig(
+            temperature=0.2,
+            max_tokens=50,
+            stop=["END"],
+            extensions={"headers": {"X-Trace-ID": "abc"}},
+            cache=dspy.LMCacheConfig(enabled=True, rollout_id="old"),
+            prompt_cache=dspy.LMPromptCacheConfig(enabled=True, key="prefix-old"),
+            tool_choice=dspy.LMToolChoice(mode="auto", parallel=True),
+            reasoning=dspy.LMReasoningConfig(effort="low", max_tokens=100, summary="auto"),
+        ),
+    )
+
+    request = make_lm().normalize_request(explicit, temperature=0.8)
+
+    assert request.config.temperature == 0.8
+    assert request.config.max_tokens == 50
+    assert request.config.stop == ["END"]
+    assert request.config.extensions == {"headers": {"X-Trace-ID": "abc"}}
+    assert request.config.cache == dspy.LMCacheConfig(enabled=True, rollout_id="old")
+    assert request.config.prompt_cache == dspy.LMPromptCacheConfig(enabled=True, key="prefix-old")
+    assert request.config.tool_choice == dspy.LMToolChoice(mode="auto", parallel=True)
+    assert request.config.reasoning == dspy.LMReasoningConfig(effort="low", max_tokens=100, summary="auto")
+
+
+def test_explicit_lm_request_override_merges_extensions():
+    explicit = dspy.LMRequest(
+        model="test/explicit",
+        messages=[dspy.User("hello")],
+        config=dspy.LMConfig(extensions={"headers": {"X-Trace-ID": "abc"}}),
+    )
+
+    request = make_lm().normalize_request(explicit, service_tier="auto", extra_body={"provider_option": True})
+
+    assert request.config.extensions == {
+        "headers": {"X-Trace-ID": "abc"},
+        "service_tier": "auto",
+        "extra_body": {"provider_option": True},
+    }
+
+
+def test_explicit_lm_request_group_overrides_preserve_unspecified_subfields():
+    explicit = dspy.LMRequest(
+        model="test/explicit",
+        messages=[dspy.User("hello")],
+        config=dspy.LMConfig(
+            cache=dspy.LMCacheConfig(enabled=True, rollout_id="old"),
+            prompt_cache=dspy.LMPromptCacheConfig(enabled=True, key="prefix-old"),
+            tool_choice=dspy.LMToolChoice(mode="auto", parallel=True),
+            reasoning=dspy.LMReasoningConfig(effort="low", max_tokens=100, summary="auto"),
+        ),
+    )
+
+    request = make_lm().normalize_request(
+        explicit,
+        rollout_id="new",
+        prompt_cache_key="prefix-new",
+        parallel_tool_calls=False,
+        reasoning_effort="high",
+    )
+
+    assert request.config.cache == dspy.LMCacheConfig(enabled=True, rollout_id="new")
+    assert request.config.prompt_cache == dspy.LMPromptCacheConfig(enabled=True, key="prefix-new")
+    assert request.config.tool_choice == dspy.LMToolChoice(mode="auto", parallel=False)
+    assert request.config.reasoning == dspy.LMReasoningConfig(effort="high", max_tokens=100, summary="auto")
+
+
+def test_explicit_lm_request_override_can_clear_fields_with_none():
+    explicit = dspy.LMRequest(
+        model="test/explicit",
+        messages=[dspy.User("hello")],
+        config=dspy.LMConfig(temperature=0.2, stop=["END"], extensions={"headers": {"X": "1"}}),
+    )
+
+    request = make_lm().normalize_request(explicit, temperature=None, stop=None, extensions=None)
+
+    assert request.config.temperature is None
+    assert request.config.stop is None
+    assert request.config.extensions == {}
 
 
 def test_normalize_rejects_request_mixed_with_direct_inputs():

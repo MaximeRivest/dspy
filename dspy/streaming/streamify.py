@@ -12,6 +12,7 @@ from anyio import create_memory_object_stream, create_task_group
 from anyio.streams.memory import MemoryObjectSendStream
 from litellm import ModelResponseStream
 
+from dspy.clients.language_models.types import LMStreamEvent
 from dspy.dsp.utils.settings import settings
 from dspy.primitives.prediction import Prediction
 from dspy.streaming.messages import StatusMessage, StatusMessageProvider, StatusStreamingCallback
@@ -31,6 +32,7 @@ def streamify(
     include_final_prediction_in_output_stream: bool = True,
     is_async_program: bool = False,
     async_streaming: bool = True,
+    include_lm_events: bool = False,
 ) -> Callable[[Any, Any], Awaitable[Any]]:
     """
     Wrap a DSPy program so that it streams its outputs incrementally, rather than returning them
@@ -53,6 +55,9 @@ def streamify(
             otherwise the program will be called with `acall`.
         async_streaming: Whether to return an async generator or a sync generator. If `False`, the streaming will be
             converted to a sync generator.
+        include_lm_events: When using a normalized `dspy.LanguageModel`, whether to yield raw `LMStreamEvent`s even
+            when `stream_listeners` are configured. This is useful when you want field-level `StreamResponse`s for the
+            UI and raw normalized LM events for tracing or custom clients. Legacy `BaseLM` streaming is unchanged.
 
     Returns:
         A function that takes the same arguments as the original program, but returns an async
@@ -167,7 +172,12 @@ def streamify(
         callbacks.append(status_streaming_callback)
 
     async def generator(args, kwargs, stream: MemoryObjectSendStream):
-        with settings.context(send_stream=stream, callbacks=callbacks, stream_listeners=stream_listeners):
+        with settings.context(
+            send_stream=stream,
+            callbacks=callbacks,
+            stream_listeners=stream_listeners,
+            stream_include_lm_events=include_lm_events,
+        ):
             prediction = await program(*args, **kwargs)
 
         await stream.send(prediction)
@@ -270,6 +280,9 @@ async def streaming_response(streamer: AsyncGenerator) -> AsyncGenerator:
     async for value in streamer:
         if isinstance(value, Prediction):
             data = {"prediction": dict(value.items(include_dspy=False))}
+            yield f"data: {orjson.dumps(data).decode()}\n\n"
+        elif isinstance(value, LMStreamEvent):
+            data = {"event": value.model_dump(mode="json")}
             yield f"data: {orjson.dumps(data).decode()}\n\n"
         elif isinstance(value, litellm.ModelResponseStream):
             data = {"chunk": value.json()}

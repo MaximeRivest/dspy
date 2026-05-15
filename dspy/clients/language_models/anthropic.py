@@ -6,12 +6,13 @@ import json
 import os
 import urllib.error
 import urllib.request
+import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
 import anyio
 
-from dspy.clients.language_models.base import LanguageModel
+from dspy.clients.language_models.base import LanguageModel, LMCapabilities
 from dspy.clients.language_models.types import (
     LMCitationPart,
     LMFilePart,
@@ -47,13 +48,15 @@ class AnthropicLM(LanguageModel):
         model: Anthropic model name. A leading `anthropic/` prefix is removed
             before the provider call.
         api_key: Anthropic API key. If omitted, `ANTHROPIC_API_KEY` is used.
-        base_url: Anthropic API base URL.
+        api_base: Anthropic API base URL.
         api_version: Anthropic API version header.
         requester: Optional callable for tests or custom transports. It
             receives `(payload, stream)` and returns a provider response.
+        temperature: Default sampling temperature for this LM.
+        max_tokens: Default output-token budget for this LM.
         cache: Whether DSPy request memoization is enabled by default.
         callbacks: Optional DSPy callbacks.
-        **kwargs: Default LM config values.
+        **kwargs: Additional default LM config values.
     """
 
     model_type = "anthropic"
@@ -63,18 +66,50 @@ class AnthropicLM(LanguageModel):
         model: str,
         *,
         api_key: str | None = None,
-        base_url: str = "https://api.anthropic.com/v1",
+        api_base: str = "https://api.anthropic.com/v1",
+        base_url: str | None = None,
         api_version: str = "2023-06-01",
         requester: AnthropicRequester | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         cache: bool = True,
         callbacks: list[Any] | None = None,
+        num_retries: int = 0,
         **kwargs: Any,
     ):
-        super().__init__(model=model, cache=cache, callbacks=callbacks, **kwargs)
+        if base_url is not None:
+            if api_base != "https://api.anthropic.com/v1" and api_base != base_url:
+                raise ValueError("Pass only one of `api_base` or deprecated `base_url`, not both.")
+            warnings.warn(
+                "`base_url` is deprecated for normalized LMs; use `api_base` instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            api_base = base_url
+        super().__init__(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            cache=cache,
+            callbacks=callbacks,
+            num_retries=num_retries,
+            **kwargs,
+        )
         self.api_key = api_key
-        self.base_url = base_url
+        self.api_base = api_base
         self.api_version = api_version
         self._requester = requester
+
+    def get_capabilities(self) -> LMCapabilities:
+        return LMCapabilities(
+            function_calling=True,
+            reasoning=True,
+            response_schema=True,
+            streaming=True,
+            input_image=True,
+            input_file=True,
+            tool_results=True,
+        )
 
     def forward(self, request: LMRequest) -> LMResponse:
         payload = self.to_anthropic_request(request, stream=False)
@@ -100,8 +135,8 @@ class AnthropicLM(LanguageModel):
 
     def dump_state(self) -> dict[str, Any]:
         state = super().dump_state()
-        if self.base_url != "https://api.anthropic.com/v1":
-            state["base_url"] = self.base_url
+        if self.api_base != "https://api.anthropic.com/v1":
+            state["api_base"] = self.api_base
         if self.api_version != "2023-06-01":
             state["api_version"] = self.api_version
         return state
@@ -250,7 +285,7 @@ class AnthropicLM(LanguageModel):
             "content-type": "application/json",
         }
         request = urllib.request.Request(
-            f"{self.base_url.rstrip('/')}/messages",
+            f"{self.api_base.rstrip('/')}/messages",
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",

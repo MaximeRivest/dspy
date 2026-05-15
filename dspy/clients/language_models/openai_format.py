@@ -226,7 +226,7 @@ def messages_to_text_prompt(messages: list[LMMessage]) -> str:
 # ---------------------------------------------------------------------------
 # Shared request mappers
 #
-# The three OpenAI protocols use slightly different outer envelopes, but most
+# The three OpenAI endpoint families use slightly different outer envelopes, but most
 # leaf values are the same: text parts, media parts, tools, tool choices, and
 # generation config. The helpers below keep those conversions in one place.
 # ---------------------------------------------------------------------------
@@ -343,18 +343,18 @@ def common_config_kwargs(config: LMConfig) -> dict[str, Any]:
         data.update(reasoning_to_chat_kwargs(config.reasoning))
     if config.prompt_cache is not None:
         data.update(prompt_cache_to_kwargs(config.prompt_cache))
-    if config.cache is not None and config.cache.rollout_id is not None:
-        data["rollout_id"] = config.cache.rollout_id
     return data
 
 
 def responses_config_kwargs(config: LMConfig) -> dict[str, Any]:
     """Convert shared DSPy config fields into Responses API kwargs."""
     data = dict(config.extensions) if config.extensions else {}
-    for key in ("temperature", "max_tokens", "top_p"):
+    for key in ("temperature", "top_p"):
         value = getattr(config, key)
         if value is not None:
             data[key] = value
+    if config.max_tokens is not None:
+        data["max_output_tokens"] = config.max_tokens
     if config.n is not None:
         data["n"] = config.n
     if config.logprobs is not None:
@@ -368,8 +368,6 @@ def responses_config_kwargs(config: LMConfig) -> dict[str, Any]:
     if config.response_format is not None:
         text = data.pop("text", {})
         data["text"] = {**text, "format": response_format_to_responses(config.response_format)}
-    if config.cache is not None and config.cache.rollout_id is not None:
-        data["rollout_id"] = config.cache.rollout_id
     return data
 
 
@@ -386,8 +384,6 @@ def text_config_kwargs(config: LMConfig) -> dict[str, Any]:
         data["logprobs"] = config.logprobs
     if config.n is not None:
         data["n"] = config.n
-    if config.cache is not None and config.cache.rollout_id is not None:
-        data["rollout_id"] = config.cache.rollout_id
     return data
 
 

@@ -31,7 +31,7 @@ Every DSPy module will use these defaults unless you override them with
 | `allow_tool_async_sync_conversion` | `False` | Let async tools run in synchronous code. See [Async](../../tutorials/async/index.md). |
 | `provide_traceback` | `False` | Include Python tracebacks in error logs. |
 | `warn_on_type_mismatch` | `True` | Warn when a module input type does not match the signature. |
-| `warn_legacy_lm` | `True` | Warn when external code subclasses the legacy `dspy.BaseLM` prompt/messages contract. Set to `False` while migrating custom LMs to `dspy.LanguageModel`. |
+| `experimental` | `False` | Enable experimental DSPy behavior, including routing `dspy.LM(...)` to the normalized `dspy.LanguageModel` backends. |
 
 ## Examples
 
@@ -70,13 +70,14 @@ dspy.configure(
 )
 ```
 
-### Silence legacy LM subclass warnings
+### Enable experimental behavior
 
 ```python
 import dspy
 
-# Useful while migrating a custom dspy.BaseLM subclass to dspy.LanguageModel.
-dspy.configure(warn_legacy_lm=False)
+dspy.configure(experimental=True)
+
+lm = dspy.LM("openai/gpt-4o-mini")  # Uses the normalized LanguageModel path.
 ```
 
 ## When to use `dspy.configure`

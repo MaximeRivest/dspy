@@ -8,12 +8,13 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
 import anyio
 
-from dspy.clients.language_models.base import LanguageModel
+from dspy.clients.language_models.base import LanguageModel, LMCapabilities
 from dspy.clients.language_models.types import (
     LMAudioPart,
     LMCitationPart,
@@ -48,12 +49,14 @@ class GenAILM(LanguageModel):
             removed before the provider call.
         api_key: Google GenAI API key. If omitted, `GEMINI_API_KEY` or
             `GOOGLE_API_KEY` is used.
-        base_url: Google GenAI API base URL.
+        api_base: Google GenAI API base URL.
         requester: Optional callable for tests or custom transports. It
             receives `(payload, stream)` and returns a provider response.
+        temperature: Default sampling temperature for this LM.
+        max_tokens: Default output-token budget for this LM.
         cache: Whether DSPy request memoization is enabled by default.
         callbacks: Optional DSPy callbacks.
-        **kwargs: Default LM config values.
+        **kwargs: Additional default LM config values.
     """
 
     model_type = "genai"
@@ -63,16 +66,51 @@ class GenAILM(LanguageModel):
         model: str,
         *,
         api_key: str | None = None,
-        base_url: str = "https://generativelanguage.googleapis.com/v1beta",
+        api_base: str = "https://generativelanguage.googleapis.com/v1beta",
+        base_url: str | None = None,
         requester: GenAIRequester | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         cache: bool = True,
         callbacks: list[Any] | None = None,
+        num_retries: int = 0,
         **kwargs: Any,
     ):
-        super().__init__(model=model, cache=cache, callbacks=callbacks, **kwargs)
+        if base_url is not None:
+            if api_base != "https://generativelanguage.googleapis.com/v1beta" and api_base != base_url:
+                raise ValueError("Pass only one of `api_base` or deprecated `base_url`, not both.")
+            warnings.warn(
+                "`base_url` is deprecated for normalized LMs; use `api_base` instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            api_base = base_url
+        super().__init__(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            cache=cache,
+            callbacks=callbacks,
+            num_retries=num_retries,
+            **kwargs,
+        )
         self.api_key = api_key
-        self.base_url = base_url
+        self.api_base = api_base
         self._requester = requester
+
+    def get_capabilities(self) -> LMCapabilities:
+        return LMCapabilities(
+            function_calling=True,
+            reasoning=True,
+            response_schema=True,
+            streaming=True,
+            input_image=True,
+            input_audio=True,
+            input_file=True,
+            output_image=True,
+            output_audio=True,
+            tool_results=True,
+        )
 
     def forward(self, request: LMRequest) -> LMResponse:
         payload = self.to_genai_request(request)
@@ -98,8 +136,8 @@ class GenAILM(LanguageModel):
 
     def dump_state(self) -> dict[str, Any]:
         state = super().dump_state()
-        if self.base_url != "https://generativelanguage.googleapis.com/v1beta":
-            state["base_url"] = self.base_url
+        if self.api_base != "https://generativelanguage.googleapis.com/v1beta":
+            state["api_base"] = self.api_base
         return state
 
     def to_genai_request(self, request: LMRequest) -> dict[str, Any]:
@@ -203,7 +241,7 @@ class GenAILM(LanguageModel):
         params = {"key": self.api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")}
         if stream:
             params["alt"] = "sse"
-        url = f"{self.base_url.rstrip('/')}/{_model_path(self.model)}:{endpoint}?{urllib.parse.urlencode(params)}"
+        url = f"{self.api_base.rstrip('/')}/{_model_path(self.model)}:{endpoint}?{urllib.parse.urlencode(params)}"
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),

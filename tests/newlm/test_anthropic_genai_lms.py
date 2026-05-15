@@ -159,7 +159,7 @@ async def test_genai_async_call_and_stream_use_anyio_thread_bridge():
 
 
 def test_router_returns_direct_anthropic_and_genai_backends():
-    with dspy.context(experimental_lm=True):
+    with dspy.context(experimental=True):
         anthropic = dspy.LM("anthropic/claude-3-5-haiku-latest", cache=False)
         gemini = dspy.LM("gemini/gemini-2.0-flash", cache=False)
 

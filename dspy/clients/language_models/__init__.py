@@ -3,7 +3,8 @@
 from dspy.clients.language_models.anthropic import AnthropicLM
 from dspy.clients.language_models.base import LanguageModel, LMCapabilities
 from dspy.clients.language_models.gemini import GenAILM
-from dspy.clients.language_models.openai import OpenAICompletionsLM, OpenAIResponsesLM
+from dspy.clients.language_models.litellm import LiteLLMLM
+from dspy.clients.language_models.openai import OpenAIChatLM, OpenAIResponsesLM, OpenAITextLM
 from dspy.clients.language_models.router import LM, LMRouter, register_lm_backend
 from dspy.clients.language_models.types import (
     Assistant,
@@ -56,10 +57,12 @@ from dspy.clients.language_models.types import (
 __all__ = [
     "LanguageModel",
     "LMCapabilities",
-    "OpenAICompletionsLM",
+    "OpenAIChatLM",
+    "OpenAITextLM",
     "OpenAIResponsesLM",
     "AnthropicLM",
     "GenAILM",
+    "LiteLLMLM",
     "LM",
     "LMRouter",
     "register_lm_backend",

@@ -70,12 +70,14 @@ class BaseLM:
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        if cls.__module__.startswith("dspy.") or not settings.get("warn_legacy_lm", True):
+        if cls.__module__.startswith("dspy."):
             return
         warnings.warn(
             "Subclassing dspy.BaseLM uses the legacy prompt/messages LM contract. "
-            "Subclass dspy.LanguageModel for the normalized LMRequest -> LMResponse contract. "
-            "Set dspy.configure(warn_legacy_lm=False) to silence this warning.",
+            "For new custom LMs, subclass dspy.LanguageModel and implement "
+            "forward(request: LMRequest) -> LMResponse. The normalized LM system is available "
+            "in DSPy 3.3 with dspy.settings.experimental=True and is planned to become the "
+            "default in DSPy 3.5.",
             DeprecationWarning,
             stacklevel=2,
         )

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import copy
 import datetime
+import json
 import logging
 import uuid
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
+
+import anyio
 
 from typing_extensions import Self
 
@@ -83,12 +87,16 @@ class LanguageModel:
 
     Args:
         model: The model name or deployment identifier used by this LM.
+        temperature: Default sampling temperature for requests made through
+            this LM. Per-call `temperature=` overrides this value.
+        max_tokens: Default output-token budget for requests made through this
+            LM. Per-call `max_tokens=` overrides this value.
         cache: Whether this LM should use DSPy's cache by default.
         callbacks: Optional callbacks attached to this LM instance. Callback
             execution is wired by DSPy's callback layer when this class is
             exported as a public LM type.
-        **kwargs: Default request configuration, such as `temperature`,
-            `max_tokens`, or provider-specific values.
+        **kwargs: Additional default request configuration or provider-specific
+            values.
 
     Examples:
         Define a small custom LM:
@@ -116,15 +124,20 @@ class LanguageModel:
         self,
         model: str,
         *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         cache: bool = True,
         callbacks: list[BaseCallback] | None = None,
+        num_retries: int = 0,
         **kwargs: Any,
     ):
         self.model = model
         self.cache = cache
         self.callbacks = callbacks or []
-        self.kwargs = dict(kwargs)
+        self.num_retries = num_retries
+        self.kwargs = _default_lm_kwargs(temperature=temperature, max_tokens=max_tokens, **kwargs)
         self.history: list[dict[str, Any]] = []
+        self._warned_zero_temp_rollout = False
 
     # ---------------------------------------------------------------------
     # Model and deployment metadata
@@ -188,12 +201,11 @@ class LanguageModel:
         clients, local weights, auth objects, or other runtime resources should
         override this method and pair it with `load_state()`.
         """
-        filtered_kwargs = {
-            key: value for key, value in self.kwargs.items() if not key.startswith("api_") and key != "api_key"
-        }
+        filtered_kwargs = {key: value for key, value in self.kwargs.items() if key != "api_key"}
         return {
             "model": self.model,
             "cache": self.cache,
+            "num_retries": self.num_retries,
             **filtered_kwargs,
         }
 
@@ -279,7 +291,7 @@ class LanguageModel:
         result = None
         exception = None
         try:
-            response = self._forward_with_cache(normalized_request)
+            response = self._forward_with_retry(normalized_request)
             result = self._finalize_response(normalized_request, response)
             return result
         except Exception as error:
@@ -322,7 +334,7 @@ class LanguageModel:
         result = None
         exception = None
         try:
-            response = await self._aforward_with_cache(normalized_request)
+            response = await self._aforward_with_retry(normalized_request)
             result = self._finalize_response(normalized_request, response)
             return result
         except Exception as error:
@@ -363,19 +375,23 @@ class LanguageModel:
                     "Pass either an LMRequest or direct-call inputs, not both. "
                     "Use call kwargs to override request config."
                 )
-            return self._override_request(request, **kwargs)
+            normalized = self._override_request(request, **kwargs)
+            self._warn_zero_temp_rollout(normalized)
+            return normalized
 
         merged_kwargs = {**self.kwargs, **kwargs}
         merged_kwargs.setdefault("cache", self.cache)
 
         if hasattr(request_cls, "from_call"):
-            return request_cls.from_call(
+            normalized = request_cls.from_call(
                 model=self.model,
                 items=items,
                 prompt=prompt,
                 messages=messages,
                 **merged_kwargs,
             )
+            self._warn_zero_temp_rollout(normalized)
+            return normalized
 
         if hasattr(request_cls, "from_prompt_or_messages"):
             if items:
@@ -383,12 +399,14 @@ class LanguageModel:
                     "Positional LM items require LMRequest.from_call(). "
                     "Implement that constructor in dspy.clients.language_models.types."
                 )
-            return request_cls.from_prompt_or_messages(
+            normalized = request_cls.from_prompt_or_messages(
                 model=self.model,
                 prompt=prompt,
                 messages=messages,
                 **merged_kwargs,
             )
+            self._warn_zero_temp_rollout(normalized)
+            return normalized
 
         raise TypeError("LMRequest must define from_call() or from_prompt_or_messages().")
 
@@ -410,22 +428,29 @@ class LanguageModel:
         )
         callbacks = self._get_active_callbacks()
         raw_inputs = self._raw_callback_inputs(items=items, prompt=prompt, messages=messages, kwargs=kwargs)
-        try:
-            self._require_stream_support(async_=False)
-        except Exception as error:
-            self._observe_failed_stream_construction(
+        events = self._cached_stream_events(normalized_request, mode="stream")
+        if events is None:
+            try:
+                self._require_stream_support(async_=False)
+            except Exception as error:
+                self._observe_failed_stream_construction(
+                    normalized_request,
+                    error,
+                    callbacks=callbacks,
+                    raw_inputs=raw_inputs,
+                )
+                raise
+            events = self._cache_wrapped_stream_events(
                 normalized_request,
-                error,
-                callbacks=callbacks,
-                raw_inputs=raw_inputs,
+                self.forward_stream(normalized_request),
+                mode="stream",
             )
-            raise
         lm_types = _import_lm_types()
         return lm_types.LMStream(
             request=normalized_request,
             events=self._callback_wrapped_stream_events(
                 normalized_request,
-                self.forward_stream(normalized_request),
+                events,
                 callbacks=callbacks,
                 raw_inputs=raw_inputs,
             ),
@@ -454,22 +479,29 @@ class LanguageModel:
         )
         callbacks = self._get_active_callbacks()
         raw_inputs = self._raw_callback_inputs(items=items, prompt=prompt, messages=messages, kwargs=kwargs)
-        try:
-            self._require_stream_support(async_=True)
-        except Exception as error:
-            self._observe_failed_stream_construction(
+        events = self._cached_astream_events(normalized_request, mode="astream")
+        if events is None:
+            try:
+                self._require_stream_support(async_=True)
+            except Exception as error:
+                self._observe_failed_stream_construction(
+                    normalized_request,
+                    error,
+                    callbacks=callbacks,
+                    raw_inputs=raw_inputs,
+                )
+                raise
+            events = self._cache_wrapped_astream_events(
                 normalized_request,
-                error,
-                callbacks=callbacks,
-                raw_inputs=raw_inputs,
+                self.aforward_stream(normalized_request),
+                mode="astream",
             )
-            raise
         lm_types = _import_lm_types()
         return lm_types.AsyncLMStream(
             request=normalized_request,
             events=self._callback_wrapped_astream_events(
                 normalized_request,
-                self.aforward_stream(normalized_request),
+                events,
                 callbacks=callbacks,
                 raw_inputs=raw_inputs,
             ),
@@ -642,11 +674,39 @@ class LanguageModel:
                 module.history.pop(0)
             module.history.append(entry)
 
+    def _forward_with_retry(self, request: LMRequest) -> LMResponse:
+        attempts = max(0, int(getattr(self, "num_retries", 0) or 0)) + 1
+        for attempt in range(attempts):
+            try:
+                return self._forward_with_cache(request)
+            except Exception as error:
+                normalized_error = self.normalize_error(error, request)
+                if attempt >= attempts - 1 or not _is_retryable_lm_error(normalized_error):
+                    if normalized_error is error:
+                        raise
+                    raise normalized_error from error
+                _sleep_before_retry(attempt)
+        raise RuntimeError("unreachable")
+
+    async def _aforward_with_retry(self, request: LMRequest) -> LMResponse:
+        attempts = max(0, int(getattr(self, "num_retries", 0) or 0)) + 1
+        for attempt in range(attempts):
+            try:
+                return await self._aforward_with_cache(request)
+            except Exception as error:
+                normalized_error = self.normalize_error(error, request)
+                if attempt >= attempts - 1 or not _is_retryable_lm_error(normalized_error):
+                    if normalized_error is error:
+                        raise
+                    raise normalized_error from error
+                await _asleep_before_retry(attempt)
+        raise RuntimeError("unreachable")
+
     def _forward_with_cache(self, request: LMRequest) -> LMResponse:
         if not _request_cache_enabled(request, self.cache):
             return self.forward(request)
         response = _cached_language_model_forward(
-            cache_request=self._cache_request(request),
+            cache_request=self._cache_request_for_mode(request, mode="sync"),
             lm=self,
             request=request,
         )
@@ -656,7 +716,7 @@ class LanguageModel:
         if not _request_cache_enabled(request, self.cache):
             return await self.aforward(request)
         response = await _cached_language_model_aforward(
-            cache_request=self._cache_request(request),
+            cache_request=self._cache_request_for_mode(request, mode="async"),
             lm=self,
             request=request,
         )
@@ -668,6 +728,82 @@ class LanguageModel:
             "lm_state": _sanitize_cache_value(self.dump_state()),
             "request": _sanitize_cache_value(_model_dump_for_cache(request)),
         }
+
+    def _cache_request_for_mode(self, request: LMRequest, *, mode: str) -> dict[str, Any]:
+        cache_request = self._cache_request(request)
+        cache_request["execution_mode"] = mode
+        return cache_request
+
+    def _cached_stream_events(self, request: LMRequest, *, mode: str) -> Iterator[LMStreamEvent] | None:
+        if not _request_cache_enabled(request, self.cache):
+            return None
+        cached = _get_cached_lm_response(self._cache_request_for_mode(request, mode=mode))
+        if cached is None:
+            return None
+        return _response_to_stream_events(_prepare_cached_lm_response(cached), model=request.model)
+
+    def _cache_wrapped_stream_events(
+        self,
+        request: LMRequest,
+        events: Iterator[LMStreamEvent],
+        *,
+        mode: str,
+    ) -> Iterator[LMStreamEvent]:
+        if not _request_cache_enabled(request, self.cache):
+            yield from events
+            return
+
+        builder = _import_lm_types().LMOutputBuilder()
+        response = None
+        for event in events:
+            built = builder.apply(event)
+            if built is not None:
+                response = built
+                _put_cached_lm_response(self._cache_request_for_mode(request, mode=mode), response)
+            yield event
+
+    def _cached_astream_events(self, request: LMRequest, *, mode: str) -> AsyncIterator[LMStreamEvent] | None:
+        if not _request_cache_enabled(request, self.cache):
+            return None
+        cached = _get_cached_lm_response(self._cache_request_for_mode(request, mode=mode))
+        if cached is None:
+            return None
+        return _async_iter(_response_to_stream_events(_prepare_cached_lm_response(cached), model=request.model))
+
+    async def _cache_wrapped_astream_events(
+        self,
+        request: LMRequest,
+        events: AsyncIterator[LMStreamEvent],
+        *,
+        mode: str,
+    ) -> AsyncIterator[LMStreamEvent]:
+        if not _request_cache_enabled(request, self.cache):
+            async for event in events:
+                yield event
+            return
+
+        builder = _import_lm_types().LMOutputBuilder()
+        response = None
+        async for event in events:
+            built = builder.apply(event)
+            if built is not None:
+                response = built
+                _put_cached_lm_response(self._cache_request_for_mode(request, mode=mode), response)
+            yield event
+
+    def _warn_zero_temp_rollout(self, request: LMRequest) -> None:
+        cache = getattr(getattr(request, "config", None), "cache", None)
+        rollout_id = getattr(cache, "rollout_id", None)
+        temperature = getattr(getattr(request, "config", None), "temperature", None)
+        if self._warned_zero_temp_rollout or rollout_id is None or temperature != 0:
+            return
+        warnings.warn(
+            "rollout_id only affects DSPy's request cache when temperature=0; set temperature>0 "
+            "to request a potentially different provider output.",
+            UserWarning,
+            stacklevel=3,
+        )
+        self._warned_zero_temp_rollout = True
 
     def _override_request(self, request: LMRequest, **kwargs: Any) -> LMRequest:
         if not kwargs:
@@ -730,10 +866,49 @@ def inspect_history(n: int = 1, file: Any | None = None) -> None:
     pretty_print_history(GLOBAL_LANGUAGE_MODEL_HISTORY, n, file=file)
 
 
+def _default_lm_kwargs(
+    *,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Build default request kwargs without storing omitted common values."""
+    defaults = dict(kwargs)
+    if temperature is not None:
+        defaults["temperature"] = temperature
+    if max_tokens is not None:
+        defaults["max_tokens"] = max_tokens
+    return defaults
+
+
 def _prepare_cached_lm_response(response: Any) -> Any:
     if getattr(response, "cache_hit", False) and hasattr(response, "cost"):
         response.cost = None
     return response
+
+
+def _is_retryable_lm_error(error: Exception) -> bool:
+    try:
+        from dspy.utils.exceptions import LMProviderError, LMRateLimitError
+    except Exception:
+        return False
+
+    if isinstance(error, LMRateLimitError):
+        return True
+    if isinstance(error, LMProviderError):
+        status = getattr(error, "status", None)
+        return status is None or int(status) >= 500
+    return False
+
+
+def _sleep_before_retry(attempt: int) -> None:
+    import time
+
+    time.sleep(min(2 ** attempt, 8))
+
+
+async def _asleep_before_retry(attempt: int) -> None:
+    await anyio.sleep(min(2 ** attempt, 8))
 
 
 def _cached_language_model_forward(cache_request: dict[str, Any], lm: LanguageModel, request: Any) -> Any:
@@ -746,6 +921,22 @@ def _cached_language_model_forward(cache_request: dict[str, Any], lm: LanguageMo
     return run(cache_request=cache_request, lm=lm, request=request)
 
 
+def _get_cached_lm_response(cache_request: dict[str, Any]) -> Any:
+    import dspy
+
+    return dspy.cache.get(_stream_cache_key(cache_request))
+
+
+def _put_cached_lm_response(cache_request: dict[str, Any], response: Any) -> None:
+    import dspy
+
+    dspy.cache.put(_stream_cache_key(cache_request), response)
+
+
+def _stream_cache_key(cache_request: dict[str, Any]) -> dict[str, Any]:
+    return {**cache_request, "_fn_identifier": "dspy.LanguageModel.stream"}
+
+
 async def _cached_language_model_aforward(cache_request: dict[str, Any], lm: LanguageModel, request: Any) -> Any:
     from dspy.clients.cache import request_cache
 
@@ -754,6 +945,44 @@ async def _cached_language_model_aforward(cache_request: dict[str, Any], lm: Lan
         return await lm.aforward(request)
 
     return await run(cache_request=cache_request, lm=lm, request=request)
+
+
+def _response_to_stream_events(response: Any, *, model: str | None = None) -> Iterator[Any]:
+    lm_types = _import_lm_types()
+    yield lm_types.LMStreamStartEvent(model=response.model or model)
+    for output_index, output in enumerate(response.outputs):
+        for part_index, part in enumerate(output.parts):
+            delta = _part_to_stream_delta(part)
+            if delta is not None:
+                yield lm_types.LMStreamDeltaEvent(output_index=output_index, part_index=part_index, delta=delta)
+        yield lm_types.LMStreamOutputEndEvent(
+            output_index=output_index,
+            finish_reason=output.finish_reason,
+            truncated=output.truncated,
+        )
+    yield lm_types.LMStreamEndEvent(response=response)
+
+
+def _part_to_stream_delta(part: Any) -> Any | None:
+    lm_types = _import_lm_types()
+    if isinstance(part, lm_types.LMTextPart):
+        return lm_types.LMTextDelta(text=part.text)
+    if isinstance(part, lm_types.LMThinkingPart):
+        return lm_types.LMThinkingDelta(text=part.text)
+    if isinstance(part, lm_types.LMToolCallPart):
+        return lm_types.LMToolCallDelta(id=part.id, name=part.name, args_delta=json.dumps(part.args))
+    if isinstance(part, lm_types.LMCitationPart):
+        return lm_types.LMCitationDelta(citation=part)
+    if isinstance(part, lm_types.LMImagePart):
+        return lm_types.LMImageDelta(image=part)
+    if isinstance(part, lm_types.LMAudioPart):
+        return lm_types.LMAudioDelta(audio=part)
+    return None
+
+
+async def _async_iter(events: Iterator[Any]) -> AsyncIterator[Any]:
+    for event in events:
+        yield event
 
 
 def _import_lm_types():
@@ -785,9 +1014,7 @@ def _sanitize_cache_value(value: Any) -> Any:
         sanitized = {}
         for key, item in value.items():
             key_text = str(key).lower().replace("-", "_")
-            if key_text in {"api_key", "api_base", "base_url", "authorization", "x_api_key"}:
-                continue
-            if key_text.startswith("api_"):
+            if key_text in {"api_key", "authorization", "x_api_key"}:
                 continue
             sanitized[key] = _sanitize_cache_value(item)
         return sanitized
@@ -843,7 +1070,7 @@ def _sanitize_callback_value(value: Any) -> Any:
         sanitized = {}
         for key, item in value.items():
             key_text = str(key).lower().replace("-", "_")
-            if key_text == "api_key" or key_text.startswith("api_") or key_text in {"authorization", "x_api_key"}:
+            if key_text == "api_key" or key_text in {"authorization", "x_api_key"}:
                 sanitized[key] = "<redacted>"
             else:
                 sanitized[key] = _sanitize_callback_value(item)

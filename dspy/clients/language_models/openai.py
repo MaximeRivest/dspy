@@ -6,12 +6,13 @@ import json
 import os
 import urllib.error
 import urllib.request
+import warnings
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, Literal
 
 import anyio
 
-from dspy.clients.language_models.base import LanguageModel
+from dspy.clients.language_models.base import LanguageModel, LMCapabilities
 from dspy.clients.language_models.openai_format import (
     completion_to_lm_response,
     cost_from_response,
@@ -35,10 +36,11 @@ from dspy.clients.language_models.types import (
     LMToolCallDelta,
 )
 
-CompletionProtocol = Literal["chat", "text"]
+CompletionModelType = Literal["chat", "text"]
 
 __all__ = [
-    "OpenAICompletionsLM",
+    "OpenAIChatLM",
+    "OpenAITextLM",
     "OpenAIResponsesLM",
     "completion_stream_to_events",
     "responses_stream_to_events",
@@ -59,11 +61,14 @@ class OpenAIResponsesLM(LanguageModel):
             the Responses API call. This is useful in tests and custom clients.
         client: Optional OpenAI client with a `.responses.create(...)` method.
         api_key: Optional OpenAI API key used when creating a client lazily.
-        base_url: Optional OpenAI-compatible base URL.
+        api_base: Optional OpenAI-compatible API base.
+        endpoint_url: Optional complete `/responses` endpoint URL. Use this
+            for proxies with non-standard paths; otherwise pass `api_base`.
+        temperature: Default sampling temperature for this LM.
+        max_tokens: Default output-token budget for this LM.
         cache: Whether DSPy request memoization is enabled by default.
         callbacks: Optional DSPy callbacks.
-        **kwargs: Default LM config values, such as `temperature` or
-            `max_tokens`.
+        **kwargs: Additional default LM config values.
     """
 
     model_type = "responses"
@@ -75,16 +80,45 @@ class OpenAIResponsesLM(LanguageModel):
         responses: Any | None = None,
         client: Any | None = None,
         api_key: str | None = None,
+        api_base: str | None = None,
         base_url: str | None = None,
+        endpoint_url: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         cache: bool = True,
         callbacks: list[Any] | None = None,
+        num_retries: int = 0,
         **kwargs: Any,
     ):
-        super().__init__(model=model, cache=cache, callbacks=callbacks, **kwargs)
+        api_base = _resolve_api_base_alias(api_base=api_base, base_url=base_url)
+        super().__init__(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            cache=cache,
+            callbacks=callbacks,
+            num_retries=num_retries,
+            **kwargs,
+        )
         self._responses = responses
         self._client = client
         self.api_key = api_key
-        self.base_url = base_url
+        self.api_base = api_base
+        self.endpoint_url = endpoint_url
+
+    def get_capabilities(self) -> LMCapabilities:
+        return LMCapabilities(
+            function_calling=True,
+            reasoning=True,
+            response_schema=True,
+            streaming=True,
+            input_image=True,
+            input_audio=True,
+            input_file=True,
+            output_image=True,
+            output_audio=True,
+            tool_results=True,
+        )
 
     def forward(self, request: LMRequest) -> LMResponse:
         data = self._request_kwargs(request)
@@ -110,7 +144,12 @@ class OpenAIResponsesLM(LanguageModel):
         return error
 
     def dump_state(self) -> dict[str, Any]:
-        return super().dump_state()
+        state = super().dump_state()
+        if self.api_base is not None:
+            state["api_base"] = self.api_base
+        if self.endpoint_url is not None:
+            state["endpoint_url"] = self.endpoint_url
+        return state
 
     def _request_kwargs(self, request: LMRequest) -> dict[str, Any]:
         data = to_openai_responses_request(request)
@@ -123,7 +162,8 @@ class OpenAIResponsesLM(LanguageModel):
         if self._client is not None:
             return _call_create_target(self._client.responses, data)
         return _direct_openai_call(
-            base_url=self.base_url,
+            api_base=self.api_base,
+            endpoint_url=self.endpoint_url,
             api_key=self.api_key,
             endpoint="responses",
             data=data,
@@ -131,51 +171,61 @@ class OpenAIResponsesLM(LanguageModel):
         )
 
 
-class OpenAICompletionsLM(LanguageModel):
-    """Call OpenAI Chat or text completions with DSPy's normalized LM types.
+class _OpenAICompletionsBase(LanguageModel):
+    """Shared implementation for OpenAI-compatible completion endpoints."""
 
-    The default `protocol="chat"` calls an OpenAI-compatible
-    `/chat/completions` endpoint. Set `protocol="text"` to call `/completions`
-    with a text-completion prompt.
-
-    Args:
-        model: OpenAI model name. A leading `openai/` provider prefix is removed
-            before the provider call.
-        completions: Optional callable or object with `.create(**kwargs)` used
-            for the completion call. This is useful in tests and custom clients.
-        client: Optional OpenAI client.
-        protocol: Whether to call the Chat Completions or legacy text
-            completions API.
-        api_key: Optional OpenAI API key used when creating a client lazily.
-        base_url: Optional OpenAI-compatible base URL.
-        cache: Whether DSPy request memoization is enabled by default.
-        callbacks: Optional DSPy callbacks.
-        **kwargs: Default LM config values, such as `temperature` or
-            `max_tokens`.
-    """
+    model_type: CompletionModelType
 
     def __init__(
         self,
         model: str,
         *,
+        model_type: CompletionModelType,
         completions: Any | None = None,
         client: Any | None = None,
-        protocol: CompletionProtocol = "chat",
         api_key: str | None = None,
+        api_base: str | None = None,
         base_url: str | None = None,
+        endpoint_url: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         cache: bool = True,
         callbacks: list[Any] | None = None,
+        num_retries: int = 0,
         **kwargs: Any,
     ):
-        if protocol not in {"chat", "text"}:
-            raise ValueError("protocol must be 'chat' or 'text'.")
-        super().__init__(model=model, cache=cache, callbacks=callbacks, **kwargs)
-        self.protocol = protocol
-        self.model_type = protocol
+        if model_type not in {"chat", "text"}:
+            raise ValueError("model_type must be 'chat' or 'text'.")
+        api_base = _resolve_api_base_alias(api_base=api_base, base_url=base_url)
+        super().__init__(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            cache=cache,
+            callbacks=callbacks,
+            num_retries=num_retries,
+            **kwargs,
+        )
+        self.model_type = model_type
         self._completions = completions
         self._client = client
         self.api_key = api_key
-        self.base_url = base_url
+        self.api_base = api_base
+        self.endpoint_url = endpoint_url
+
+    def get_capabilities(self) -> LMCapabilities:
+        if self.model_type == "text":
+            return LMCapabilities(streaming=True)
+        return LMCapabilities(
+            function_calling=True,
+            reasoning=True,
+            response_schema=True,
+            streaming=True,
+            input_image=True,
+            input_audio=True,
+            input_file=True,
+            tool_results=True,
+        )
 
     def forward(self, request: LMRequest) -> LMResponse:
         data = self._request_kwargs(request)
@@ -185,7 +235,7 @@ class OpenAICompletionsLM(LanguageModel):
     def forward_stream(self, request: LMRequest) -> Iterator[LMStreamEvent]:
         data = self._request_kwargs(request)
         data["stream"] = True
-        if self.protocol == "chat":
+        if self.model_type == "chat":
             data.setdefault("stream_options", {"include_usage": True})
         yield from completion_stream_to_events(self._call_completions(data), model=request.model)
 
@@ -204,11 +254,14 @@ class OpenAICompletionsLM(LanguageModel):
 
     def dump_state(self) -> dict[str, Any]:
         state = super().dump_state()
-        state["protocol"] = self.protocol
+        if self.api_base is not None:
+            state["api_base"] = self.api_base
+        if self.endpoint_url is not None:
+            state["endpoint_url"] = self.endpoint_url
         return state
 
     def _request_kwargs(self, request: LMRequest) -> dict[str, Any]:
-        data = to_openai_text_request(request) if self.protocol == "text" else to_openai_chat_request(request)
+        data = to_openai_text_request(request) if self.model_type == "text" else to_openai_chat_request(request)
         data["model"] = _strip_openai_provider_prefix(str(data["model"]))
         return data
 
@@ -216,14 +269,91 @@ class OpenAICompletionsLM(LanguageModel):
         if self._completions is not None:
             return _call_create_target(self._completions, data)
         if self._client is not None:
-            target = self._client.completions if self.protocol == "text" else self._client.chat.completions
+            target = self._client.completions if self.model_type == "text" else self._client.chat.completions
             return _call_create_target(target, data)
         return _direct_openai_call(
-            base_url=self.base_url,
+            api_base=self.api_base,
+            endpoint_url=self.endpoint_url,
             api_key=self.api_key,
-            endpoint="completions" if self.protocol == "text" else "chat/completions",
+            endpoint="completions" if self.model_type == "text" else "chat/completions",
             data=data,
             stream=bool(data.get("stream")),
+        )
+
+
+class OpenAIChatLM(_OpenAICompletionsBase):
+    """Call OpenAI Chat Completions with DSPy's normalized LM types."""
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        completions: Any | None = None,
+        client: Any | None = None,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        base_url: str | None = None,
+        endpoint_url: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        cache: bool = True,
+        callbacks: list[Any] | None = None,
+        num_retries: int = 0,
+        **kwargs: Any,
+    ):
+        super().__init__(
+            model=model,
+            model_type="chat",
+            completions=completions,
+            client=client,
+            api_key=api_key,
+            api_base=api_base,
+            base_url=base_url,
+            endpoint_url=endpoint_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            cache=cache,
+            callbacks=callbacks,
+            num_retries=num_retries,
+            **kwargs,
+        )
+
+
+class OpenAITextLM(_OpenAICompletionsBase):
+    """Call OpenAI legacy text Completions with DSPy's normalized LM types."""
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        completions: Any | None = None,
+        client: Any | None = None,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        base_url: str | None = None,
+        endpoint_url: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        cache: bool = True,
+        callbacks: list[Any] | None = None,
+        num_retries: int = 0,
+        **kwargs: Any,
+    ):
+        super().__init__(
+            model=model,
+            model_type="text",
+            completions=completions,
+            client=client,
+            api_key=api_key,
+            api_base=api_base,
+            base_url=base_url,
+            endpoint_url=endpoint_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            cache=cache,
+            callbacks=callbacks,
+            num_retries=num_retries,
+            **kwargs,
         )
 
 
@@ -460,14 +590,15 @@ def _call_create_target(target: Any, data: dict[str, Any]) -> Any:
 
 def _direct_openai_call(
     *,
-    base_url: str | None,
+    api_base: str | None,
     api_key: str | None,
     endpoint: str,
     data: dict[str, Any],
     stream: bool,
+    endpoint_url: str | None = None,
 ) -> Any:
     request = urllib.request.Request(
-        _openai_url(base_url=base_url, endpoint=endpoint),
+        endpoint_url or _openai_url(api_base=api_base, endpoint=endpoint),
         data=json.dumps(data).encode("utf-8"),
         headers=_openai_headers(api_key),
         method="POST",
@@ -478,12 +609,25 @@ def _direct_openai_call(
     return json.loads(response.read().decode("utf-8"))
 
 
-def _openai_url(*, base_url: str | None, endpoint: str) -> str:
-    return f"{(base_url or 'https://api.openai.com/v1').rstrip('/')}/{endpoint.lstrip('/')}"
+def _openai_url(*, api_base: str | None, endpoint: str) -> str:
+    return f"{(api_base or 'https://api.openai.com/v1').rstrip('/')}/{endpoint.lstrip('/')}"
+
+
+def _resolve_api_base_alias(*, api_base: str | None, base_url: str | None) -> str | None:
+    if base_url is None:
+        return api_base
+    if api_base is not None and api_base != base_url:
+        raise ValueError("Pass only one of `api_base` or deprecated `base_url`, not both.")
+    warnings.warn(
+        "`base_url` is deprecated for normalized OpenAI LMs; use `api_base` instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return base_url
 
 
 def _openai_headers(api_key: str | None) -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": "DSPy"}
     key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY")
     if key:
         headers["Authorization"] = f"Bearer {key}"

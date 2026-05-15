@@ -5,8 +5,8 @@ from dspy.clients import lm as legacy_lm_module
 
 
 @pytest.fixture(autouse=True)
-def experimental_lm_context():
-    with dspy.context(experimental_lm=True):
+def experimental_context():
+    with dspy.context(experimental=True):
         yield
 
 
@@ -19,34 +19,31 @@ class AcmeLM(dspy.LanguageModel):
 
 
 def test_lm_uses_legacy_lm_by_default():
-    with dspy.context(experimental_lm=False):
+    with dspy.context(experimental=False):
         lm = dspy.LM("openai/gpt-4o-mini", cache=False)
 
     assert isinstance(lm, legacy_lm_module.LM)
 
 
-def test_lm_constructor_returns_openai_chat_backend():
+def test_lm_constructor_returns_openai_responses_backend_by_default():
     lm = dspy.LM("openai/gpt-4o-mini", cache=False)
 
-    assert isinstance(lm, dspy.OpenAICompletionsLM)
+    assert isinstance(lm, dspy.OpenAIResponsesLM)
     assert isinstance(lm, dspy.LanguageModel)
-    assert lm.protocol == "chat"
     assert lm.model == "openai/gpt-4o-mini"
 
 
-def test_lm_model_type_is_deprecated_but_still_routes_temporarily():
-    with pytest.warns(DeprecationWarning, match="model_type"):
-        lm = dspy.LM("openai/gpt-4o-mini", model_type="responses", cache=False)
-
-    assert isinstance(lm, dspy.OpenAIResponsesLM)
+def test_lm_router_rejects_model_type():
+    with pytest.raises(TypeError, match="model_type"):
+        dspy.LM("openai/gpt-4o-mini", model_type="responses", cache=False)
 
 
-def test_openai_completion_lms_can_be_constructed_directly():
-    lm = dspy.OpenAICompletionsLM("openai/gpt-4o-mini", cache=False)
+def test_openai_chat_lm_can_be_constructed_directly():
+    lm = dspy.OpenAIChatLM("openai/gpt-4o-mini", cache=False)
 
-    assert isinstance(lm, dspy.OpenAICompletionsLM)
+    assert isinstance(lm, dspy.OpenAIChatLM)
     assert isinstance(lm, dspy.LanguageModel)
-    assert lm.protocol == "chat"
+    assert lm.model_type == "chat"
     assert lm.model == "openai/gpt-4o-mini"
 
 
@@ -84,7 +81,7 @@ def test_lm_copy_returns_copied_backend():
 
     copied = lm.copy(temperature=0.9, rollout_id=7)
 
-    assert isinstance(copied, dspy.OpenAICompletionsLM)
+    assert isinstance(copied, dspy.OpenAIResponsesLM)
     assert copied is not lm
     assert copied.kwargs["temperature"] == 0.9
     assert copied.kwargs["rollout_id"] == 7

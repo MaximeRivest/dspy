@@ -288,7 +288,7 @@ class LMConfig(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     top_p: float | None = None
-    stop: list[str] = Field(default_factory=list)
+    stop: list[str] | None = Field(default_factory=list)
     n: int | None = None
     logprobs: bool | int | None = None
     response_format: Any | None = None
@@ -350,6 +350,97 @@ class LMConfig(BaseModel):
         return cls(**data)
 
 
+def _merge_config_overrides(config: LMConfig, kwargs: dict[str, Any]) -> LMConfig:
+    data = config.model_dump()
+    extensions = dict(config.extensions)
+
+    direct_keys = {
+        "temperature",
+        "max_tokens",
+        "top_p",
+        "stop",
+        "n",
+        "logprobs",
+        "response_format",
+    }
+    for key in direct_keys & kwargs.keys():
+        data[key] = kwargs[key]
+
+    if "reasoning" in kwargs:
+        reasoning = kwargs["reasoning"]
+        if isinstance(reasoning, dict):
+            reasoning = LMReasoningConfig(**reasoning)
+        data["reasoning"] = reasoning
+    if "reasoning_effort" in kwargs:
+        reasoning = data.get("reasoning")
+        if isinstance(reasoning, dict):
+            reasoning = LMReasoningConfig(**reasoning)
+        reasoning = reasoning or LMReasoningConfig()
+        data["reasoning"] = reasoning.model_copy(update={"effort": kwargs["reasoning_effort"]})
+
+    if "tool_choice" in kwargs:
+        choice = kwargs["tool_choice"]
+        if isinstance(choice, str):
+            choice = LMToolChoice(mode=choice)
+        elif isinstance(choice, dict):
+            choice = LMToolChoice(**choice)
+        data["tool_choice"] = choice
+    if "parallel_tool_calls" in kwargs:
+        choice = data.get("tool_choice")
+        if isinstance(choice, dict):
+            choice = LMToolChoice(**choice)
+        choice = choice or LMToolChoice()
+        data["tool_choice"] = choice.model_copy(update={"parallel": kwargs["parallel_tool_calls"]})
+
+    if "cache" in kwargs or "rollout_id" in kwargs:
+        cache = data.get("cache")
+        if isinstance(cache, dict):
+            cache = LMCacheConfig(**cache)
+        if isinstance(kwargs.get("cache"), LMCacheConfig):
+            cache = kwargs["cache"]
+        else:
+            cache = cache or LMCacheConfig()
+            update = {}
+            if "cache" in kwargs:
+                update["enabled"] = kwargs["cache"]
+            if "rollout_id" in kwargs:
+                update["rollout_id"] = kwargs["rollout_id"]
+            cache = cache.model_copy(update=update)
+        data["cache"] = cache
+
+    if "prompt_cache" in kwargs or "prompt_cache_key" in kwargs:
+        prompt_cache = data.get("prompt_cache")
+        if isinstance(prompt_cache, dict):
+            prompt_cache = LMPromptCacheConfig(**prompt_cache)
+        if isinstance(kwargs.get("prompt_cache"), LMPromptCacheConfig):
+            prompt_cache = kwargs["prompt_cache"]
+        else:
+            prompt_cache = prompt_cache or LMPromptCacheConfig()
+            update = {}
+            if "prompt_cache" in kwargs:
+                update["enabled"] = kwargs["prompt_cache"]
+            if "prompt_cache_key" in kwargs:
+                update["key"] = kwargs["prompt_cache_key"]
+            prompt_cache = prompt_cache.model_copy(update=update)
+        data["prompt_cache"] = prompt_cache
+
+    if "extensions" in kwargs:
+        extra = kwargs["extensions"]
+        if extra is None:
+            extensions = {}
+        elif isinstance(extra, Mapping):
+            extensions.update(extra)
+        else:
+            raise TypeError("`extensions` override must be a mapping or None.")
+
+    handled = _KNOWN_CONFIG_KEYS
+    for key, value in kwargs.items():
+        if key not in handled:
+            extensions[key] = value
+    data["extensions"] = extensions
+    return LMConfig(**data)
+
+
 class LMRequest(BaseModel):
     """A normalized request passed to a `LanguageModel`."""
 
@@ -402,15 +493,17 @@ class LMRequest(BaseModel):
         return cls.from_call(model=model, prompt=prompt, messages=messages, **kwargs)
 
     def with_config_overrides(self, **kwargs: Any) -> "LMRequest":
+        """Return a copy with explicit request config overrides applied.
+
+        Only fields implied by the supplied keyword arguments are changed. This
+        preserves existing grouped config such as `cache`, `prompt_cache`,
+        `tool_choice`, `reasoning`, `stop`, and provider-specific
+        `extensions` when an unrelated setting is overridden.
+        """
         if not kwargs:
             return self
-        override = LMConfig.from_kwargs(**kwargs)
-        config_data = self.config.model_dump()
-        override_data = override.model_dump(exclude_none=True)
-        if override.extensions:
-            override_data["extensions"] = {**self.config.extensions, **override.extensions}
-        merged = {**config_data, **override_data}
-        return self.model_copy(update={"config": LMConfig(**merged)}, deep=True)
+        merged = _merge_config_overrides(self.config, kwargs)
+        return self.model_copy(update={"config": merged}, deep=True)
 
 
 class LMUsage(BaseModel):
@@ -1328,6 +1421,9 @@ def _messages_from_items(items: tuple[Any, ...], *, prompt: str | None = None) -
     if not items:
         items = ("",)
 
+    if len(items) == 1 and _is_message_sequence(items[0]):
+        items = tuple(items[0])
+
     if all(isinstance(item, LMMessage) or isinstance(item, LMResponse) for item in items):
         messages: list[LMMessage] = []
         for item in items:
@@ -1349,6 +1445,12 @@ def _messages_from_items(items: tuple[Any, ...], *, prompt: str | None = None) -
 
 def _messages_from_response(response: LMResponse) -> list[LMMessage]:
     return [LMMessage(role="assistant", parts=output.parts) for output in response.outputs]
+
+
+def _is_message_sequence(value: Any) -> bool:
+    return isinstance(value, (list, tuple)) and all(
+        isinstance(item, LMMessage) or isinstance(item, LMResponse) for item in value
+    )
 
 
 def _coerce_part(value: Any) -> LMPart:
