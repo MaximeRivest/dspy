@@ -1,6 +1,8 @@
 """Normalized language model implementations and types."""
 
+from dspy.clients.language_models.anthropic import AnthropicLM
 from dspy.clients.language_models.base import LanguageModel, LMCapabilities
+from dspy.clients.language_models.gemini import GenAILM
 from dspy.clients.language_models.litellm import LiteLLMLM
 from dspy.clients.language_models.openai import OpenAIChatLM, OpenAIResponsesLM, OpenAITextLM
 from dspy.clients.language_models.router import LM, LMRouter, register_lm_backend
@@ -58,6 +60,8 @@ __all__ = [
     "OpenAIChatLM",
     "OpenAITextLM",
     "OpenAIResponsesLM",
+    "AnthropicLM",
+    "GenAILM",
     "LiteLLMLM",
     "LM",
     "LMRouter",
