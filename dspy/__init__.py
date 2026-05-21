@@ -7,7 +7,7 @@ from dspy.teleprompt import *
 from dspy.evaluate import Evaluate  # isort: skip
 from dspy.clients import *  # isort: skip
 from dspy.clients.language_models import System, Developer, User, Assistant, ToolCall, ToolResult, LMMessage  # isort: skip
-from dspy.adapters import Adapter, ChatAdapter, JSONAdapter, XMLAdapter, TwoStepAdapter, Image, Audio, File, History, Type, Tool, ToolCalls, Code, Reasoning  # isort: skip
+from dspy.adapters import Adapter, ChatAdapter, JSONAdapter, XMLAdapter, TwoStepAdapter, Image, Audio, File, History, Type, Tool, ToolCalls, Code, Reasoning, TypeStrategy, NativeReasoning, TextReasoning, CodeCommentReasoning, MidMessageReasoning, NativeAudio, NativeCitations, NativeCode, NativeDocument, TextCode, NativeFile, NativeImage, NativeHistory, TextHistory, NativeToolCalls, TextToolCalls  # isort: skip
 from dspy.primitives.sandbox_serializable import SandboxSerializable  # isort: skip
 from dspy.utils.exceptions import (
     ContextWindowExceededError,
@@ -32,6 +32,7 @@ from dspy.utils.syncify import syncify
 from dspy.utils.saving import load
 from dspy.streaming.streamify import streamify
 from dspy.utils.usage_tracker import track_usage
+from dspy import types as types  # isort: skip
 
 from dspy.dsp.utils.settings import settings
 from dspy.dsp.colbertv2 import ColBERTv2

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import mimetypes
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from dataclasses import dataclass, field as dataclass_field
 from pprint import pformat
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
@@ -62,10 +63,57 @@ class LMAudioPart(LMBasePart):
         return self
 
 
-class LMFilePart(LMBasePart):
-    """File content from data, a URL, a file ID, or a local path."""
+class LMVideoPart(LMBasePart):
+    """Video content from data, a URL, a file ID, or a local path."""
 
-    type: Literal["file"] = "file"
+    type: Literal["video"] = "video"
+    media_type: str = "video/mp4"
+    data: str | None = None
+    url: str | None = None
+    file_id: str | None = None
+    path: str | None = None
+
+    @model_validator(mode="after")
+    def validate_one_source(self) -> "LMVideoPart":
+        _validate_one_source(self, "LMVideoPart")
+        return self
+
+
+class LMDocumentPart(LMBasePart):
+    """Semantic source/document content, optionally citation-enabled.
+
+    Documents are source material: text, PDFs, reports, contracts, or other
+    provider-addressable evidence that benefits from title/context/citation
+    semantics. Use `LMBinaryPart` for opaque attachments or arbitrary bytes.
+    """
+
+    type: Literal["document"] = "document"
+    media_type: str = "application/pdf"
+    data: str | None = None
+    url: str | None = None
+    file_id: str | None = None
+    path: str | None = None
+    source: dict[str, Any] | None = None
+    citations: dict[str, Any] = Field(default_factory=dict)
+    title: str | None = None
+    context: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "LMDocumentPart":
+        has_media_source = any(value is not None for value in (self.data, self.url, self.file_id, self.path))
+        if self.source is not None and has_media_source:
+            raise ValueError("LMDocumentPart accepts either source or one of data, url, file_id, or path, not both.")
+        if self.source is None:
+            _validate_one_source(self, "LMDocumentPart")
+        elif not self.source:
+            raise ValueError("LMDocumentPart.source must be non-empty when provided.")
+        return self
+
+
+class LMBinaryPart(LMBasePart):
+    """Opaque binary content from data, a URL, a file ID, or a local path."""
+
+    type: Literal["binary"] = "binary"
     media_type: str = "application/octet-stream"
     data: str | None = None
     url: str | None = None
@@ -74,8 +122,8 @@ class LMFilePart(LMBasePart):
     filename: str | None = None
 
     @model_validator(mode="after")
-    def validate_one_source(self) -> "LMFilePart":
-        _validate_one_source(self, "LMFilePart")
+    def validate_one_source(self) -> "LMBinaryPart":
+        _validate_one_source(self, "LMBinaryPart")
         return self
 
 
@@ -170,7 +218,9 @@ LMPart = Annotated[
     LMTextPart
     | LMImagePart
     | LMAudioPart
-    | LMFilePart
+    | LMVideoPart
+    | LMDocumentPart
+    | LMBinaryPart
     | LMToolCallPart
     | LMToolResultPart
     | LMThinkingPart
@@ -351,6 +401,20 @@ class LMConfig(BaseModel):
         return cls(**data)
 
 
+def _merge_lm_config(left: LMConfig | None, right: LMConfig | None) -> LMConfig | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+
+    data = left.model_dump()
+    right_data = right.model_dump(exclude_none=True)
+    extensions = {**left.extensions, **right.extensions}
+    data.update(right_data)
+    data["extensions"] = extensions
+    return LMConfig(**data)
+
+
 def _merge_config_overrides(config: LMConfig, kwargs: dict[str, Any]) -> LMConfig:
     data = config.model_dump()
     extensions = dict(config.extensions)
@@ -440,6 +504,55 @@ def _merge_config_overrides(config: LMConfig, kwargs: dict[str, Any]) -> LMConfi
             extensions[key] = value
     data["extensions"] = extensions
     return LMConfig(**data)
+
+
+@dataclass
+class LMRequestPatch:
+    """A partial normalized LM request contributed while rendering a DSPy call.
+
+    `LMRequest` is the complete object a `LanguageModel` receives. A patch is
+    the smaller, composable unit that DSPy type strategies can contribute while
+    an adapter is still building that request: extra messages, extra parts,
+    native tools, native config, or signature fields that should be hidden from
+    the outer adapter's ordinary text/JSON/XML rendering.
+    """
+
+    messages: list[LMMessage] = dataclass_field(default_factory=list)
+    system_parts: list[LMPart] = dataclass_field(default_factory=list)
+    user_parts: list[LMPart] = dataclass_field(default_factory=list)
+    assistant_parts: list[LMPart] = dataclass_field(default_factory=list)
+    tools: list[LMToolSpec] = dataclass_field(default_factory=list)
+    config: LMConfig | None = None
+    delete_input_fields: tuple[str, ...] = ()
+    delete_output_fields: tuple[str, ...] = ()
+    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def merge(self, other: "LMRequestPatch") -> "LMRequestPatch":
+        """Return a new patch containing this patch followed by `other`."""
+        return LMRequestPatch(
+            messages=[*self.messages, *other.messages],
+            system_parts=[*self.system_parts, *other.system_parts],
+            user_parts=[*self.user_parts, *other.user_parts],
+            assistant_parts=[*self.assistant_parts, *other.assistant_parts],
+            tools=[*self.tools, *other.tools],
+            config=_merge_lm_config(self.config, other.config),
+            delete_input_fields=(*self.delete_input_fields, *other.delete_input_fields),
+            delete_output_fields=(*self.delete_output_fields, *other.delete_output_fields),
+            metadata={**self.metadata, **other.metadata},
+        )
+
+    def as_lm_kwargs(self) -> dict[str, Any]:
+        """Return the legacy kwargs implied by this patch.
+
+        This keeps the first implementation usable with today's adapter call
+        path, which still passes `lm_kwargs` rather than an `LMRequestPatch` all
+        the way down. Message and part patches are intentionally not flattened
+        here; they require the next adapter-call refactor.
+        """
+        kwargs = self.config.model_dump(exclude_none=True) if self.config is not None else {}
+        if self.tools:
+            kwargs["tools"] = list(self.tools)
+        return kwargs
 
 
 class LMRequest(BaseModel):
@@ -587,8 +700,16 @@ class LMOutput(BaseModel):
         return [part for part in self.parts if isinstance(part, LMAudioPart)]
 
     @property
-    def files(self) -> list[LMFilePart]:
-        return [part for part in self.parts if isinstance(part, LMFilePart)]
+    def videos(self) -> list[LMVideoPart]:
+        return [part for part in self.parts if isinstance(part, LMVideoPart)]
+
+    @property
+    def documents(self) -> list[LMDocumentPart]:
+        return [part for part in self.parts if isinstance(part, LMDocumentPart)]
+
+    @property
+    def binaries(self) -> list[LMBinaryPart]:
+        return [part for part in self.parts if isinstance(part, LMBinaryPart)]
 
     @property
     def refusal(self) -> str | None:
@@ -700,8 +821,16 @@ class LMResponse(BaseModel):
         return self.output.audio
 
     @property
-    def files(self) -> list[LMFilePart]:
-        return self.output.files
+    def videos(self) -> list[LMVideoPart]:
+        return self.output.videos
+
+    @property
+    def documents(self) -> list[LMDocumentPart]:
+        return self.output.documents
+
+    @property
+    def binaries(self) -> list[LMBinaryPart]:
+        return self.output.binaries
 
     def to_values(self) -> list[Any]:
         return [output.to_value() for output in self.outputs]
@@ -1138,8 +1267,8 @@ def User(*parts: Any, name: str | None = None, metadata: dict[str, Any] | None =
     """Create a user message for a direct LM call.
 
     A user message contains the request or data you want the model to answer.
-    Pass plain text for simple prompts, or mix text with images, audio, files,
-    and normalized LM parts for multimodal calls.
+    Pass plain text for simple prompts, or mix text with images, audio, documents,
+    binary attachments, and normalized LM parts for multimodal calls.
 
     Args:
         *parts: Text, DSPy media objects, or normalized LM parts to include in
@@ -1414,15 +1543,32 @@ def _history_part_as_openai_content(part: LMPart) -> dict[str, Any]:
             "type": "input_audio",
             "input_audio": {"data": part.data, "format": _history_media_format(part.media_type)},
         }
-    if isinstance(part, LMFilePart):
+    if isinstance(part, LMVideoPart):
+        return {"type": "video", "video": {"url": _history_part_source(part), "media_type": part.media_type}}
+    if isinstance(part, LMDocumentPart):
+        data = {"type": "document"}
+        if part.source is not None:
+            data["source"] = part.source
+        else:
+            data["source"] = _history_part_source(part)
+            data["media_type"] = part.media_type
+        if part.citations:
+            data["citations"] = part.citations
+        if part.title is not None:
+            data["title"] = part.title
+        if part.context is not None:
+            data["context"] = part.context
+        return data
+    if isinstance(part, LMBinaryPart):
         return {
-            "type": "file",
-            "file": {
+            "type": "binary",
+            "binary": {
                 key: value
                 for key, value in {
-                    "file_data": _history_part_source(part),
+                    "data": _history_part_source(part),
                     "file_id": part.file_id,
                     "filename": part.filename,
+                    "media_type": part.media_type,
                 }.items()
                 if value is not None
             },
@@ -1430,7 +1576,7 @@ def _history_part_as_openai_content(part: LMPart) -> dict[str, Any]:
     return part.model_dump(exclude_none=True)
 
 
-def _history_part_source(part: LMImagePart | LMAudioPart | LMFilePart) -> str | None:
+def _history_part_source(part: LMImagePart | LMAudioPart | LMVideoPart | LMDocumentPart | LMBinaryPart) -> str | None:
     if part.data is not None:
         return part.data if part.data.startswith("data:") else f"data:{part.media_type};base64,{part.data}"
     return part.url or part.file_id or part.path
@@ -1501,7 +1647,9 @@ def _coerce_part(value: Any) -> LMPart:
             LMTextPart,
             LMImagePart,
             LMAudioPart,
-            LMFilePart,
+            LMVideoPart,
+            LMDocumentPart,
+            LMBinaryPart,
             LMToolCallPart,
             LMToolResultPart,
             LMThinkingPart,
@@ -1545,7 +1693,12 @@ def _parts_from_openai_content(content: Any) -> list[LMPart]:
             audio = item.get("input_audio", {})
             parts.append(LMAudioPart(data=audio.get("data"), media_type=f"audio/{audio.get('format', 'wav')}"))
         elif item_type == "file":
-            parts.append(_file_dict_to_part(item.get("file", {})))
+            parts.append(_binary_dict_to_part(item.get("file", {})))
+        elif item_type == "document":
+            parts.append(_document_dict_to_part(item))
+        elif item_type == "video":
+            video = item.get("video", {})
+            parts.append(_media_dict_to_video_part(video))
         else:
             parts.append(_coerce_part(item))
     return parts
@@ -1563,22 +1716,51 @@ def _image_source_to_part(source: str) -> LMImagePart:
     return LMImagePart(url=source, media_type=media_type)
 
 
-def _file_to_part(file: Any) -> LMFilePart:
+def _file_to_part(file: Any) -> LMBinaryPart:
     if file.file_data is not None:
         media_type, data = _split_data_uri(file.file_data)
-        return LMFilePart(data=data, media_type=media_type, filename=file.filename)
+        return LMBinaryPart(data=data, media_type=media_type, filename=file.filename)
     if file.file_id is not None:
-        return LMFilePart(file_id=file.file_id, filename=file.filename)
+        return LMBinaryPart(file_id=file.file_id, filename=file.filename)
     raise ValueError("File must have file_data or file_id.")
 
 
-def _file_dict_to_part(file: dict[str, Any]) -> LMFilePart:
+def _binary_dict_to_part(file: dict[str, Any]) -> LMBinaryPart:
     if file.get("file_data") is not None:
         media_type, data = _split_data_uri(file["file_data"])
-        return LMFilePart(data=data, media_type=media_type, filename=file.get("filename"))
+        return LMBinaryPart(data=data, media_type=media_type, filename=file.get("filename"))
+    if file.get("data") is not None:
+        media_type, data = _split_data_uri(file["data"])
+        return LMBinaryPart(data=data, media_type=media_type, filename=file.get("filename"))
     if file.get("file_id") is not None:
-        return LMFilePart(file_id=file["file_id"], filename=file.get("filename"))
-    raise ValueError("File content block requires file_data or file_id.")
+        return LMBinaryPart(file_id=file["file_id"], filename=file.get("filename"))
+    raise ValueError("Binary content block requires data, file_data, or file_id.")
+
+
+def _document_dict_to_part(item: dict[str, Any]) -> LMDocumentPart:
+    source = item.get("source")
+    if isinstance(source, dict):
+        return LMDocumentPart(
+            source=source,
+            citations=item.get("citations") or {},
+            title=item.get("title"),
+            context=item.get("context"),
+        )
+    if isinstance(source, str):
+        media_type, data = _split_data_uri(source)
+        return LMDocumentPart(data=data, media_type=media_type, title=item.get("title"), context=item.get("context"))
+    raise ValueError("Document content block requires source.")
+
+
+def _media_dict_to_video_part(video: dict[str, Any]) -> LMVideoPart:
+    if video.get("data") is not None:
+        media_type, data = _split_data_uri(video["data"])
+        return LMVideoPart(data=data, media_type=media_type)
+    if video.get("url") is not None:
+        return LMVideoPart(url=video["url"], media_type=video.get("media_type") or "video/mp4")
+    if video.get("file_id") is not None:
+        return LMVideoPart(file_id=video["file_id"], media_type=video.get("media_type") or "video/mp4")
+    raise ValueError("Video content block requires data, url, or file_id.")
 
 
 def _split_data_uri(value: str) -> tuple[str, str]:

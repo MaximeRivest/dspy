@@ -17,8 +17,9 @@ import anyio
 from dspy.clients.language_models.base import LanguageModel, LMCapabilities
 from dspy.clients.language_models.types import (
     LMAudioPart,
+    LMBinaryPart,
     LMCitationPart,
-    LMFilePart,
+    LMDocumentPart,
     LMImagePart,
     LMOutput,
     LMRequest,
@@ -30,6 +31,7 @@ from dspy.clients.language_models.types import (
     LMStreamStartEvent,
     LMTextDelta,
     LMTextPart,
+    LMVideoPart,
     LMThinkingDelta,
     LMThinkingPart,
     LMToolCallDelta,
@@ -264,7 +266,17 @@ def _message_to_genai(message: Any) -> dict[str, Any]:
 def _part_to_genai(part: Any) -> dict[str, Any]:
     if isinstance(part, LMTextPart):
         return {"text": part.text}
-    if isinstance(part, LMImagePart | LMAudioPart | LMFilePart):
+    if isinstance(part, LMDocumentPart):
+        source = part.source or {}
+        if source.get("type") == "text" and source.get("data") is not None:
+            text = str(source.get("data"))
+            if part.title is not None:
+                text = f"{part.title}\n\n{text}"
+            if part.context is not None:
+                text = f"{part.context}\n\n{text}"
+            return {"text": text}
+        return {"text": json.dumps(part.model_dump(exclude_none=True), ensure_ascii=False)}
+    if isinstance(part, LMImagePart | LMAudioPart | LMVideoPart | LMDocumentPart | LMBinaryPart):
         mime_type = part.media_type or "application/octet-stream"
         if part.url is not None:
             return {"fileData": {"mimeType": mime_type, "fileUri": part.url}}
@@ -362,8 +374,10 @@ def _parse_genai_parts(candidate: dict[str, Any]) -> list[Any]:
                 parts.append(LMImagePart(data=data, media_type=mime_type))
             elif mime_type.startswith("audio/"):
                 parts.append(LMAudioPart(data=data, media_type=mime_type))
+            elif mime_type.startswith("video/"):
+                parts.append(LMVideoPart(data=data, media_type=mime_type))
             else:
-                parts.append(LMFilePart(data=data, media_type=mime_type))
+                parts.append(LMBinaryPart(data=data, media_type=mime_type))
         elif "fileData" in part and isinstance(part["fileData"], dict):
             file_data = part["fileData"]
             mime_type = str(file_data.get("mimeType") or "application/octet-stream")
@@ -372,8 +386,10 @@ def _parse_genai_parts(candidate: dict[str, Any]) -> list[Any]:
                 parts.append(LMImagePart(url=uri, media_type=mime_type))
             elif mime_type.startswith("audio/"):
                 parts.append(LMAudioPart(url=uri, media_type=mime_type))
+            elif mime_type.startswith("video/"):
+                parts.append(LMVideoPart(url=uri, media_type=mime_type))
             else:
-                parts.append(LMFilePart(url=uri, media_type=mime_type))
+                parts.append(LMBinaryPart(url=uri, media_type=mime_type))
     return parts
 
 

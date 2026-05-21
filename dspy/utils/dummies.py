@@ -4,7 +4,7 @@ import random
 from collections import defaultdict
 from typing import Any
 
-from dspy.adapters.chat_adapter import FieldInfoWithName, field_header_pattern
+from dspy.adapters.chat_adapter import field_header_pattern
 from dspy.clients.base_lm import BaseLM
 from dspy.dsp.utils.utils import dotdict
 from dspy.signatures.field import OutputField
@@ -107,20 +107,32 @@ class DummyLM(BaseLM):
                 return output["content"]
 
     def _format_answer_fields(self, field_names_and_values: dict[str, Any]):
-        fields_with_values = {
-            FieldInfoWithName(name=field_name, info=OutputField()): value
-            for field_name, value in field_names_and_values.items()
-        }
-        # The reason why DummyLM needs an adapter is because it needs to know which output format to mimic.
-        # Normally LMs should not have any knowledge of an adapter, because the output format is defined in the prompt.
         adapter = self.adapter
 
-        # Try to use role="assistant" if the adapter supports it (like JSONAdapter)
-        try:
-            return adapter.format_field_with_value(fields_with_values, role="assistant")
-        except TypeError:
-            # Fallback for adapters that don't support role parameter (like ChatAdapter)
-            return adapter.format_field_with_value(fields_with_values)
+        if type(adapter).__name__ == "JSONAdapter":
+            import json
+
+            return json.dumps(field_names_and_values, indent=2, ensure_ascii=False)
+
+        if type(adapter).__name__ == "XMLAdapter":
+            s = ""
+            i = 1
+            for field_name, value in field_names_and_values.items():
+                if i > 1:
+                    s += "\n\n"
+                s += f"<{field_name}>\n{value}\n</{field_name}>"
+                i += 1
+            return s
+
+        s = ""
+        i = 1
+        for field_name, value in field_names_and_values.items():
+            if i > 1:
+                s += "\n\n"
+            s += f"[[ ## {field_name} ## ]]\n{value}"
+            i += 1
+        s += "\n\n[[ ## completed ## ]]\n"
+        return s
 
     def forward(self, prompt=None, messages=None, **kwargs):
         messages = messages or [{"role": "user", "content": prompt}]

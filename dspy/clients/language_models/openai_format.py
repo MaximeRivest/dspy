@@ -31,9 +31,10 @@ import pydantic
 
 from dspy.clients.language_models.types import (
     LMAudioPart,
+    LMBinaryPart,
     LMCitationPart,
     LMConfig,
-    LMFilePart,
+    LMDocumentPart,
     LMImagePart,
     LMMessage,
     LMOutput,
@@ -42,6 +43,7 @@ from dspy.clients.language_models.types import (
     LMResponse,
     LMTextPart,
     LMThinkingPart,
+    LMVideoPart,
     LMToolCallPart,
     LMToolChoice,
     LMToolResultPart,
@@ -255,10 +257,14 @@ def part_to_openai_blocks(part: Any) -> list[dict[str, Any]]:
         return [{"type": "text", "text": part.text}]
     if isinstance(part, LMImagePart):
         return [image_to_openai(part)]
+    if isinstance(part, LMDocumentPart):
+        return document_to_openai_blocks(part)
     if isinstance(part, LMAudioPart):
         return [audio_to_openai(part)]
-    if isinstance(part, LMFilePart):
-        return [file_to_openai(part)]
+    if isinstance(part, LMVideoPart):
+        return [video_to_openai(part)]
+    if isinstance(part, LMBinaryPart):
+        return [binary_to_openai(part)]
     if isinstance(part, LMThinkingPart):
         return [{"type": "text", "text": part.text}]
     if isinstance(part, LMCitationPart):
@@ -288,19 +294,45 @@ def audio_to_openai(audio: LMAudioPart) -> dict[str, Any]:
     return {"type": "input_audio", "input_audio": {"data": data, "format": media_format(media_type)}}
 
 
-def file_to_openai(file: LMFilePart) -> dict[str, Any]:
+def document_to_openai_blocks(document: LMDocumentPart) -> list[dict[str, Any]]:
+    source = document.source or {}
+    if source.get("type") == "text" and source.get("data") is not None:
+        text = str(source.get("data"))
+        if document.title is not None:
+            text = f"{document.title}\n\n{text}"
+        if document.context is not None:
+            text = f"{document.context}\n\n{text}"
+        return [{"type": "text", "text": text}]
+    return [{"type": "text", "text": json.dumps(document.model_dump(exclude_none=True), ensure_ascii=False)}]
+
+
+def video_to_openai(video: LMVideoPart) -> dict[str, Any]:
+    filename = os.path.basename(video.path) if video.path is not None else None
+    return binary_to_openai(
+        LMBinaryPart(
+            data=video.data,
+            url=video.url,
+            file_id=video.file_id,
+            path=video.path,
+            media_type=video.media_type,
+            filename=filename,
+        )
+    )
+
+
+def binary_to_openai(binary: LMBinaryPart) -> dict[str, Any]:
     file_data: dict[str, Any] = {}
-    if file.data is not None:
-        file_data["file_data"] = data_uri(file.media_type, file.data)
-    elif file.path is not None:
-        file_data["file_data"] = data_uri_from_path(file.path, fallback_media_type=file.media_type)
-        file_data["filename"] = file.filename or os.path.basename(file.path)
-    elif file.url is not None:
-        file_data["file_data"] = file.url
-    if file.file_id is not None:
-        file_data["file_id"] = file.file_id
-    if file.filename is not None:
-        file_data["filename"] = file.filename
+    if binary.data is not None:
+        file_data["file_data"] = data_uri(binary.media_type, binary.data)
+    elif binary.path is not None:
+        file_data["file_data"] = data_uri_from_path(binary.path, fallback_media_type=binary.media_type)
+        file_data["filename"] = binary.filename or os.path.basename(binary.path)
+    elif binary.url is not None:
+        file_data["file_data"] = binary.url
+    if binary.file_id is not None:
+        file_data["file_id"] = binary.file_id
+    if binary.filename is not None:
+        file_data["filename"] = binary.filename
     return {"type": "file", "file": file_data}
 
 
@@ -536,7 +568,7 @@ def responses_to_lm_response(response: Any, request: LMRequest) -> LMResponse:
     """Convert an OpenAI Responses object into `LMResponse`.
 
     The Responses API represents one assistant answer as a sequence of output
-    items: messages, function calls, reasoning, files, images, and refusals.
+    items: messages, function calls, reasoning, binary artifacts, images, and refusals.
     DSPy stores those as typed parts on one `LMOutput`.
     """
     parts = []
@@ -702,7 +734,7 @@ def output_audio_to_part(value: Any) -> LMAudioPart:
     raise ValueError("Provider audio output did not include data, url, or file_id.")
 
 
-def output_file_to_part(value: Any) -> LMFilePart:
+def output_file_to_part(value: Any) -> LMBinaryPart:
     data = model_dump(value)
     file = data.get("file") if isinstance(data.get("file"), dict) else data
     source = file.get("url")
@@ -713,11 +745,11 @@ def output_file_to_part(value: Any) -> LMFilePart:
     if b64_data is not None:
         if isinstance(b64_data, str) and b64_data.startswith("data:"):
             media_type, b64_data = split_data_uri(b64_data)
-        return LMFilePart(data=b64_data, media_type=media_type, filename=filename)
+        return LMBinaryPart(data=b64_data, media_type=media_type, filename=filename)
     if source is not None:
-        return LMFilePart(url=source, media_type=media_type, filename=filename)
+        return LMBinaryPart(url=source, media_type=media_type, filename=filename)
     if file_id is not None:
-        return LMFilePart(file_id=file_id, media_type=media_type, filename=filename)
+        return LMBinaryPart(file_id=file_id, media_type=media_type, filename=filename)
     raise ValueError("Provider file output did not include data, url, or file_id.")
 
 
@@ -748,7 +780,7 @@ def usage_from_response(response: Any) -> LMUsage | None:
 # ---------------------------------------------------------------------------
 
 
-def media_source(part: LMImagePart | LMAudioPart | LMFilePart) -> str:
+def media_source(part: LMImagePart | LMAudioPart | LMDocumentPart | LMBinaryPart) -> str:
     if part.data is not None:
         return data_uri(part.media_type, part.data)
     if part.url is not None:

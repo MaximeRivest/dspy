@@ -3,13 +3,14 @@ from typing import Any, get_origin
 
 import json_repair
 
+from dspy.adapters.legacy_bridge import legacy_messages_from_typed_messages
 from dspy.adapters.types import History, Type
-from dspy.adapters.types.base_type import split_message_content_for_custom_types
 from dspy.adapters.types.reasoning import Reasoning
 from dspy.adapters.types.tool import Tool, ToolCalls
+from dspy.adapters.types.type_strategy import TypeStrategy
 from dspy.clients.base_lm import BaseLM
 from dspy.clients.language_models.base import LanguageModel
-from dspy.clients.language_models.types import LMRequest, LMResponse
+from dspy.clients.language_models.types import LMConfig, LMMessage, LMRequest, LMRequestPatch, LMResponse
 from dspy.dsp.utils.settings import settings
 from dspy.experimental import Citations
 from dspy.signatures.signature import Signature
@@ -20,6 +21,32 @@ from dspy.utils.exceptions import AdapterParseError
 logger = logging.getLogger(__name__)
 
 _DEFAULT_NATIVE_RESPONSE_TYPES = [Citations, Reasoning]
+
+
+def _default_adapter_types() -> list[Any]:
+    from dspy.adapters.types import (
+        NativeAudio,
+        NativeCitations,
+        NativeDocument,
+        NativeFile,
+        NativeHistory,
+        NativeImage,
+        TextCode,
+        TextReasoning,
+        TextToolCalls,
+    )
+
+    return [
+        TextReasoning(),
+        TextCode(),
+        NativeImage(),
+        NativeAudio(),
+        NativeFile(),
+        NativeDocument(),
+        NativeCitations(),
+        NativeHistory(),
+        TextToolCalls(),
+    ]
 
 
 def _uses_language_model_contract(lm: Any) -> bool:
@@ -72,6 +99,40 @@ def _lm_async_streaming_enabled(lm: LanguageModel) -> bool:
     except NotImplementedError:
         return False
     return True
+
+
+def _type_strategy_for(annotation: Any, strategies: list[Any]) -> Any | None:
+    for strategy in strategies:
+        if hasattr(strategy, "matches") and strategy.matches(annotation):
+            return strategy
+    return None
+
+
+def _merge_lm_config_objects(left: LMConfig | None, right: LMConfig | None) -> LMConfig | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    data = left.model_dump()
+    right_data = right.model_dump(exclude_none=True)
+    data.update(right_data)
+    data["extensions"] = {**left.extensions, **right.extensions}
+    return LMConfig(**data)
+
+
+def _apply_lm_request_patch_to_legacy_adapter_call(
+    signature: type[Signature],
+    lm_kwargs: dict[str, Any],
+    patch: Any,
+) -> type[Signature]:
+    """Apply request patches to the legacy BaseLM kwargs/signature path."""
+    for key, value in patch.as_lm_kwargs().items():
+        lm_kwargs[key] = value
+    for field_name in patch.delete_input_fields:
+        signature = signature.delete(field_name)
+    for field_name in patch.delete_output_fields:
+        signature = signature.delete(field_name)
+    return signature
 
 
 def _text_from_lm_stream_event(event: Any) -> str | None:
@@ -156,6 +217,7 @@ class Adapter:
         callbacks: list[BaseCallback] | None = None,
         use_native_function_calling: bool = False,
         native_response_types: list[type[Type]] | None = None,
+        adapter_types: list[Any] | None = None,
     ):
         """
         Args:
@@ -171,6 +233,7 @@ class Adapter:
         self.callbacks = callbacks or []
         self.use_native_function_calling = use_native_function_calling
         self.native_response_types = native_response_types or _DEFAULT_NATIVE_RESPONSE_TYPES
+        self.adapter_types = _default_adapter_types() if adapter_types is None else list(adapter_types)
 
     # ------------------------------------------------------------------
     # Normalized LanguageModel streaming.
@@ -275,6 +338,83 @@ class Adapter:
         cls.format = with_callbacks(cls.format)
         cls.parse = with_callbacks(cls.parse)
 
+    def collect_type_strategy_patches(
+        self,
+        signature: type[Signature],
+        lm: BaseLM | LanguageModel,
+        lm_kwargs: dict[str, Any],
+        inputs: dict[str, Any],
+    ) -> LMRequestPatch:
+        """Collect normalized request patches contributed by adapter type strategies."""
+        patch = LMRequestPatch()
+        previous_signature = getattr(self, "_current_signature", None)
+        self._current_signature = signature
+        try:
+            for adapter_type in self.adapter_types:
+                if hasattr(adapter_type, "prepare"):
+                    patch = patch.merge(
+                        adapter_type.prepare(
+                            signature=signature,
+                            lm=lm,
+                            lm_kwargs=lm_kwargs,
+                            inputs=inputs,
+                            adapter=self,
+                        )
+                    )
+        finally:
+            if previous_signature is None:
+                try:
+                    delattr(self, "_current_signature")
+                except AttributeError:
+                    pass
+            else:
+                self._current_signature = previous_signature
+        return patch
+
+    def signature_without_patch_fields(self, signature: type[Signature], patch: LMRequestPatch) -> type[Signature]:
+        """Return the prompt-facing signature after patch-requested field deletions."""
+        for field_name in patch.delete_input_fields:
+            if field_name in signature.fields:
+                signature = signature.delete(field_name)
+        for field_name in patch.delete_output_fields:
+            if field_name in signature.fields:
+                signature = signature.delete(field_name)
+        return signature
+
+    def merge_patch_into_request(self, request: LMRequest, patch: LMRequestPatch) -> LMRequest:
+        """Merge request-level patch fields into a normalized LMRequest."""
+        config = _merge_lm_config_objects(request.config, patch.config) or request.config
+        return request.model_copy(
+            update={
+                "tools": [*request.tools, *patch.tools],
+                "config": config,
+                "metadata": {**request.metadata, **patch.metadata},
+            },
+            deep=True,
+        )
+
+    def _signature_without_strategy_parsed_output_fields(self, signature: type[Signature]) -> type[Signature]:
+        for name, field in list(signature.output_fields.items()):
+            adapter_type = _type_strategy_for(field.annotation, self.adapter_types)
+            if adapter_type is not None and type(adapter_type).parse_output is not TypeStrategy.parse_output:
+                signature = signature.delete(name)
+        return signature
+
+    def parse_type_strategy_outputs(
+        self,
+        original_signature: type[Signature],
+        output: Any,
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Merge output fields parsed by adapter type strategies into `value`."""
+        for name, field in original_signature.output_fields.items():
+            adapter_type = _type_strategy_for(field.annotation, self.adapter_types)
+            if adapter_type is not None:
+                parsed_value = adapter_type.parse_output(field_name=name, field=field, output=output, adapter=self)
+                if parsed_value is not None:
+                    value[name] = parsed_value
+        return value
+
     def _call_preprocess(
         self,
         lm: BaseLM | LanguageModel,
@@ -282,6 +422,9 @@ class Adapter:
         signature: type[Signature],
         inputs: dict[str, Any],
     ) -> type[Signature]:
+        patch = self.collect_type_strategy_patches(signature, lm, lm_kwargs, inputs)
+        signature = _apply_lm_request_patch_to_legacy_adapter_call(signature, lm_kwargs, patch)
+
         if self.use_native_function_calling:
             tool_call_input_field_name = self._get_tool_call_input_field_name(signature)
             tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
@@ -312,6 +455,8 @@ class Adapter:
 
         # Handle custom types that use native LM features, e.g., reasoning, citations, etc.
         for name, field in signature.output_fields.items():
+            if _type_strategy_for(field.annotation, self.adapter_types) is not None:
+                continue
             if (
                 isinstance(field.annotation, type)
                 and field.annotation in self.native_response_types
@@ -344,7 +489,8 @@ class Adapter:
                 tool_calls = output.get("tool_calls")
 
             if text:
-                value = self.parse(processed_signature, text)
+                parse_signature = self._signature_without_strategy_parsed_output_fields(processed_signature)
+                value = self.parse(parse_signature, text)
                 for field_name in original_signature.output_fields.keys():
                     if field_name not in value:
                         # We need to set the field not present in the processed signature to None for consistency.
@@ -370,6 +516,8 @@ class Adapter:
                     for v in tool_calls
                 ]
                 value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)
+
+            self.parse_type_strategy_outputs(original_signature, output, value)
 
             # Parse custom types that does not rely on the `Adapter.parse()` method
             for name, field in original_signature.output_fields.items():
@@ -405,7 +553,8 @@ class Adapter:
             tool_calls = output.tool_calls
 
             if text:
-                value = self.parse(processed_signature, text)
+                parse_signature = self._signature_without_strategy_parsed_output_fields(processed_signature)
+                value = self.parse(parse_signature, text)
                 for field_name in original_signature.output_fields.keys():
                     if field_name not in value:
                         value[field_name] = None
@@ -423,6 +572,8 @@ class Adapter:
                 value[tool_call_output_field_name] = ToolCalls.from_dict_list(
                     [{"name": call.name, "args": call.args} for call in tool_calls]
                 )
+
+            self.parse_type_strategy_outputs(original_signature, output, value)
 
             for name, field in original_signature.output_fields.items():
                 if (
@@ -444,7 +595,7 @@ class Adapter:
     def _language_model_request(
         self,
         lm: LanguageModel,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, Any] | LMMessage],
         lm_kwargs: dict[str, Any],
     ) -> LMRequest:
         # Delegate request construction to the LM so module calls preserve the
@@ -478,19 +629,23 @@ class Adapter:
             List of dictionaries representing parsed LM responses. Each dictionary contains keys matching the
             signature's output field names. For multiple generations (n > 1), returns multiple dictionaries.
         """
-        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
-        inputs = self.format(processed_signature, demos, inputs)
-
         if _uses_language_model_contract(lm):
-            request = self._language_model_request(lm, inputs, lm_kwargs)
+            patch = self.collect_type_strategy_patches(signature, lm, lm_kwargs, inputs)
+            processed_signature = self.signature_without_patch_fields(signature, patch)
+            processed_signature = self._call_preprocess_language_model_builtin_types(lm, lm_kwargs, processed_signature, inputs)
+            messages = self.format(processed_signature, demos, inputs, patch=patch)
+            request = self._language_model_request(lm, messages, lm_kwargs)
+            request = self.merge_patch_into_request(request, patch)
             if settings.send_stream is not None and _lm_streaming_enabled(lm):
                 response = self._stream_language_model_response(lm, request)
             else:
                 response = lm(request=request)
-            return self._call_postprocess_language_model(processed_signature, signature, response, lm, lm_kwargs)
+            return self.postprocess_language_model(processed_signature, signature, response, lm, lm_kwargs)
 
-        outputs = lm(messages=inputs, **lm_kwargs)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
+        messages = self.format(processed_signature, demos, inputs)
+        outputs = lm(messages=legacy_messages_from_typed_messages(messages), **lm_kwargs)
+        return self.postprocess_legacy(processed_signature, signature, outputs, lm, lm_kwargs)
 
     async def acall(
         self,
@@ -500,257 +655,92 @@ class Adapter:
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
-        inputs = self.format(processed_signature, demos, inputs)
-
         if _uses_language_model_contract(lm):
-            request = self._language_model_request(lm, inputs, lm_kwargs)
+            patch = self.collect_type_strategy_patches(signature, lm, lm_kwargs, inputs)
+            processed_signature = self.signature_without_patch_fields(signature, patch)
+            processed_signature = self._call_preprocess_language_model_builtin_types(lm, lm_kwargs, processed_signature, inputs)
+            messages = self.format(processed_signature, demos, inputs, patch=patch)
+            request = self._language_model_request(lm, messages, lm_kwargs)
+            request = self.merge_patch_into_request(request, patch)
             if settings.send_stream is not None and _lm_async_streaming_enabled(lm):
                 response = await self._astream_language_model_response(lm, request)
             elif settings.send_stream is not None and _lm_streaming_enabled(lm):
                 response = await asyncify(self._stream_language_model_response)(lm, request)
             else:
                 response = await lm.acall(request=request)
-            return self._call_postprocess_language_model(processed_signature, signature, response, lm, lm_kwargs)
+            return self.postprocess_language_model(processed_signature, signature, response, lm, lm_kwargs)
 
-        outputs = await lm.acall(messages=inputs, **lm_kwargs)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
+        messages = self.format(processed_signature, demos, inputs)
+        outputs = await lm.acall(messages=legacy_messages_from_typed_messages(messages), **lm_kwargs)
+        return self.postprocess_legacy(processed_signature, signature, outputs, lm, lm_kwargs)
+
+    def _call_preprocess_language_model_builtin_types(
+        self,
+        lm: LanguageModel,
+        lm_kwargs: dict[str, Any],
+        signature: type[Signature],
+        inputs: dict[str, Any],
+    ) -> type[Signature]:
+        """Apply legacy built-in native features to the normalized branch during migration."""
+        if self.use_native_function_calling:
+            tool_call_input_field_name = self._get_tool_call_input_field_name(signature)
+            tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
+            if tool_call_output_field_name and tool_call_input_field_name is None:
+                raise ValueError(
+                    f"You provided an output field {tool_call_output_field_name} to receive the tool calls information, "
+                    "but did not provide any tools as the input. Please provide a list of tools as the input by adding an "
+                    "input field with type `list[dspy.Tool]`."
+                )
+            if tool_call_output_field_name and _lm_supports_function_calling(lm):
+                tools = inputs[tool_call_input_field_name]
+                lm_kwargs["tools"] = tools if isinstance(tools, list) else [tools]
+                signature = signature.delete(tool_call_output_field_name).delete(tool_call_input_field_name)
+
+        for name, field in list(signature.output_fields.items()):
+            if _type_strategy_for(field.annotation, self.adapter_types) is not None:
+                continue
+            if (
+                isinstance(field.annotation, type)
+                and field.annotation in self.native_response_types
+                and issubclass(field.annotation, Type)
+            ):
+                signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)
+        return signature
+
+    def postprocess_language_model(
+        self,
+        processed_signature: type[Signature],
+        original_signature: type[Signature],
+        response: LMResponse,
+        lm: LanguageModel,
+        lm_kwargs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return self._call_postprocess_language_model(processed_signature, original_signature, response, lm, lm_kwargs)
+
+    def postprocess_legacy(
+        self,
+        processed_signature: type[Signature],
+        original_signature: type[Signature],
+        outputs: list[dict[str, Any] | str],
+        lm: BaseLM,
+        lm_kwargs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return self._call_postprocess(processed_signature, original_signature, outputs, lm, lm_kwargs)
 
     def format(
         self,
         signature: type[Signature],
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Format the input messages for the LM call.
+        patch: LMRequestPatch | None = None,
+    ) -> list[dict[str, Any] | LMMessage]:
+        """Render a DSPy call into LM messages.
 
-        This method converts the DSPy structured input along with few-shot examples and conversation history into
-        multiturn messages as expected by the LM. For custom adapters, this method can be overridden to customize
-        the formatting of the input messages.
-
-        In general we recommend the messages to have the following structure:
-        ```
-        [
-            {"role": "system", "content": system_message},
-            # Begin few-shot examples
-            {"role": "user", "content": few_shot_example_1_input},
-            {"role": "assistant", "content": few_shot_example_1_output},
-            {"role": "user", "content": few_shot_example_2_input},
-            {"role": "assistant", "content": few_shot_example_2_output},
-            ...
-            # End few-shot examples
-            # Begin conversation history
-            {"role": "user", "content": conversation_history_1_input},
-            {"role": "assistant", "content": conversation_history_1_output},
-            {"role": "user", "content": conversation_history_2_input},
-            {"role": "assistant", "content": conversation_history_2_output},
-            ...
-            # End conversation history
-            {"role": "user", "content": current_input},
-        ]
-
-        And system message should contain the field description, field structure, and task description.
-        ```
-
-
-        Args:
-            signature: The DSPy signature for which to format the input messages.
-            demos: A list of few-shot examples.
-            inputs: The input arguments to the DSPy module.
-
-        Returns:
-            A list of multiturn messages as expected by the LM.
-        """
-        inputs_copy = dict(inputs)
-
-        # If the signature and inputs have conversation history, we need to format the conversation history and
-        # remove the history field from the signature.
-        history_field_name = self._get_history_field_name(signature)
-        if history_field_name:
-            # In order to format the conversation history, we need to remove the history field from the signature.
-            signature_without_history = signature.delete(history_field_name)
-            conversation_history = self.format_conversation_history(
-                signature_without_history,
-                history_field_name,
-                inputs_copy,
-            )
-
-        messages = []
-        system_message = self.format_system_message(signature)
-        messages.append({"role": "system", "content": system_message})
-        messages.extend(self.format_demos(signature, demos))
-        if history_field_name:
-            # Conversation history and current input
-            content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)
-            messages.extend(conversation_history)
-            messages.append({"role": "user", "content": content})
-        else:
-            # Only current input
-            content = self.format_user_message_content(signature, inputs_copy, main_request=True)
-            messages.append({"role": "user", "content": content})
-
-        messages = split_message_content_for_custom_types(messages)
-        return messages
-
-    def format_system_message(self, signature: type[Signature]) -> str:
-        """Format the system message for the LM call.
-
-
-        Args:
-            signature: The DSPy signature for which to format the system message.
-        """
-        return (
-            f"{self.format_field_description(signature)}\n"
-            f"{self.format_field_structure(signature)}\n"
-            f"{self.format_task_description(signature)}"
-        )
-
-    def format_field_description(self, signature: type[Signature]) -> str:
-        """Format the field description for the system message.
-
-        This method formats the field description for the system message. It should return a string that contains
-        the field description for the input fields and the output fields.
-
-        Args:
-            signature: The DSPy signature for which to format the field description.
-
-        Returns:
-            A string that contains the field description for the input fields and the output fields.
+        Concrete adapters own prompt rendering. The base adapter only owns shared LM-call plumbing: preprocessing,
+        calling legacy or normalized LMs, streaming, and postprocessing.
         """
         raise NotImplementedError
-
-    def format_field_structure(self, signature: type[Signature]) -> str:
-        """Format the field structure for the system message.
-
-        This method formats the field structure for the system message. It should return a string that dictates the
-        format the input fields should be provided to the LM, and the format the output fields will be in the response.
-        Refer to the ChatAdapter and JsonAdapter for an example.
-
-        Args:
-            signature: The DSPy signature for which to format the field structure.
-        """
-        raise NotImplementedError
-
-    def format_task_description(self, signature: type[Signature]) -> str:
-        """Format the task description for the system message.
-
-        This method formats the task description for the system message. In most cases this is just a thin wrapper
-        over `signature.instructions`.
-
-        Args:
-            signature: The DSPy signature of the DSpy module.
-
-        Returns:
-            A string that describes the task.
-        """
-        raise NotImplementedError
-
-    def format_user_message_content(
-        self,
-        signature: type[Signature],
-        inputs: dict[str, Any],
-        prefix: str = "",
-        suffix: str = "",
-        main_request: bool = False,
-    ) -> str:
-        """Format the user message content.
-
-        This method formats the user message content, which can be used in formatting few-shot examples, conversation
-        history, and the current input.
-
-        Args:
-            signature: The DSPy signature for which to format the user message content.
-            inputs: The input arguments to the DSPy module.
-            prefix: A prefix to the user message content.
-            suffix: A suffix to the user message content.
-
-        Returns:
-            A string that contains the user message content.
-        """
-        raise NotImplementedError
-
-    def format_assistant_message_content(
-        self,
-        signature: type[Signature],
-        outputs: dict[str, Any],
-        missing_field_message: str | None = None,
-    ) -> str:
-        """Format the assistant message content.
-
-        This method formats the assistant message content, which can be used in formatting few-shot examples,
-        conversation history.
-
-        Args:
-            signature: The DSPy signature for which to format the assistant message content.
-            outputs: The output fields to be formatted.
-            missing_field_message: A message to be used when a field is missing.
-
-        Returns:
-            A string that contains the assistant message content.
-        """
-        raise NotImplementedError
-
-    def format_demos(self, signature: type[Signature], demos: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Format the few-shot examples.
-
-        This method formats the few-shot examples as multiturn messages.
-
-        Args:
-            signature: The DSPy signature for which to format the few-shot examples.
-            demos: A list of few-shot examples, each element is a dictionary with keys of the input and output fields of
-                the signature.
-
-        Returns:
-            A list of multiturn messages.
-        """
-        complete_demos = []
-        incomplete_demos = []
-
-        for demo in demos:
-            # Check if all fields are present and not None
-            is_complete = all(k in demo and demo[k] is not None for k in signature.fields)
-
-            # Check if demo has at least one input and one output field
-            has_input = any(k in demo for k in signature.input_fields)
-            has_output = any(k in demo for k in signature.output_fields)
-
-            if is_complete:
-                complete_demos.append(demo)
-            elif has_input and has_output:
-                # We only keep incomplete demos that have at least one input and one output field
-                incomplete_demos.append(demo)
-
-        messages = []
-
-        incomplete_demo_prefix = "This is an example of the task, though some input or output fields are not supplied."
-        for demo in incomplete_demos:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": self.format_user_message_content(signature, demo, prefix=incomplete_demo_prefix),
-                }
-            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": self.format_assistant_message_content(
-                        signature, demo, missing_field_message="Not supplied for this particular example. "
-                    ),
-                }
-            )
-
-        for demo in complete_demos:
-            messages.append({"role": "user", "content": self.format_user_message_content(signature, demo)})
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": self.format_assistant_message_content(
-                        signature, demo, missing_field_message="Not supplied for this conversation history message. "
-                    ),
-                }
-            )
-
-        return messages
 
     def _get_history_field_name(self, signature: type[Signature]) -> bool:
         for name, field in signature.input_fields.items():
@@ -773,49 +763,6 @@ class Adapter:
             if field.annotation == ToolCalls:
                 return name
         return None
-
-    def format_conversation_history(
-        self,
-        signature: type[Signature],
-        history_field_name: str,
-        inputs: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Format the conversation history.
-
-        This method formats the conversation history and the current input as multiturn messages.
-
-        Args:
-            signature: The DSPy signature for which to format the conversation history.
-            history_field_name: The name of the history field in the signature.
-            inputs: The input arguments to the DSPy module.
-
-        Returns:
-            A list of multiturn messages.
-        """
-        conversation_history = inputs[history_field_name].messages if history_field_name in inputs else None
-
-        if conversation_history is None:
-            return []
-
-        messages = []
-        for message in conversation_history:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": self.format_user_message_content(signature, message),
-                }
-            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": self.format_assistant_message_content(signature, message),
-                }
-            )
-
-        # Remove the history field from the inputs
-        del inputs[history_field_name]
-
-        return messages
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
         """Parse the LM output into a dictionary of the output fields.

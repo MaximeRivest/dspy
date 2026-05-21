@@ -53,7 +53,7 @@ class LMCapabilities:
         streaming: Whether the model can stream normalized DSPy events.
         input_image: Whether request messages may contain image parts.
         input_audio: Whether request messages may contain audio parts.
-        input_file: Whether request messages may contain file parts.
+        input_file: Whether request messages may contain document or binary parts.
         output_image: Whether responses may contain generated image parts.
         output_audio: Whether responses may contain generated audio parts.
         tool_results: Whether request messages may contain tool-result parts.

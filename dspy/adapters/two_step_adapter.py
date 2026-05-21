@@ -8,7 +8,8 @@ from dspy.adapters.types import ToolCalls
 from dspy.adapters.utils import get_field_description_string
 from dspy.clients.base_lm import BaseLM
 from dspy.clients.language_models.base import LanguageModel
-from dspy.clients.language_models.types import LMOutput
+from dspy.clients.language_models.types import LMMessage, LMOutput, LMTextPart
+from dspy.adapters.legacy_bridge import legacy_messages_from_typed_messages
 from dspy.signatures.field import InputField
 from dspy.signatures.signature import Signature, make_signature
 
@@ -48,8 +49,12 @@ class TwoStepAdapter(Adapter):
         self.extraction_model = extraction_model
 
     def format(
-        self, signature: type[Signature], demos: list[dict[str, Any]], inputs: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+        self,
+        signature: type[Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+        patch: Any | None = None,
+    ) -> list[LMMessage]:
         """
         Format a prompt for the first stage with the main LM.
         This no specific structure is required for the main LM, we customize the format method
@@ -63,16 +68,40 @@ class TwoStepAdapter(Adapter):
         Returns:
             A list of messages to be passed to the main LM.
         """
-        messages = []
+        messages: list[LMMessage] = []
 
         # Create a task description for the main LM
         task_description = self.format_task_description(signature)
-        messages.append({"role": "system", "content": task_description})
+        messages.append(LMMessage(role="system", parts=[LMTextPart(text=task_description)]))
 
-        messages.extend(self.format_demos(signature, demos))
+        for demo in demos:
+            demo_complete = all(k in demo and demo[k] is not None for k in signature.fields)
+            has_input = any(k in demo for k in signature.input_fields)
+            has_output = any(k in demo for k in signature.output_fields)
+            if not demo_complete and not (has_input and has_output):
+                continue
+
+            prefix = "" if demo_complete else "This is an example of the task, though some input or output fields are not supplied."
+            missing = (
+                "Not supplied for this conversation history message. "
+                if demo_complete
+                else "Not supplied for this particular example. "
+            )
+            messages.append(
+                LMMessage(
+                    role="user",
+                    parts=[LMTextPart(text=self.format_user_message_content(signature, demo, prefix=prefix))],
+                )
+            )
+            messages.append(
+                LMMessage(
+                    role="assistant",
+                    parts=[LMTextPart(text=self.format_assistant_message_content(signature, demo, missing_field_message=missing))],
+                )
+            )
 
         # Format the current input
-        messages.append({"role": "user", "content": self.format_user_message_content(signature, inputs)})
+        messages.append(LMMessage(role="user", parts=[LMTextPart(text=self.format_user_message_content(signature, inputs))]))
 
         return messages
 
@@ -120,7 +149,7 @@ class TwoStepAdapter(Adapter):
             response = await lm.acall(request=request)
             return await self._acall_postprocess_language_model(signature, response.outputs)
 
-        outputs = await lm.acall(messages=inputs, **lm_kwargs)
+        outputs = await lm.acall(messages=legacy_messages_from_typed_messages(inputs), **lm_kwargs)
         return await self._acall_postprocess_legacy(signature, outputs)
 
     async def _acall_postprocess_language_model(

@@ -10,7 +10,7 @@ from typing import Any, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 
 from dspy.adapters.json_adapter import JSONAdapter
-from dspy.adapters.utils import format_field_value as original_format_field_value
+from dspy.clients.language_models.types import LMTextPart
 from dspy.signatures.signature import Signature
 
 # Changing the comment symbol to Python's # rather than other languages' // seems to help
@@ -209,62 +209,100 @@ class BAMLAdapter(JSONAdapter):
     ```
     """
 
-    def format_field_structure(self, signature: type[Signature]) -> str:
-        """Overrides the base method to generate a simplified schema for Pydantic models."""
+    def render_system_message(self, signature: type[Signature]) -> str:
+        s = ""
+        s += "Your input fields are:\n"
+        i = 1
+        for name, field in signature.input_fields.items():
+            annotation = field.annotation
+            type_name = annotation.__name__ if hasattr(annotation, "__name__") else str(annotation)
+            desc = field.json_schema_extra["desc"] if field.json_schema_extra["desc"] != f"${{{name}}}" else ""
+            s += f"{i}. `{name}` ({type_name}):"
+            if desc:
+                s += f" {desc}"
+            if field.json_schema_extra.get("constraints"):
+                s += f"\nConstraints: {field.json_schema_extra['constraints']}"
+            if i < len(signature.input_fields):
+                s += "\n"
+            i += 1
 
-        sections = []
+        s += "\nYour output fields are:\n"
+        i = 1
+        for name, field in signature.output_fields.items():
+            annotation = field.annotation
+            type_name = annotation.__name__ if hasattr(annotation, "__name__") else str(annotation)
+            desc = field.json_schema_extra["desc"] if field.json_schema_extra["desc"] != f"${{{name}}}" else ""
+            s += f"{i}. `{name}` ({type_name}):"
+            if desc:
+                s += f" {desc}"
+            if field.json_schema_extra.get("constraints"):
+                s += f"\nConstraints: {field.json_schema_extra['constraints']}"
+            if i < len(signature.output_fields):
+                s += "\n"
+            i += 1
 
-        # Add structural explanation
-        sections.append(
-            "All interactions will be structured in the following way, with the appropriate values filled in.\n"
-        )
+        s += "\n"
+        s += self.render_baml_field_structure(signature)
+        s += "\n"
+        instructions = signature.instructions
+        import textwrap
 
-        # Add input structure section
-        if signature.input_fields:
-            for name in signature.input_fields.keys():
-                sections.append(f"[[ ## {name} ## ]]")
-                sections.append(f"{{{name}}}")
-                sections.append("")  # Empty line after each input
+        instructions = textwrap.dedent(instructions)
+        objective = ("\n" + " " * 8).join([""] + instructions.splitlines())
+        s += f"In adhering to this structure, your objective is: {objective}"
+        return s
 
-        # Add output structure section
-        if signature.output_fields:
-            for name, field in signature.output_fields.items():
-                field_type = field.annotation
-                sections.append(f"[[ ## {name} ## ]]")
-                sections.append(f"Output field `{name}` should be of type: {_render_type_str(field_type, indent=0)}\n")
+    def render_baml_field_structure(self, signature: type[Signature]) -> str:
+        s = ""
+        s += "All interactions will be structured in the following way, with the appropriate values filled in.\n\n"
+        for name in signature.input_fields.keys():
+            s += f"[[ ## {name} ## ]]\n"
+            s += f"{{{name}}}\n\n"
+        for name, field in signature.output_fields.items():
+            s += f"[[ ## {name} ## ]]\n"
+            s += f"Output field `{name}` should be of type: {_render_type_str(field.annotation, indent=0)}\n\n"
+        s += "[[ ## completed ## ]]"
+        return s
 
-        # Add completed section
-        sections.append("[[ ## completed ## ]]")
-
-        return "\n".join(sections)
-
-    def format_user_message_content(
-        self,
-        signature: type[Signature],
-        inputs: dict[str, Any],
-        prefix: str = "",
-        suffix: str = "",
-        main_request: bool = False,
-    ) -> str:
-        """Overrides the base method to render Pydantic input instances as clean JSON."""
-        messages = [prefix]
-        for key, field_info in signature.input_fields.items():
-            if key in inputs:
-                value = inputs.get(key)
-                formatted_value = ""
+    def render_current_user_message(self, signature: type[Signature], inputs: dict[str, Any]) -> str | list[Any]:
+        parts = []
+        i = 1
+        for name, field in signature.input_fields.items():
+            if name in inputs:
+                if i > 1:
+                    parts.append(LMTextPart(text="\n\n"))
+                value = inputs[name]
+                parts.append(LMTextPart(text=f"[[ ## {name} ## ]]\n"))
                 if isinstance(value, BaseModel):
-                    # Use clean, indented JSON for Pydantic instances
-                    formatted_value = value.model_dump_json(indent=2, by_alias=True)
+                    rendered = value.model_dump_json(indent=2, by_alias=True)
                 else:
-                    # Fallback to the original dspy formatter for other types
-                    formatted_value = original_format_field_value(field_info=field_info, value=value)
+                    try:
+                        from pydantic import TypeAdapter
 
-                messages.append(f"[[ ## {key} ## ]]\n{formatted_value}")
+                        rendered = TypeAdapter(type(value)).dump_python(value, mode="json")
+                    except Exception:
+                        rendered = str(value)
+                    if isinstance(rendered, dict) or isinstance(rendered, list):
+                        import json
 
-        if main_request:
-            output_requirements = self.user_message_output_requirements(signature)
-            if output_requirements is not None:
-                messages.append(output_requirements)
-
-        messages.append(suffix)
-        return "\n\n".join(m for m in messages if m).strip()
+                        rendered = json.dumps(rendered, ensure_ascii=False)
+                    else:
+                        rendered = str(rendered)
+                parts.append(LMTextPart(text=rendered))
+                i += 1
+        if parts:
+            parts.append(LMTextPart(text="\n\n"))
+        suffix = "Respond with a JSON object in the following order of fields: "
+        i = 1
+        for name, field in signature.output_fields.items():
+            if i > 1:
+                suffix += ", then "
+            suffix += f"`{name}`"
+            if field.annotation is not str:
+                annotation = field.annotation
+                type_name = annotation.__name__ if hasattr(annotation, "__name__") else str(annotation)
+                suffix += f" (must be formatted as a valid Python {type_name})"
+            i += 1
+        suffix += "."
+        parts.append(LMTextPart(text=suffix))
+        return parts

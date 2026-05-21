@@ -59,7 +59,7 @@ def test_baml_adapter_basic_schema_generation():
         patient: PatientDetails = dspy.OutputField()
 
     adapter = BAMLAdapter()
-    schema = adapter.format_field_structure(TestSignature)
+    schema = adapter.render_baml_field_structure(TestSignature)
 
     # Should contain simplified schema with comments
     assert f"{COMMENT_SYMBOL} Full name of the patient" in schema
@@ -78,7 +78,7 @@ def test_baml_adapter_handles_optional_fields():
         patient: PatientDetails = dspy.OutputField()
 
     adapter = BAMLAdapter()
-    schema = adapter.format_field_structure(TestSignature)
+    schema = adapter.render_baml_field_structure(TestSignature)
 
     # Optional address field should show 'or null'
     assert "address:" in schema
@@ -99,7 +99,7 @@ def test_baml_adapter_handles_primitive_types():
         output: SimpleModel = dspy.OutputField()
 
     adapter = BAMLAdapter()
-    schema = adapter.format_field_structure(TestSignature)
+    schema = adapter.render_baml_field_structure(TestSignature)
 
     assert "text: string," in schema
     assert "number: int," in schema
@@ -115,7 +115,7 @@ def test_baml_adapter_handles_lists_with_bracket_notation():
         addresses: ModelWithLists = dspy.OutputField()
 
     adapter = BAMLAdapter()
-    schema = adapter.format_field_structure(TestSignature)
+    schema = adapter.render_baml_field_structure(TestSignature)
 
     # Should use bracket notation for lists and include comments
     assert "items: [" in schema
@@ -134,7 +134,7 @@ def test_baml_adapter_handles_complex_nested_models():
         complex: ComplexNestedModel = dspy.OutputField()
 
     adapter = BAMLAdapter()
-    schema = adapter.format_field_structure(TestSignature)
+    schema = adapter.render_baml_field_structure(TestSignature)
 
     expected_patient_details = "\n".join([
         f"{INDENTATION}{COMMENT_SYMBOL} Patient Details model docstring",
@@ -161,7 +161,7 @@ def test_baml_adapter_raise_error_on_circular_references():
 
     adapter = BAMLAdapter()
     with pytest.raises(ValueError) as error:
-        adapter.format_field_structure(TestSignature)
+        adapter.render_baml_field_structure(TestSignature)
 
     assert "BAMLAdapter cannot handle recursive pydantic models" in str(error.value)
 
@@ -226,7 +226,7 @@ def test_baml_adapter_handles_schema_generation_errors_gracefully():
 
     # Should not raise an exception
     try:
-        schema = adapter.format_field_structure(TestSignature)
+        schema = adapter.render_baml_field_structure(TestSignature)
         # If no exception, schema should at least contain some basic structure
         assert "schema" in schema.lower()
     except Exception:
@@ -400,8 +400,8 @@ def test_baml_vs_json_adapter_token_efficiency():
     baml_adapter = BAMLAdapter()
     json_adapter = dspy.JSONAdapter()
 
-    baml_schema = baml_adapter.format_field_structure(TestSignature)
-    json_schema = json_adapter.format_field_structure(TestSignature)
+    baml_schema = baml_adapter.render_baml_field_structure(TestSignature)
+    json_schema = json_adapter.render_system_message(TestSignature)
 
     # Simple character count as proxy for token efficiency
     # BAMLAdapter should always produce shorter schemas
@@ -470,7 +470,7 @@ def test_baml_adapter_with_field_aliases():
     adapter = BAMLAdapter()
 
     # Schema should show aliases in the output structure
-    schema = adapter.format_field_structure(TestSignature)
+    schema = adapter.render_baml_field_structure(TestSignature)
     assert "name:" in schema  # Should use alias, not field name
     assert "age:" in schema  # Should use alias, not field name
 
@@ -488,7 +488,7 @@ def test_baml_adapter_field_alias_without_description():
         data: ModelWithAliasNoDescription = dspy.OutputField()
 
     adapter = BAMLAdapter()
-    schema = adapter.format_field_structure(TestSignature)
+    schema = adapter.render_baml_field_structure(TestSignature)
 
     # Should show alias as comment when description is absent
     assert f"{COMMENT_SYMBOL} alias: public_name" in schema
@@ -522,7 +522,7 @@ def test_baml_adapter_multiple_pydantic_input_fields():
     adapter = BAMLAdapter()
 
     # Test schema generation includes headers for ALL input fields
-    schema = adapter.format_field_structure(TestSignature)
+    schema = adapter.render_baml_field_structure(TestSignature)
     assert "[[ ## input_1 ## ]]" in schema  # Should include first input field header
     assert "[[ ## input_2 ## ]]" in schema  # Should include second input field header
     assert "[[ ## result ## ]]" in schema  # Should include output field header
@@ -533,7 +533,7 @@ def test_baml_adapter_multiple_pydantic_input_fields():
     assert "Output field `result` should be of type: string" in schema
 
     # Test field descriptions are in the correct method
-    field_desc = adapter.format_field_description(TestSignature)
+    field_desc = adapter.render_system_message(TestSignature)
     assert "Your input fields are:" in field_desc
     assert "1. `input_1` (UserProfile): User profile information" in field_desc
     assert "2. `input_2` (SystemConfig): System configuration settings" in field_desc

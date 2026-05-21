@@ -6,7 +6,6 @@ import pytest
 from litellm import Choices, Message, ModelResponse
 
 import dspy
-from dspy.adapters.chat_adapter import FieldInfoWithName
 from dspy.adapters.xml_adapter import XMLAdapter
 
 
@@ -17,8 +16,7 @@ def test_xml_adapter_format_and_parse_basic():
 
     adapter = XMLAdapter()
     # Format output fields as XML
-    fields_with_values = {FieldInfoWithName(name="answer", info=TestSignature.output_fields["answer"]): "Paris"}
-    xml = adapter.format_field_with_value(fields_with_values)
+    xml = adapter.render_demo_assistant_message(TestSignature, {"answer": "Paris"}, "")
     assert xml.strip() == "<answer>\nParis\n</answer>"
 
     # Parse XML output
@@ -94,10 +92,7 @@ def test_xml_adapter_format_and_parse_nested_model():
 
     adapter = XMLAdapter()
     # Format output fields as XML
-    fields_with_values = {
-        FieldInfoWithName(name="result", info=TestSignature.output_fields["result"]): InnerModel(value=5, label="foo")
-    }
-    xml = adapter.format_field_with_value(fields_with_values)
+    xml = adapter.render_demo_assistant_message(TestSignature, {"result": InnerModel(value=5, label="foo")}, "")
     # The output will be a JSON string inside the XML tag
     assert xml.strip().startswith("<result>")
     assert '"value": 5' in xml
@@ -123,8 +118,7 @@ def test_xml_adapter_format_and_parse_list_of_models():
 
     adapter = XMLAdapter()
     items = [Item(name="a", score=1.1), Item(name="b", score=2.2)]
-    fields_with_values = {FieldInfoWithName(name="items", info=TestSignature.output_fields["items"]): items}
-    xml = adapter.format_field_with_value(fields_with_values)
+    xml = adapter.render_demo_assistant_message(TestSignature, {"items": items}, "")
     assert xml.strip().startswith("<items>")
     assert '"name": "a"' in xml
     assert '"score": 2.2' in xml
@@ -158,13 +152,11 @@ def test_xml_adapter_with_tool_like_output():
         ToolCall(name="get_weather", args={"city": "Tokyo"}, result="Sunny"),
         ToolCall(name="get_population", args={"country": "Japan", "year": 2023}, result="125M"),
     ]
-    fields_with_values = {
-        FieldInfoWithName(name="tool_calls", info=TestSignature.output_fields["tool_calls"]): tool_calls,
-        FieldInfoWithName(
-            name="answer", info=TestSignature.output_fields["answer"]
-        ): "The weather is Sunny. Population is 125M.",
-    }
-    xml = adapter.format_field_with_value(fields_with_values)
+    xml = adapter.render_demo_assistant_message(
+        TestSignature,
+        {"tool_calls": tool_calls, "answer": "The weather is Sunny. Population is 125M."},
+        "",
+    )
     assert xml.strip().startswith("<tool_calls>")
     assert '"name": "get_weather"' in xml
     assert '"result": "125M"' in xml
@@ -281,7 +273,7 @@ def test_xml_adapter_full_prompt():
 
     expected_system = (
         "Your input fields are:\n"
-        "1. `query` (str): \n"
+        "1. `query` (str):\n"
         f"2. `context` ({union_type_repr}):\n"
         "Your output fields are:\n"
         "1. `answer` (str):\n"
@@ -302,6 +294,158 @@ def test_xml_adapter_full_prompt():
     assert messages[1]["content"] == expected_user
 
 
+def test_xml_adapter_format_exact_messages_for_log_simple_signature():
+    class StringSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    messages = dspy.XMLAdapter().format(
+        StringSignature,
+        demos=[],
+        inputs={"question": "why did a chicken cross the kitchen?"},
+    )
+
+    assert messages == [
+        {
+            "role": "system",
+            "content": """Your input fields are:
+1. `question` (str):
+Your output fields are:
+1. `answer` (str):
+All interactions will be structured in the following way, with the appropriate values filled in.
+
+<question>
+{question}
+</question>
+
+<answer>
+{answer}
+</answer>
+In adhering to this structure, your objective is: 
+        Given the fields `question`, produce the fields `answer`.""",
+        },
+        {
+            "role": "user",
+            "content": """<question>
+why did a chicken cross the kitchen?
+</question>
+
+Respond with the corresponding output fields wrapped in XML tags `<answer>`.""",
+        },
+    ]
+
+
+def test_xml_adapter_format_exact_messages_for_log_two_input_signature():
+    class StringSignature(dspy.Signature):
+        question: str = dspy.InputField(desc="${question}")
+        answer: str = dspy.InputField()
+        judgement: str = dspy.OutputField()
+
+    messages = dspy.XMLAdapter().format(
+        StringSignature,
+        demos=[],
+        inputs={"question": "why did a chicken cross the kitchen?", "answer": "To get to the other side!"},
+    )
+
+    assert messages == [
+        {
+            "role": "system",
+            "content": """Your input fields are:
+1. `question` (str):
+2. `answer` (str):
+Your output fields are:
+1. `judgement` (str):
+All interactions will be structured in the following way, with the appropriate values filled in.
+
+<question>
+{question}
+</question>
+
+<answer>
+{answer}
+</answer>
+
+<judgement>
+{judgement}
+</judgement>
+In adhering to this structure, your objective is: 
+        Given the fields `question`, `answer`, produce the fields `judgement`.""",
+        },
+        {
+            "role": "user",
+            "content": """<question>
+why did a chicken cross the kitchen?
+</question>
+
+<answer>
+To get to the other side!
+</answer>
+
+Respond with the corresponding output fields wrapped in XML tags `<judgement>`.""",
+        },
+    ]
+
+
+def test_xml_adapter_format_exact_messages_with_demo_and_typed_output():
+    class MultiAnswer(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+        score: float = dspy.OutputField()
+
+    messages = dspy.XMLAdapter().format(
+        MultiAnswer,
+        demos=[{"question": "Q1", "answer": "A1", "score": 0.9}],
+        inputs={"question": "Q2"},
+    )
+
+    assert messages == [
+        {
+            "role": "system",
+            "content": """Your input fields are:
+1. `question` (str):
+Your output fields are:
+1. `answer` (str):
+2. `score` (float):
+All interactions will be structured in the following way, with the appropriate values filled in.
+
+<question>
+{question}
+</question>
+
+<answer>
+{answer}
+</answer>
+
+<score>
+{score}        # note: the value you produce must be a single float value
+</score>
+In adhering to this structure, your objective is: 
+        Given the fields `question`, produce the fields `answer`, `score`.""",
+        },
+        {"role": "user", "content": """<question>
+Q1
+</question>"""},
+        {
+            "role": "assistant",
+            "content": """<answer>
+A1
+</answer>
+
+<score>
+0.9
+</score>""",
+        },
+        {
+            "role": "user",
+            "content": """<question>
+Q2
+</question>
+
+Respond with the corresponding output fields wrapped in XML tags `<answer>`, then `<score>`.""",
+        },
+    ]
+
+
 def test_format_system_message():
     class MySignature(dspy.Signature):
         """Answer the question with multiple answers and scores"""
@@ -311,12 +455,12 @@ def test_format_system_message():
         scores: list[float] = dspy.OutputField()
 
     adapter = dspy.XMLAdapter()
-    system_message = adapter.format_system_message(MySignature)
+    system_message = adapter.render_system_message(MySignature)
 
     expected_system_message = """Your input fields are:
 1. `question` (str):
 Your output fields are:
-1. `answers` (list[str]): 
+1. `answers` (list[str]):
 2. `scores` (list[float]):
 All interactions will be structured in the following way, with the appropriate values filled in.
 

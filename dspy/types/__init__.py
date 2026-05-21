@@ -1,12 +1,8 @@
-from dspy.adapters.base import Adapter
-from dspy.adapters.chat_adapter import ChatAdapter
-from dspy.adapters.json_adapter import JSONAdapter
-from dspy.adapters.two_step_adapter import TwoStepAdapter
+"""Public strategy namespace for DSPy type rendering strategies."""
+
 from dspy.adapters.types import (
-    Audio,
     Code,
     CodeCommentReasoning,
-    File,
     History,
     Image,
     MidMessageReasoning,
@@ -29,28 +25,20 @@ from dspy.adapters.types import (
     Type,
     TypeStrategy,
 )
-from dspy.adapters.xml_adapter import XMLAdapter
 
 __all__ = [
-    "Adapter",
-    "ChatAdapter",
     "Type",
-    "History",
+    "TypeStrategy",
     "Image",
-    "Audio",
+    "History",
+    "Code",
+    "Reasoning",
+    "Tool",
+    "ToolCalls",
     "NativeAudio",
     "NativeCitations",
     "NativeDocument",
     "NativeFile",
-    "File",
-    "Code",
-    "JSONAdapter",
-    "XMLAdapter",
-    "TwoStepAdapter",
-    "Tool",
-    "ToolCalls",
-    "Reasoning",
-    "TypeStrategy",
     "NativeReasoning",
     "NativeToolCalls",
     "TextReasoning",

@@ -14,8 +14,9 @@ import anyio
 
 from dspy.clients.language_models.base import LanguageModel, LMCapabilities
 from dspy.clients.language_models.types import (
+    LMBinaryPart,
     LMCitationPart,
-    LMFilePart,
+    LMDocumentPart,
     LMImagePart,
     LMOutput,
     LMRequest,
@@ -312,7 +313,16 @@ def _part_to_anthropic(part: Any) -> dict[str, Any]:
         return {"type": "text", "text": part.text}
     if isinstance(part, LMImagePart):
         return {"type": "image", "source": _anthropic_source(part)}
-    if isinstance(part, LMFilePart):
+    if isinstance(part, LMDocumentPart):
+        data = {"type": "document", "source": _anthropic_document_source(part)}
+        if part.citations:
+            data["citations"] = part.citations
+        if part.title is not None:
+            data["title"] = part.title
+        if part.context is not None:
+            data["context"] = part.context
+        return data
+    if isinstance(part, LMBinaryPart):
         return {"type": "document", "source": _anthropic_source(part)}
     if isinstance(part, LMToolCallPart):
         return {"type": "tool_use", "id": part.id or "", "name": part.name, "input": part.args}
@@ -334,12 +344,20 @@ def _part_to_anthropic(part: Any) -> dict[str, Any]:
 def _tool_result_part_to_anthropic(part: Any) -> dict[str, Any]:
     if isinstance(part, LMImagePart):
         return {"type": "image", "source": _anthropic_source(part)}
-    if isinstance(part, LMFilePart):
+    if isinstance(part, LMDocumentPart):
+        return {"type": "document", "source": _anthropic_document_source(part)}
+    if isinstance(part, LMBinaryPart):
         return {"type": "document", "source": _anthropic_source(part)}
     return {"type": "text", "text": getattr(part, "text", str(part))}
 
 
-def _anthropic_source(part: LMImagePart | LMFilePart) -> dict[str, Any]:
+def _anthropic_document_source(part: LMDocumentPart) -> dict[str, Any]:
+    if part.source is not None:
+        return part.source
+    return _anthropic_source(part)
+
+
+def _anthropic_source(part: LMImagePart | LMDocumentPart | LMBinaryPart) -> dict[str, Any]:
     if part.url is not None:
         return {"type": "url", "url": part.url}
     if part.file_id is not None:
