@@ -6,7 +6,7 @@ import pytest
 from litellm.utils import ChatCompletionMessageToolCall, Choices, Function, Message, ModelResponse
 
 import dspy
-from dspy.experimental import Citations
+from dspy.experimental import Citations, Document
 
 
 @pytest.mark.parametrize(
@@ -97,6 +97,532 @@ async def test_chat_adapter_async_call():
     lm = dspy.utils.DummyLM([{"answer": "Paris"}])
     result = await adapter.acall(lm, {}, signature, [], {"question": "What is the capital of France?"})
     assert result == [{"answer": "Paris"}]
+
+
+def test_chat_adapter_format_exact_messages_for_simple_signature():
+    class QA(dspy.Signature):
+        """Answer the question."""
+
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    messages = dspy.ChatAdapter().format(QA, [], {"question": "What is the capital of France?"})
+
+    assert messages == [
+        {
+            "role": "system",
+            "content": """Your input fields are:
+1. `question` (str):
+Your output fields are:
+1. `answer` (str):
+All interactions will be structured in the following way, with the appropriate values filled in.
+
+[[ ## question ## ]]
+{question}
+
+[[ ## answer ## ]]
+{answer}
+
+[[ ## completed ## ]]
+In adhering to this structure, your objective is:\x20
+        Answer the question.""",
+        },
+        {
+            "role": "user",
+            "content": """[[ ## question ## ]]
+What is the capital of France?
+
+Respond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.""",
+        },
+    ]
+
+
+def test_chat_adapter_format_exact_messages_with_demo_and_typed_outputs():
+    class MultiAnswer(dspy.Signature):
+        """Answer the question with multiple answers and scores"""
+
+        question: str = dspy.InputField()
+        answers: list[str] = dspy.OutputField()
+        scores: list[float] = dspy.OutputField()
+
+    messages = dspy.ChatAdapter().format(
+        MultiAnswer,
+        demos=[{"question": "Q1", "answers": ["A1", "A2"], "scores": [0.1, 0.9]}],
+        inputs={"question": "Q2"},
+    )
+
+    assert messages == [
+        {
+            "role": "system",
+            "content": """Your input fields are:
+1. `question` (str):
+Your output fields are:
+1. `answers` (list[str]):\x20
+2. `scores` (list[float]):
+All interactions will be structured in the following way, with the appropriate values filled in.
+
+[[ ## question ## ]]
+{question}
+
+[[ ## answers ## ]]
+{answers}        # note: the value you produce must adhere to the JSON schema: {"type": "array", "items": {"type": "string"}}
+
+[[ ## scores ## ]]
+{scores}        # note: the value you produce must adhere to the JSON schema: {"type": "array", "items": {"type": "number"}}
+
+[[ ## completed ## ]]
+In adhering to this structure, your objective is:\x20
+        Answer the question with multiple answers and scores""",
+        },
+        {"role": "user", "content": """[[ ## question ## ]]
+Q1"""},
+        {
+            "role": "assistant",
+            "content": """[[ ## answers ## ]]
+["A1", "A2"]
+
+[[ ## scores ## ]]
+[0.1, 0.9]
+
+[[ ## completed ## ]]
+""",
+        },
+        {
+            "role": "user",
+            "content": """[[ ## question ## ]]
+Q2
+
+Respond with the corresponding output fields, starting with the field `[[ ## answers ## ]]` (must be formatted as a valid Python list[str]), then `[[ ## scores ## ]]` (must be formatted as a valid Python list[float]), and then ending with the marker for `[[ ## completed ## ]]`.""",
+        },
+    ]
+
+
+def test_chat_adapter_format_exact_messages_with_nested_pydantic_models():
+    class Address(pydantic.BaseModel):
+        city: str
+        country: str
+
+    class Person(pydantic.BaseModel):
+        name: str
+        address: Address
+        tags: list[str]
+
+    class Summary(pydantic.BaseModel):
+        headline: str
+        score: float
+
+    class PydanticSignature(dspy.Signature):
+        person: Person = dspy.InputField()
+        summary: Summary = dspy.OutputField()
+
+    messages = dspy.ChatAdapter().format(
+        PydanticSignature,
+        [],
+        {"person": Person(name="Ada", address=Address(city="London", country="UK"), tags=["math", "code"])},
+    )
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `person` (Person):\n'
+                 'Your output fields are:\n'
+                 '1. `summary` (Summary):\n'
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## person ## ]]\n'
+                 '{person}\n'
+                 '\n'
+                 '[[ ## summary ## ]]\n'
+                 '{summary}        # note: the value you produce must adhere to the JSON schema: '
+                 '{"type": "object", "properties": {"headline": {"type": "string", "title": '
+                 '"Headline"}, "score": {"type": "number", "title": "Score"}}, "required": '
+                 '["headline", "score"], "title": "Summary"}\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `person`, produce the fields `summary`.'},
+     {'role': 'user',
+      'content': '[[ ## person ## ]]\n'
+                 '{"name": "Ada", "address": {"city": "London", "country": "UK"}, "tags": ["math", '
+                 '"code"]}\n'
+                 '\n'
+                 'Respond with the corresponding output fields, starting with the field `[[ ## summary '
+                 '## ]]` (must be formatted as a valid Python Summary), and then ending with the '
+                 'marker for `[[ ## completed ## ]]`.'}]
+    assert messages == expected_messages
+
+
+def test_chat_adapter_format_exact_messages_with_incomplete_demo():
+    class IncompleteDemoSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        context: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+        confidence: float = dspy.OutputField()
+
+    messages = dspy.ChatAdapter().format(
+        IncompleteDemoSignature,
+        [{"question": "Q1", "answer": "A1"}],
+        {"question": "Q2", "context": "C2"},
+    )
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `question` (str): \n'
+                 '2. `context` (str):\n'
+                 'Your output fields are:\n'
+                 '1. `answer` (str): \n'
+                 '2. `confidence` (float):\n'
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## question ## ]]\n'
+                 '{question}\n'
+                 '\n'
+                 '[[ ## context ## ]]\n'
+                 '{context}\n'
+                 '\n'
+                 '[[ ## answer ## ]]\n'
+                 '{answer}\n'
+                 '\n'
+                 '[[ ## confidence ## ]]\n'
+                 '{confidence}        # note: the value you produce must be a single float value\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `question`, `context`, produce the fields `answer`, '
+                 '`confidence`.'},
+     {'role': 'user',
+      'content': 'This is an example of the task, though some input or output fields are not '
+                 'supplied.\n'
+                 '\n'
+                 '[[ ## question ## ]]\n'
+                 'Q1'},
+     {'role': 'assistant',
+      'content': '[[ ## answer ## ]]\n'
+                 'A1\n'
+                 '\n'
+                 '[[ ## confidence ## ]]\n'
+                 'Not supplied for this particular example.\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'},
+     {'role': 'user',
+      'content': '[[ ## question ## ]]\n'
+                 'Q2\n'
+                 '\n'
+                 '[[ ## context ## ]]\n'
+                 'C2\n'
+                 '\n'
+                 'Respond with the corresponding output fields, starting with the field `[[ ## answer '
+                 '## ]]`, then `[[ ## confidence ## ]]` (must be formatted as a valid Python float), '
+                 'and then ending with the marker for `[[ ## completed ## ]]`.'}]
+    assert messages == expected_messages
+
+
+def test_chat_adapter_format_exact_messages_with_history():
+    class HistorySignature(dspy.Signature):
+        history: dspy.History = dspy.InputField()
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    history = dspy.History(
+        messages=[
+            {"question": "What is 1+1?", "answer": "2"},
+            {"question": "What is 2+2?", "answer": "4"},
+        ]
+    )
+    messages = dspy.ChatAdapter().format(
+        HistorySignature,
+        [],
+        {"history": history, "question": "What is 3+3?"},
+    )
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `history` (History): \n'
+                 '2. `question` (str):\n'
+                 'Your output fields are:\n'
+                 '1. `answer` (str):\n'
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## history ## ]]\n'
+                 '{history}\n'
+                 '\n'
+                 '[[ ## question ## ]]\n'
+                 '{question}\n'
+                 '\n'
+                 '[[ ## answer ## ]]\n'
+                 '{answer}\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `history`, `question`, produce the fields `answer`.'},
+     {'role': 'user', 'content': '[[ ## question ## ]]\nWhat is 1+1?'},
+     {'role': 'assistant', 'content': '[[ ## answer ## ]]\n2\n\n[[ ## completed ## ]]\n'},
+     {'role': 'user', 'content': '[[ ## question ## ]]\nWhat is 2+2?'},
+     {'role': 'assistant', 'content': '[[ ## answer ## ]]\n4\n\n[[ ## completed ## ]]\n'},
+     {'role': 'user',
+      'content': '[[ ## question ## ]]\n'
+                 'What is 3+3?\n'
+                 '\n'
+                 'Respond with the corresponding output fields, starting with the field `[[ ## answer '
+                 '## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.'}]
+    assert messages == expected_messages
+
+
+def test_chat_adapter_format_exact_messages_with_list_value_for_string_input():
+    class ListAsStringSignature(dspy.Signature):
+        context: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    messages = dspy.ChatAdapter().format(ListAsStringSignature, [], {"context": ["alpha", "beta"]})
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `context` (str):\n'
+                 'Your output fields are:\n'
+                 '1. `answer` (str):\n'
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## context ## ]]\n'
+                 '{context}\n'
+                 '\n'
+                 '[[ ## answer ## ]]\n'
+                 '{answer}\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `context`, produce the fields `answer`.'},
+     {'role': 'user',
+      'content': '[[ ## context ## ]]\n'
+                 '[1] «alpha»\n'
+                 '[2] «beta»\n'
+                 '\n'
+                 'Respond with the corresponding output fields, starting with the field `[[ ## answer '
+                 '## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.'}]
+    assert messages == expected_messages
+
+
+def test_chat_adapter_format_exact_messages_with_literal_output():
+    class LiteralSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        verdict: Literal["yes", "no"] = dspy.OutputField()
+
+    messages = dspy.ChatAdapter().format(LiteralSignature, [], {"question": "Is the sky blue?"})
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `question` (str):\n'
+                 'Your output fields are:\n'
+                 "1. `verdict` (Literal['yes', 'no']):\n"
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## question ## ]]\n'
+                 '{question}\n'
+                 '\n'
+                 '[[ ## verdict ## ]]\n'
+                 '{verdict}        # note: the value you produce must exactly match (no extra '
+                 'characters) one of: yes; no\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `question`, produce the fields `verdict`.'},
+     {'role': 'user',
+      'content': '[[ ## question ## ]]\n'
+                 'Is the sky blue?\n'
+                 '\n'
+                 'Respond with the corresponding output fields, starting with the field `[[ ## verdict '
+                 "## ]]` (must be formatted as a valid Python Literal['yes', 'no']), and then ending "
+                 'with the marker for `[[ ## completed ## ]]`.'}]
+    assert messages == expected_messages
+
+
+def test_chat_adapter_format_exact_messages_with_multimodal_custom_type_inputs():
+    class CustomTypeSignature(dspy.Signature):
+        image: dspy.Image = dspy.InputField()
+        audio: dspy.Audio = dspy.InputField()
+        file: dspy.File = dspy.InputField()
+        document: Document = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    messages = dspy.ChatAdapter().format(
+        CustomTypeSignature,
+        [],
+        {
+            "image": dspy.Image("https://example.com/cat.png"),
+            "audio": dspy.Audio(data="QUJD", audio_format="wav"),
+            "file": dspy.File.from_file_id("file-123", filename="notes.txt"),
+            "document": Document(data="Alpha beta", title="Doc"),
+        },
+    )
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `image` (Image): \n'
+                 '2. `audio` (Audio): \n'
+                 '3. `file` (File): \n'
+                 '4. `document` (Document): \n'
+                 '    Type description of Document: A document containing text content that can be '
+                 'referenced and cited. Include the full text content and optionally a title for '
+                 'proper referencing.\n'
+                 'Your output fields are:\n'
+                 '1. `answer` (str):\n'
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## image ## ]]\n'
+                 '{image}\n'
+                 '\n'
+                 '[[ ## audio ## ]]\n'
+                 '{audio}\n'
+                 '\n'
+                 '[[ ## file ## ]]\n'
+                 '{file}\n'
+                 '\n'
+                 '[[ ## document ## ]]\n'
+                 '{document}\n'
+                 '\n'
+                 '[[ ## answer ## ]]\n'
+                 '{answer}\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `image`, `audio`, `file`, `document`, produce the fields '
+                 '`answer`.'},
+     {'role': 'user',
+      'content': [{'type': 'text', 'text': '[[ ## image ## ]]\n'},
+                  {'type': 'image_url', 'image_url': {'url': 'https://example.com/cat.png'}},
+                  {'type': 'text', 'text': '\n\n[[ ## audio ## ]]\n'},
+                  {'type': 'input_audio', 'input_audio': {'data': 'QUJD', 'format': 'wav'}},
+                  {'type': 'text', 'text': '\n\n[[ ## file ## ]]\n'},
+                  {'type': 'file', 'file': {'file_id': 'file-123', 'filename': 'notes.txt'}},
+                  {'type': 'text', 'text': '\n\n[[ ## document ## ]]\n'},
+                  {'type': 'document',
+                   'source': {'type': 'text', 'media_type': 'text/plain', 'data': 'Alpha beta'},
+                   'citations': {'enabled': True},
+                   'title': 'Doc'},
+                  {'type': 'text',
+                   'text': '\n'
+                           '\n'
+                           'Respond with the corresponding output fields, starting with the field `[[ '
+                           '## answer ## ]]`, and then ending with the marker for `[[ ## completed ## '
+                           ']]`.'}]}]
+    assert messages == expected_messages
+
+
+def test_chat_adapter_format_exact_messages_with_reasoning_and_code_outputs():
+    PythonCode = dspy.Code["python"]
+
+    class CodeSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        reasoning: dspy.Reasoning = dspy.OutputField()
+        code: PythonCode = dspy.OutputField()
+
+    messages = dspy.ChatAdapter().format(
+        CodeSignature,
+        [{"question": "Q1", "reasoning": dspy.Reasoning(content="Think"), "code": PythonCode(code="print('hi')")}],
+        {"question": "Q2"},
+    )
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `question` (str):\n'
+                 'Your output fields are:\n'
+                 '1. `reasoning` (str): \n'
+                 '2. `code` (Code_python): \n'
+                 '    Type description of Code_python: Code represented in a string, specified in the '
+                 '`code` field. If this is an output field, the code field should follow the markdown '
+                 'code block format, e.g. \n'
+                 '```python\n'
+                 '{code}\n'
+                 '```\n'
+                 'Programming language: python\n'
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## question ## ]]\n'
+                 '{question}\n'
+                 '\n'
+                 '[[ ## reasoning ## ]]\n'
+                 '{reasoning}\n'
+                 '\n'
+                 '[[ ## code ## ]]\n'
+                 '{code}\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `question`, produce the fields `reasoning`, `code`.'},
+     {'role': 'user', 'content': '[[ ## question ## ]]\nQ1'},
+     {'role': 'assistant',
+      'content': '[[ ## reasoning ## ]]\n'
+                 'Think\n'
+                 '\n'
+                 '[[ ## code ## ]]\n'
+                 "print('hi')\n"
+                 '\n'
+                 '[[ ## completed ## ]]\n'},
+     {'role': 'user',
+      'content': '[[ ## question ## ]]\n'
+                 'Q2\n'
+                 '\n'
+                 'Respond with the corresponding output fields, starting with the field `[[ ## '
+                 'reasoning ## ]]` (must be formatted as a valid Python str), then `[[ ## code ## ]]` '
+                 '(must be formatted as a valid Python Code_python), and then ending with the marker '
+                 'for `[[ ## completed ## ]]`.'}]
+    assert messages == expected_messages
+
+
+def test_chat_adapter_format_exact_messages_with_tool_input():
+    def search(query: str, k: int = 3) -> str:
+        """Search for documents."""
+        return query
+
+    class ToolSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        tools: list[dspy.Tool] = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    messages = dspy.ChatAdapter().format(
+        ToolSignature,
+        [],
+        {"question": "Q?", "tools": [dspy.Tool(search)]},
+    )
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `question` (str): \n'
+                 '2. `tools` (list[Tool]):\n'
+                 'Your output fields are:\n'
+                 '1. `answer` (str):\n'
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## question ## ]]\n'
+                 '{question}\n'
+                 '\n'
+                 '[[ ## tools ## ]]\n'
+                 '{tools}\n'
+                 '\n'
+                 '[[ ## answer ## ]]\n'
+                 '{answer}\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `question`, `tools`, produce the fields `answer`.'},
+     {'role': 'user',
+      'content': '[[ ## question ## ]]\n'
+                 'Q?\n'
+                 '\n'
+                 '[[ ## tools ## ]]\n'
+                 '["search, whose description is <desc>Search for documents.</desc>. It takes '
+                 "arguments {'query': {'type': 'string'}, 'k': {'type': 'integer', 'default': "
+                 '3}}."]\n'
+                 '\n'
+                 'Respond with the corresponding output fields, starting with the field `[[ ## answer '
+                 '## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.'}]
+    assert messages == expected_messages
 
 
 def test_chat_adapter_with_pydantic_models():

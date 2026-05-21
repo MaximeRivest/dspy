@@ -7,6 +7,7 @@ from litellm import Choices, Message
 from litellm.files.main import ModelResponse
 
 import dspy
+from dspy.adapters.baml_adapter import BAMLAdapter
 from dspy.adapters.baml_adapter import COMMENT_SYMBOL, INDENTATION, BAMLAdapter
 
 
@@ -49,6 +50,80 @@ class ImageWrapper(pydantic.BaseModel):
 class CircularModel(pydantic.BaseModel):
     name: str
     field: "CircularModel"
+
+
+def test_baml_adapter_format_exact_messages_for_simple_signature_with_demo():
+    class QA(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    messages = BAMLAdapter().format(QA, [{"question": "Q1", "answer": "A1"}], {"question": "Q2"})
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `question` (str):\n'
+                 'Your output fields are:\n'
+                 '1. `answer` (str):\n'
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## question ## ]]\n'
+                 '{question}\n'
+                 '\n'
+                 '[[ ## answer ## ]]\n'
+                 'Output field `answer` should be of type: string\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `question`, produce the fields `answer`.'},
+     {'role': 'user', 'content': '[[ ## question ## ]]\nQ1'},
+     {'role': 'assistant', 'content': '{\n  "answer": "A1"\n}'},
+     {'role': 'user',
+      'content': '[[ ## question ## ]]\n'
+                 'Q2\n'
+                 '\n'
+                 'Respond with a JSON object in the following order of fields: `answer`.'}]
+    assert messages == expected_messages
+
+
+def test_baml_adapter_format_exact_messages_with_nested_output():
+    class BamlNested(pydantic.BaseModel):
+        value: int
+        tags: list[str]
+
+    class TypedSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: BamlNested = dspy.OutputField()
+
+    messages = BAMLAdapter().format(TypedSignature, [], {"question": "Q"})
+
+    expected_messages = [{'role': 'system',
+      'content': 'Your input fields are:\n'
+                 '1. `question` (str):\n'
+                 'Your output fields are:\n'
+                 '1. `answer` (BamlNested):\n'
+                 'All interactions will be structured in the following way, with the appropriate '
+                 'values filled in.\n'
+                 '\n'
+                 '[[ ## question ## ]]\n'
+                 '{question}\n'
+                 '\n'
+                 '[[ ## answer ## ]]\n'
+                 'Output field `answer` should be of type: {\n'
+                 '  value: int,\n'
+                 '  tags: string[],\n'
+                 '}\n'
+                 '\n'
+                 '[[ ## completed ## ]]\n'
+                 'In adhering to this structure, your objective is: \n'
+                 '        Given the fields `question`, produce the fields `answer`.'},
+     {'role': 'user',
+      'content': '[[ ## question ## ]]\n'
+                 'Q\n'
+                 '\n'
+                 'Respond with a JSON object in the following order of fields: `answer` (must be '
+                 'formatted as a valid Python BamlNested).'}]
+    assert messages == expected_messages
 
 
 def test_baml_adapter_basic_schema_generation():
