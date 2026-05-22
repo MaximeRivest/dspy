@@ -28,7 +28,9 @@ def _expand_legacy_custom_type_markers_in_chat_message(message: dict[str, Any]) 
 
 
 def _expand_legacy_custom_type_markers_in_lm_message(message: LMMessage) -> LMMessage:
-    """Expand legacy marker payloads in an `LMMessage` into normalized parts."""
+    """Expand legacy marker payloads in user `LMMessage`s into normalized parts."""
+    if message.role != "user":
+        return message
     expanded_parts: list[LMPart] = []
     changed = False
     for part in message.parts:
@@ -131,8 +133,10 @@ def _legacy_content_block_to_lm_part(block: Any) -> LMPart:
             context=block.get("context"),
         )
 
-    # Unknown legacy provider blocks are not part of the normalized LMPart union.
-    return LMTextPart(text=json.dumps(block, ensure_ascii=False))
+    # Unknown legacy provider blocks are kept as legacy metadata so the legacy
+    # BaseLM boundary can preserve exact adapter-to-LM messages while normalized
+    # adapters still carry a valid LMPart.
+    return LMTextPart(text="", metadata={"legacy_content_block": block})
 
 
 def _marker_pattern() -> str:

@@ -1760,7 +1760,7 @@ def _parts_from_openai_content(content: Any) -> list[LMPart]:
     for item in content:
         item_type = item.get("type") if isinstance(item, dict) else None
         if item_type == "text":
-            parts.append(LMTextPart(text=item.get("text", "")))
+            parts.append(LMTextPart(text=item.get("text", ""), metadata=item.get("metadata", {}) or {}))
         elif item_type == "image_url":
             image = item.get("image_url", {})
             if not isinstance(image, dict):

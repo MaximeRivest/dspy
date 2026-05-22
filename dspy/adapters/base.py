@@ -6,29 +6,34 @@ from dspy.adapters._legacy_type_markers import (
     _expand_legacy_custom_type_markers_in_chat_message,
     _expand_legacy_custom_type_markers_in_lm_message,
 )
+from dspy.adapters._planning import _AdapterPlan, _apply_planned_messages, _plan_fields
+from dspy.adapters.legacy_bridge import legacy_call_kwargs_from_lm_request, lm_response_from_legacy_outputs
 from dspy.adapters.types import History, Type
-from dspy.adapters.types.base_type import _AdapterTypeContext
 from dspy.adapters.types.reasoning import Reasoning
 from dspy.adapters.types.tool import Tool, ToolCalls
 from dspy.clients.base_lm import BaseLM
-from dspy.clients.openai_format import provider_tool_call_to_part, to_openai_chat_request
-from dspy.core.types import (
-    LMMessage,
-    LMOutput,
-    LMRequest,
-    LMResponse,
-    LMTextPart,
-    LMThinkingPart,
-)
+from dspy.core.types import LMMessage, LMOutput, LMRequest, LMResponse
 from dspy.experimental import Citations
 from dspy.signatures.signature import Signature
 from dspy.utils.callback import BaseCallback, with_callbacks
 from dspy.utils.exceptions import AdapterParseError
-from dspy.adapters._planning import _AdapterPlan, _apply_planned_messages, _plan_fields
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_NATIVE_RESPONSE_TYPES = [Citations, Reasoning]
+
+
+def _citation_part_to_dict(citation: Any) -> dict[str, Any]:
+    data = citation.model_dump(exclude_none=True) if hasattr(citation, "model_dump") else dict(citation)
+    cited_text = data.get("cited_text") or data.get("text") or data.get("supported_text") or ""
+    return {
+        "cited_text": cited_text,
+        "document_index": data.get("document_index", 0),
+        "document_title": data.get("document_title") or data.get("title"),
+        "start_char_index": data.get("start_char_index", 0),
+        "end_char_index": data.get("end_char_index", len(cited_text)),
+        "supported_text": data.get("supported_text"),
+    }
 
 
 class Adapter:
@@ -101,6 +106,7 @@ class Adapter:
         if not outputs:
             return []
         plan = _AdapterPlan(
+            adapter=self,
             original_signature=original_signature,
             render_signature=processed_signature,
             inputs={},
@@ -138,14 +144,7 @@ class Adapter:
     def _legacy_call_kwargs(self, request: LMRequest) -> dict[str, Any]:
         # Legacy `BaseLM` currently accepts OpenAI-chat-shaped `messages` for all model types;
         # `dspy.LM` converts those messages to text-completion or Responses requests internally.
-        data = to_openai_chat_request(request)
-        data.pop("model", None)
-        if request.config.cache is not None:
-            if request.config.cache.enabled is not None:
-                data["cache"] = request.config.cache.enabled
-            if request.config.cache.rollout_id is not None:
-                data["rollout_id"] = request.config.cache.rollout_id
-        return data
+        return legacy_call_kwargs_from_lm_request(request)
 
     def _coerce_lm_messages(self, messages: list[LMMessage | dict[str, Any]]) -> list[LMMessage]:
         """Normalize subclass `format()` output before the adapter mutates messages."""
@@ -163,6 +162,8 @@ class Adapter:
                 for block in content:
                     if isinstance(block, dict) and block.get("type") in supported:
                         sanitized.append(block)
+                    elif isinstance(block, dict):
+                        sanitized.append({"type": "text", "text": "", "metadata": {"legacy_content_block": block}})
                     else:
                         sanitized.append({"type": "text", "text": json.dumps(block, ensure_ascii=False)})
                 message["content"] = sanitized
@@ -170,30 +171,7 @@ class Adapter:
 
     def _normalize_legacy_outputs(self, outputs: list[dict[str, Any] | str | None], request: LMRequest) -> LMResponse:
         """Convert legacy adapter outputs into a normalized `LMResponse` immediately after the LM call."""
-        if not outputs:
-            return LMResponse(model=request.model, outputs=[LMOutput(parts=[], metadata={"empty_legacy_outputs": True})])
-        return LMResponse(model=request.model, outputs=[self._legacy_output_to_lm_output(output) for output in outputs])
-
-    def _legacy_output_to_lm_output(self, output: dict[str, Any] | str | None) -> LMOutput:
-        if isinstance(output, str):
-            return LMOutput(parts=[LMTextPart(text=output)])
-        if output is None:
-            return LMOutput(parts=[])
-
-        parts = []
-        text = output.get("text")
-        if text:
-            parts.append(LMTextPart(text=text))
-        reasoning = output.get("reasoning_content")
-        if reasoning:
-            parts.append(LMThinkingPart(text=str(reasoning)))
-        for tool_call in output.get("tool_calls") or []:
-            parts.append(provider_tool_call_to_part(tool_call))
-        for citation in output.get("citations") or []:
-            from dspy.clients.openai_format import citation_to_part
-
-            parts.append(citation_to_part(citation))
-        return LMOutput(parts=parts, logprobs=output.get("logprobs"))
+        return lm_response_from_legacy_outputs(outputs, request)
 
     def _parse_response(self, plan: _AdapterPlan, response: LMResponse, lm: BaseLM) -> list[dict[str, Any]]:
         """Parse a normalized LM response into dictionaries matching the original signature."""
@@ -210,8 +188,12 @@ class Adapter:
                 for field_name in original_signature.output_fields.keys():
                     if field_name not in value:
                         value[field_name] = None
-            elif output.tool_calls and tool_call_output_field_name or self._has_native_response_parts(output) or self._has_native_response_fields(original_signature):
-                value = {field_name: None for field_name in original_signature.output_fields.keys()}
+            elif (
+                (output.tool_calls and tool_call_output_field_name)
+                or self._has_native_response_parts(output)
+                or self._has_native_response_fields(original_signature)
+            ):
+                value = dict.fromkeys(original_signature.output_fields.keys())
             else:
                 raise AdapterParseError(
                     adapter_name=type(self).__name__,
@@ -262,17 +244,15 @@ class Adapter:
         plan: _AdapterPlan,
         lm: BaseLM,
     ) -> Type | None:
-        field = plan.original_signature.output_fields[name]
-        context = _AdapterTypeContext(
-            field_name=name,
-            field_info=field,
-            signature=plan.original_signature,
-            lm=lm,
-            lm_kwargs=plan.lm_kwargs,
-            adapter=self,
-            role="output",
-        )
-        return annotation.parse_lm_output(context, output)
+        if annotation is Reasoning:
+            return Reasoning(content=output.reasoning_content) if output.reasoning_content is not None else None
+        if annotation is Citations and output.citations:
+            return Citations.from_dict_list([_citation_part_to_dict(citation) for citation in output.citations])
+        if output.text is not None:
+            parsed = annotation.parse_lm_response(output.text)
+            if parsed is not None:
+                return parsed
+        return annotation.parse_lm_response(output.to_output_dict())
 
     def __call__(
         self,

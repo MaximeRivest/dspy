@@ -1,6 +1,5 @@
 import json
 import re
-import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, get_args, get_origin
 
@@ -52,13 +51,8 @@ class _TypeStreamParser:
 
 
 def warn_legacy_type_method(method: str) -> None:
-    """Warn that a legacy `dspy.Type` rendering/parsing hook is deprecated."""
-    warnings.warn(
-        f"{method} is deprecated since DSPy 3.3 and will be removed in DSPy 3.5. "
-        "Adapter type rendering and parsing now use normalized LM types in the adapter pipeline.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
+    """Compatibility no-op for legacy `dspy.Type` rendering/parsing hooks."""
+    return None
 
 
 class Type(pydantic.BaseModel):
@@ -100,12 +94,6 @@ class Type(pydantic.BaseModel):
             LM types in the adapter pipeline. This compatibility hook will be
             removed in DSPy 3.5.
         """
-        warnings.warn(
-            "Type.format() is deprecated since DSPy 3.3 and will be removed in DSPy 3.5. "
-            "Adapter type rendering now happens through normalized LM types in the adapter pipeline.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         raise NotImplementedError
 
     @classmethod
@@ -149,12 +137,6 @@ class Type(pydantic.BaseModel):
             Since DSPy 3.3. The marker protocol is kept only for compatibility
             and will be removed in DSPy 3.5.
         """
-        warnings.warn(
-            "Type.serialize_model() and the custom-type marker protocol are deprecated since DSPy 3.3 "
-            "and will be removed in DSPy 3.5. Adapter type rendering now uses normalized LM types.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         formatted = self.format()
         if isinstance(formatted, list):
             return (
@@ -190,12 +172,6 @@ class Type(pydantic.BaseModel):
             The adapted signature. If the custom type is not natively supported by the LM, return the original
             signature.
         """
-        warnings.warn(
-            "Type.adapt_to_native_lm_feature() is deprecated since DSPy 3.3 and will be removed in DSPy 3.5. "
-            "Native feature planning now belongs to the adapter pipeline.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return signature
 
     @classmethod
@@ -212,12 +188,6 @@ class Type(pydantic.BaseModel):
             events in the adapter pipeline. This hook will be removed in DSPy
             3.5.
         """
-        warnings.warn(
-            "Type.is_streamable() is deprecated since DSPy 3.3 and will be removed in DSPy 3.5. "
-            "Stream parsing now belongs to normalized LM stream handling.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return False
 
     @classmethod
@@ -236,12 +206,6 @@ class Type(pydantic.BaseModel):
         Returns:
             A custom type object or None if the chunk is not for this custom type.
         """
-        warnings.warn(
-            "Type.parse_stream_chunk() is deprecated since DSPy 3.3 and will be removed in DSPy 3.5. "
-            "Stream parsing now belongs to normalized LM stream handling.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return None
 
     @classmethod
@@ -272,12 +236,6 @@ class Type(pydantic.BaseModel):
         Returns:
             A custom type object.
         """
-        warnings.warn(
-            "Type.parse_lm_response() is deprecated since DSPy 3.3 and will be removed in DSPy 3.5. "
-            "Response parsing now belongs to normalized LM response handling in the adapter pipeline.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return None
 
 
@@ -314,13 +272,6 @@ def split_message_content_for_custom_types(messages: list[dict[str, Any]]) -> li
     Returns:
         A list of messages with the content split into a list of content blocks around custom types content.
     """
-    warnings.warn(
-        "split_message_content_for_custom_types() is deprecated since DSPy 3.3 and will be removed in DSPy 3.5. "
-        "Adapter type rendering now uses normalized LM parts.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
     for message in messages:
         if message["role"] != "user":
             # Custom type messages are only in user messages

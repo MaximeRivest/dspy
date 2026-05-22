@@ -1,7 +1,5 @@
 from typing import Any
 
-import json_repair
-
 from dspy.adapters.base import Adapter
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.adapters.types import ToolCalls
@@ -111,27 +109,23 @@ class TwoStepAdapter(Adapter):
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        inputs = self.format(signature, demos, inputs)
-
-        outputs = await lm.acall(messages=inputs, **lm_kwargs)
-        # The signature is supposed to be "text -> {original output fields}"
-        extractor_signature = self._create_extractor_signature(signature)
+        plan = self._call_preprocess_plan(lm, lm_kwargs, signature, inputs)
+        request = self._render_request(plan, lm, demos, inputs)
+        response = await self._acall_lm(lm, request)
 
         values = []
-
         tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
-        for output in outputs:
-            output_logprobs = None
-            tool_calls = None
-            text = output
 
-            if isinstance(output, dict):
-                text = output["text"]
-                output_logprobs = output.get("logprobs")
-                tool_calls = output.get("tool_calls")
+        for output in response.outputs:
+            extraction_signature = (
+                signature.delete(tool_call_output_field_name)
+                if output.tool_calls and tool_call_output_field_name
+                else signature
+            )
+            extractor_signature = self._create_extractor_signature(extraction_signature)
+            text = output.text or ""
 
             try:
-                # Call the smaller LM to extract structured data from the raw completion text with ChatAdapter
                 value = await ChatAdapter().acall(
                     lm=self.extraction_model,
                     lm_kwargs={},
@@ -140,25 +134,24 @@ class TwoStepAdapter(Adapter):
                     inputs={"text": text},
                 )
                 value = value[0]
-
             except Exception as e:
                 raise ValueError(f"Failed to parse response from the original completion: {output}") from e
 
-            if tool_calls and tool_call_output_field_name:
-                tool_calls = [
-                    {
-                        "name": v["function"]["name"],
-                        "args": json_repair.loads(v["function"]["arguments"]),
-                    }
-                    for v in tool_calls
-                ]
-                value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)
+            if output.tool_calls and tool_call_output_field_name:
+                value[tool_call_output_field_name] = ToolCalls.from_dict_list(
+                    [{"name": call.name, "args": call.args} for call in output.tool_calls]
+                )
 
-            if output_logprobs is not None:
-                value["logprobs"] = output_logprobs
+            if output.logprobs is not None:
+                value["logprobs"] = output.logprobs
 
             values.append(value)
         return values
+
+    def _call_preprocess_plan(self, lm: BaseLM, lm_kwargs: dict[str, Any], signature: type[Signature], inputs: dict[str, Any]):
+        from dspy.adapters._planning import _plan_fields
+
+        return _plan_fields(self, lm, lm_kwargs, signature, inputs)
 
     def format_task_description(self, signature: Signature) -> str:
         """Create a description of the task based on the signature"""

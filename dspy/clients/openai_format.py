@@ -206,6 +206,9 @@ def parts_to_openai_content(parts: list[Any]) -> str | list[dict[str, Any]]:
 def part_to_openai_blocks(part: Any) -> list[dict[str, Any]]:
     """Convert one DSPy part into one or more OpenAI content blocks."""
     if isinstance(part, LMTextPart):
+        legacy_block = part.metadata.get("legacy_content_block")
+        if legacy_block is not None:
+            return [dict(legacy_block)]
         return [{"type": "text", "text": part.text}]
     if isinstance(part, LMImagePart):
         return [image_to_openai(part)]
@@ -429,7 +432,7 @@ def _validate_openai_reasoning_temperature(config: LMConfig, *, model: str | Non
     effort = getattr(config.reasoning, "effort", None) if config.reasoning is not None else None
     if effort in {None, "none"}:
         return
-    if config.temperature in {None, 1, 1.0}:
+    if config.temperature in {None, 1}:
         return
 
     from dspy.utils.exceptions import LMUnsupportedFeatureError
