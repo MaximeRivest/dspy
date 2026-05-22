@@ -7,6 +7,7 @@ import pydantic
 import regex
 from pydantic.fields import FieldInfo
 
+from dspy.adapters._planning import _plan_fields
 from dspy.adapters.chat_adapter import ChatAdapter, FieldInfoWithName
 from dspy.adapters.types.tool import ToolCalls
 from dspy.adapters.utils import (
@@ -68,8 +69,9 @@ class JSONAdapter(ChatAdapter):
             return result
 
         try:
+            plan = _plan_fields(self, lm, dict(lm_kwargs), signature, inputs)
             structured_output_model = _get_structured_outputs_response_format(
-                signature, self.use_native_function_calling
+                plan.render_signature, self.use_native_function_calling
             )
             lm_kwargs["response_format"] = structured_output_model
             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
@@ -91,8 +93,9 @@ class JSONAdapter(ChatAdapter):
             return await result
 
         try:
+            plan = _plan_fields(self, lm, dict(lm_kwargs), signature, inputs)
             structured_output_model = _get_structured_outputs_response_format(
-                signature, self.use_native_function_calling
+                plan.render_signature, self.use_native_function_calling
             )
             lm_kwargs["response_format"] = structured_output_model
             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
@@ -144,6 +147,11 @@ class JSONAdapter(ChatAdapter):
             for k, v in signature.output_fields.items()
         }
         return self.format_field_with_value(fields_with_values, role="assistant")
+
+    def stream_parser(self, signature_field_name: str):
+        from dspy.adapters._streaming import _JSONAdapterStreamParser
+
+        return _JSONAdapterStreamParser(signature_field_name)
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
         fields = json_repair.loads(completion)

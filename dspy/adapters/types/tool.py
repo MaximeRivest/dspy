@@ -1,12 +1,16 @@
 import asyncio
 import inspect
+import json
 from typing import TYPE_CHECKING, Any, Callable, get_origin, get_type_hints
 
 import pydantic
 from jsonschema import ValidationError, validate
 from pydantic import BaseModel, TypeAdapter, create_model
 
-from dspy.adapters.types.base_type import Type
+import json_repair
+
+from dspy.adapters.types.base_type import _AdapterTypeContext, _TypeStreamParser, Type, warn_legacy_type_method
+from dspy.core.types import LMStreamDeltaEvent, LMToolCallDelta
 from dspy.dsp.utils.settings import settings
 from dspy.utils.callback import with_callbacks
 
@@ -146,9 +150,11 @@ class Tool(Type):
         return parsed_kwargs
 
     def format(self):
+        warn_legacy_type_method("Tool.format()")
         return str(self)
 
     def format_as_litellm_function_call(self):
+        warn_legacy_type_method("Tool.format_as_litellm_function_call()")
         return {
             "type": "function",
             "function": {
@@ -265,6 +271,7 @@ class ToolCalls(Type):
         args: dict[str, Any]
 
         def format(self):
+            warn_legacy_type_method("ToolCalls.ToolCall.format()")
             return {
                 "type": "function",
                 "function": {
@@ -321,6 +328,43 @@ class ToolCalls(Type):
     tool_calls: list[ToolCall]
 
     @classmethod
+    def stream_parser(cls, context: _AdapterTypeContext) -> _TypeStreamParser:
+        class ToolCallsStreamParser(_TypeStreamParser):
+            def __init__(self):
+                self._calls: dict[tuple[int, int], dict[str, Any]] = {}
+                self._seen_delta = False
+
+            def receive(self, event):
+                if not (isinstance(event, LMStreamDeltaEvent) and isinstance(event.delta, LMToolCallDelta)):
+                    return None
+
+                self._seen_delta = True
+                key = (event.output_index, event.part_index)
+                call = self._calls.setdefault(key, {"name": "", "args": {}, "_args_buffer": ""})
+                delta = event.delta
+                if delta.name is not None:
+                    call["name"] = delta.name
+                if delta.args_delta:
+                    call["_args_buffer"] += delta.args_delta
+                    call["args"] = _parse_streamed_tool_args(call["_args_buffer"])
+
+                return cls.from_dict_list(self._current_calls())
+
+            def finalize(self):
+                if not self._seen_delta:
+                    return None
+                return cls.from_dict_list(self._current_calls())
+
+            def _current_calls(self) -> list[dict[str, Any]]:
+                calls = []
+                for key in sorted(self._calls):
+                    call = self._calls[key]
+                    calls.append({"name": call.get("name") or "", "args": call.get("args") or {}})
+                return calls
+
+        return ToolCallsStreamParser()
+
+    @classmethod
     def from_dict_list(cls, tool_calls_dicts: list[dict[str, Any]]) -> "ToolCalls":
         """Convert a list of dictionaries to a ToolCalls instance.
 
@@ -351,6 +395,7 @@ class ToolCalls(Type):
         )
 
     def format(self) -> list[dict[str, Any]]:
+        warn_legacy_type_method("ToolCalls.format()")
         # The tool_call field is compatible with OpenAI's tool calls schema.
         return {
             "tool_calls": [tool_call.format() for tool_call in self.tool_calls],
@@ -383,6 +428,18 @@ class ToolCalls(Type):
                 return {"tool_calls": [cls.ToolCall(**data)]}
 
         raise ValueError(f"Received invalid value for `dspy.ToolCalls`: {data}")
+
+
+def _parse_streamed_tool_args(buffer: str) -> dict[str, Any]:
+    if not buffer:
+        return {}
+    for parse_fn in (json.loads, json_repair.loads):
+        try:
+            parsed = parse_fn(buffer)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            continue
+    return {}
 
 
 def _resolve_json_schema_reference(schema: dict) -> dict:

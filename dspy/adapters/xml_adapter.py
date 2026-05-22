@@ -85,6 +85,11 @@ class XMLAdapter(ChatAdapter):
         message += "."
         return message
 
+    def stream_parser(self, signature_field_name: str):
+        from dspy.adapters._streaming import _XMLAdapterStreamParser
+
+        return _XMLAdapterStreamParser(signature_field_name)
+
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
         fields = {}
         for match in self.field_pattern.finditer(completion):

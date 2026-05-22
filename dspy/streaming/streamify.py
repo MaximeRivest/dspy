@@ -10,6 +10,8 @@ import orjson
 from anyio import create_memory_object_stream, create_task_group
 from anyio.streams.memory import MemoryObjectSendStream
 
+from dspy.clients._streaming import is_litellm_model_response_stream
+from dspy.core.types import LMStreamEvent
 from dspy.dsp.utils.settings import settings
 from dspy.primitives.prediction import Prediction
 from dspy.streaming.messages import StatusMessage, StatusMessageProvider, StatusStreamingCallback
@@ -17,11 +19,6 @@ from dspy.streaming.streaming_listener import StreamListener, find_predictor_for
 from dspy.utils.asyncify import asyncify
 
 logger = logging.getLogger(__name__)
-
-
-def _is_litellm_model_response_stream(value: Any) -> bool:
-    cls = type(value)
-    return cls.__name__ == "ModelResponseStream" and cls.__module__.startswith("litellm")
 
 
 if TYPE_CHECKING:
@@ -182,7 +179,18 @@ def streamify(
             tg.start_soon(generator, args, kwargs, send_stream)
 
             async for value in receive_stream:
-                if _is_litellm_model_response_stream(value):
+                if isinstance(value, LMStreamEvent):
+                    if len(predict_id_to_listener) == 0:
+                        yield value
+                    else:
+                        predict_id = value.metadata.get("predict_id") if hasattr(value, "metadata") else None
+                        listeners = predict_id_to_listener.get(predict_id) or [
+                            listener for listeners in predict_id_to_listener.values() for listener in listeners
+                        ]
+                        for listener in listeners:
+                            if output := listener.receive(value):
+                                yield output
+                elif is_litellm_model_response_stream(value):
                     if len(predict_id_to_listener) == 0:
                         # No listeners are configured, yield the chunk directly for backwards compatibility.
                         yield value
@@ -275,7 +283,10 @@ async def streaming_response(streamer: AsyncGenerator) -> AsyncGenerator:
         if isinstance(value, Prediction):
             data = {"prediction": dict(value.items(include_dspy=False))}
             yield f"data: {orjson.dumps(data).decode()}\n\n"
-        elif _is_litellm_model_response_stream(value):
+        elif isinstance(value, LMStreamEvent):
+            data = {"event": value.model_dump(mode="json", exclude_none=True)}
+            yield f"data: {orjson.dumps(data).decode()}\n\n"
+        elif is_litellm_model_response_stream(value):
             data = {"chunk": value.json()}
             yield f"data: {orjson.dumps(data).decode()}\n\n"
         elif isinstance(value, str) and value.startswith("data:"):

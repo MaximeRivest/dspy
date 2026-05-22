@@ -10,7 +10,8 @@ from urllib.parse import urlparse
 import pydantic
 import requests
 
-from dspy.adapters.types.base_type import Type
+from dspy.adapters.types.base_type import _AdapterTypeContext, Type, warn_legacy_type_method
+from dspy.core.types import LMImagePart, LMRequestPatch, LMTextPart
 
 try:
     from PIL import Image as PILImage
@@ -70,8 +71,22 @@ class Image(Type):
         # Delegate the rest of initialization to pydantic's BaseModel.
         super().__init__(**data)
 
+    def generate_patch(self, context: _AdapterTypeContext) -> LMRequestPatch:
+        source = self.url
+        if source.startswith("data:") and "," in source:
+            header, data = source.split(",", 1)
+            media_type = header.removeprefix("data:").split(";", 1)[0]
+            part = LMImagePart(data=data, media_type=media_type)
+        else:
+            part = LMImagePart(url=source)
+        return LMRequestPatch(
+            user_parts=[LMTextPart(text=f"\n\n[[ ## {context.field_name} ## ]]\n"), part],
+            delete_input_fields=(context.field_name,),
+        )
+
     @lru_cache(maxsize=32)
     def format(self) -> list[dict[str, Any]] | str:
+        warn_legacy_type_method("Image.format()")
         try:
             image_url = encode_image(self.url)
         except Exception as e:
@@ -106,6 +121,7 @@ class Image(Type):
         return cls(pil_image)
 
     def __str__(self):
+        warn_legacy_type_method("Image.__str__() legacy serialization")
         return self.serialize_model()
 
     def __repr__(self):

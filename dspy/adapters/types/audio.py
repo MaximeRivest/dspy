@@ -7,7 +7,8 @@ from typing import Any, Union
 import pydantic
 import requests
 
-from dspy.adapters.types.base_type import Type
+from dspy.adapters.types.base_type import _AdapterTypeContext, Type, warn_legacy_type_method
+from dspy.core.types import LMAudioPart, LMRequestPatch, LMTextPart
 
 try:
     import soundfile as sf
@@ -31,7 +32,17 @@ class Audio(Type):
         extra="forbid",
     )
 
+    def generate_patch(self, context: _AdapterTypeContext) -> LMRequestPatch:
+        return LMRequestPatch(
+            user_parts=[
+                LMTextPart(text=f"\n\n[[ ## {context.field_name} ## ]]\n"),
+                LMAudioPart(data=self.data, media_type=f"audio/{self.audio_format}"),
+            ],
+            delete_input_fields=(context.field_name,),
+        )
+
     def format(self) -> list[dict[str, Any]]:
+        warn_legacy_type_method("Audio.format()")
         try:
             data = self.data
         except Exception as e:
@@ -116,6 +127,7 @@ class Audio(Type):
         return cls(data=encoded_data, audio_format=format)
 
     def __str__(self) -> str:
+        warn_legacy_type_method("Audio.__str__() legacy serialization")
         return self.serialize_model()
 
     def __repr__(self) -> str:

@@ -5,7 +5,8 @@ from typing import Any
 
 import pydantic
 
-from dspy.adapters.types.base_type import Type
+from dspy.adapters.types.base_type import _AdapterTypeContext, Type, warn_legacy_type_method
+from dspy.core.types import LMBinaryPart, LMRequestPatch, LMTextPart
 
 
 class File(Type):
@@ -56,7 +57,25 @@ class File(Type):
 
         return encode_file_to_dict(values)
 
+    def generate_patch(self, context: _AdapterTypeContext) -> LMRequestPatch:
+        if self.file_data is not None:
+            media_type = "application/octet-stream"
+            data = self.file_data
+            if self.file_data.startswith("data:") and "," in self.file_data:
+                header, data = self.file_data.split(",", 1)
+                media_type = header.removeprefix("data:").split(";", 1)[0]
+            part = LMBinaryPart(data=data, media_type=media_type, filename=self.filename)
+        elif self.file_id is not None:
+            part = LMBinaryPart(file_id=self.file_id, filename=self.filename)
+        else:
+            raise ValueError("File must have file_data or file_id.")
+        return LMRequestPatch(
+            user_parts=[LMTextPart(text=f"\n\n[[ ## {context.field_name} ## ]]\n"), part],
+            delete_input_fields=(context.field_name,),
+        )
+
     def format(self) -> list[dict[str, Any]]:
+        warn_legacy_type_method("File.format()")
         try:
             file_dict = {}
             if self.file_data:
@@ -71,6 +90,7 @@ class File(Type):
             raise ValueError(f"Failed to format file for DSPy: {e}")
 
     def __str__(self):
+        warn_legacy_type_method("File.__str__() legacy serialization")
         return self.serialize_model()
 
     def __repr__(self):

@@ -2,7 +2,8 @@ from typing import Any, Optional
 
 import pydantic
 
-from dspy.adapters.types.base_type import Type
+from dspy.adapters.types.base_type import _AdapterTypeContext, _TypeStreamParser, Type, warn_legacy_type_method
+from dspy.core.types import LMCitationDelta, LMCitationPart, LMOutput, LMStreamDeltaEvent
 from dspy.utils.annotation import experimental
 
 
@@ -69,6 +70,7 @@ class Citations(Type):
             Returns:
                 A dictionary in the format expected by citation APIs.
             """
+            warn_legacy_type_method("Citations.Citation.format()")
             citation_dict = {
                 "type": self.type,
                 "cited_text": self.cited_text,
@@ -113,8 +115,23 @@ class Citations(Type):
             citations = Citations.from_dict_list(citations_dict)
             ```
         """
-        citations = [cls.Citation(**item) for item in citations_dicts]
+        citations = [cls.Citation(**cls._normalize_citation_dict(item)) for item in citations_dicts]
         return cls(citations=citations)
+
+    @classmethod
+    def _normalize_citation_dict(cls, item: dict[str, Any]) -> dict[str, Any]:
+        """Accept both legacy provider citation dictionaries and normalized `LMCitationPart` dumps."""
+        data = dict(item.get("provider_data", item.get("metadata", {}).get("provider_data", item)))
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        for key, value in metadata.items():
+            data.setdefault(key, value)
+        data.setdefault("type", item.get("type", "char_location"))
+        data.setdefault("cited_text", item.get("cited_text") or item.get("text") or item.get("supported_text") or "")
+        data.setdefault("document_title", item.get("document_title") or item.get("title"))
+        data.setdefault("document_index", item.get("document_index", 0))
+        data.setdefault("start_char_index", item.get("start_char_index", 0))
+        data.setdefault("end_char_index", item.get("end_char_index", len(data["cited_text"])))
+        return data
 
     @classmethod
     def description(cls) -> str:
@@ -126,6 +143,7 @@ class Citations(Type):
 
     def format(self) -> list[dict[str, Any]]:
         """Format citations as a list of dictionaries."""
+        warn_legacy_type_method("Citations.format()")
         return [citation.format() for citation in self.citations]
 
     @pydantic.model_validator(mode="before")
@@ -169,6 +187,7 @@ class Citations(Type):
 
     @classmethod
     def adapt_to_native_lm_feature(cls, signature, field_name, lm, lm_kwargs) -> bool:
+        warn_legacy_type_method("Citations.adapt_to_native_lm_feature()")
         if lm.model.startswith("anthropic/"):
             return signature.delete(field_name)
         return signature
@@ -176,7 +195,18 @@ class Citations(Type):
     @classmethod
     def is_streamable(cls) -> bool:
         """Whether the Citations type is streamable."""
+        warn_legacy_type_method("Citations.is_streamable()")
         return True
+
+    @classmethod
+    def stream_parser(cls, context: _AdapterTypeContext) -> _TypeStreamParser:
+        class CitationsStreamParser(_TypeStreamParser):
+            def receive(self, event):
+                if isinstance(event, LMStreamDeltaEvent) and isinstance(event.delta, LMCitationDelta):
+                    return cls.from_dict_list([cls._citation_part_to_legacy_dict(event.delta.citation)])
+                return None
+
+        return CitationsStreamParser()
 
     @classmethod
     def parse_stream_chunk(cls, chunk) -> Optional["Citations"]:
@@ -189,6 +219,7 @@ class Citations(Type):
         Returns:
             A Citations object if the chunk contains citation data, None otherwise.
         """
+        warn_legacy_type_method("Citations.parse_stream_chunk()")
         try:
             # Check if the chunk has citation data in provider_specific_fields
             if hasattr(chunk, "choices") and chunk.choices:
@@ -202,6 +233,21 @@ class Citations(Type):
         return None
 
     @classmethod
+    def parse_lm_output(cls, context: _AdapterTypeContext, output: LMOutput) -> Optional["Citations"]:
+        if output.citations:
+            return cls.from_dict_list([cls._citation_part_to_legacy_dict(citation) for citation in output.citations])
+        return None
+
+    @classmethod
+    def _citation_part_to_legacy_dict(cls, citation: LMCitationPart) -> dict[str, Any]:
+        data = dict(citation.metadata.get("provider_data", citation.metadata))
+        if citation.text is not None:
+            data.setdefault("cited_text", citation.text)
+        if citation.title is not None:
+            data.setdefault("document_title", citation.title)
+        return data
+
+    @classmethod
     def parse_lm_response(cls, response: str | dict[str, Any]) -> Optional["Citations"]:
         """Parse a LM response into Citations.
 
@@ -211,6 +257,7 @@ class Citations(Type):
         Returns:
             A Citations object if citation data is found, None otherwise.
         """
+        warn_legacy_type_method("Citations.parse_lm_response()")
         if isinstance(response, dict):
             # Check if the response contains citations in the expected format
             if "citations" in response:

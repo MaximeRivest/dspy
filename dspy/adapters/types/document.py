@@ -2,7 +2,8 @@ from typing import Any, Literal
 
 import pydantic
 
-from dspy.adapters.types.base_type import Type
+from dspy.adapters.types.base_type import _AdapterTypeContext, Type, warn_legacy_type_method
+from dspy.core.types import LMDocumentPart, LMRequestPatch, LMTextPart
 from dspy.utils.annotation import experimental
 
 
@@ -58,12 +59,28 @@ class Document(Type):
     media_type: Literal["text/plain", "application/pdf"] = "text/plain"
     context: str | None = None
 
+    def generate_patch(self, context: _AdapterTypeContext) -> LMRequestPatch:
+        return LMRequestPatch(
+            user_parts=[
+                LMTextPart(text=f"\n\n[[ ## {context.field_name} ## ]]\n"),
+                LMDocumentPart(
+                    media_type=self.media_type,
+                    source={"type": "text", "media_type": self.media_type, "data": self.data},
+                    citations={"enabled": True},
+                    title=self.title,
+                    context=self.context,
+                ),
+            ],
+            delete_input_fields=(context.field_name,),
+        )
+
     def format(self) -> list[dict[str, Any]]:
         """Format document for LM consumption.
 
         Returns:
             A list containing the document block in the format expected by citation-enabled language models.
         """
+        warn_legacy_type_method("Document.format()")
         document_block = {
             "type": "document",
             "source": {

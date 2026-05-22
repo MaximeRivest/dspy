@@ -12,6 +12,7 @@ from anyio.streams.memory import MemoryObjectSendStream
 
 import dspy
 from dspy.clients._litellm import get_litellm, is_litellm_context_window_error
+from dspy.clients._streaming import litellm_chunk_to_lm_stream_events, with_stream_metadata
 from dspy.clients.cache import request_cache
 from dspy.clients.openai import OpenAIProvider
 from dspy.clients.provider import Provider, ReinforceJob, TrainingJob
@@ -369,11 +370,22 @@ def _get_stream_completion_fn(
             **request,
         )
         chunks = []
+        emit_normalized_events = bool(dspy.settings.stream_listeners)
         async for chunk in response:
             if caller_predict_id:
-                # Add the predict id to the chunk so that the stream listener can identify which predict produces it.
+                # Add the predict id to the chunk so that legacy stream listener routing still works.
                 chunk.predict_id = caller_predict_id
             chunks.append(chunk)
+
+            if emit_normalized_events:
+                events = litellm_chunk_to_lm_stream_events(chunk)
+                if events:
+                    for event in events:
+                        if caller_predict_id:
+                            event = with_stream_metadata(event, predict_id=caller_predict_id)
+                        await stream.send(event)
+                    continue
+
             await stream.send(chunk)
         return _get_litellm().stream_chunk_builder(chunks)
 

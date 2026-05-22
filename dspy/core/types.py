@@ -1049,6 +1049,7 @@ class LMStreamEvent(BaseModel):
     """Base class for normalized LM stream events."""
 
     type: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class LMStreamStartEvent(LMStreamEvent):

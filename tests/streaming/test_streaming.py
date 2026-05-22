@@ -2061,3 +2061,71 @@ async def test_streaming_reasoning_fallback():
                 assert final_prediction.reasoning.content == "Let's think step by step about this question."
                 # Verify Reasoning object is str-like
                 assert str(final_prediction.reasoning) == "Let's think step by step about this question."
+
+
+@pytest.mark.anyio
+async def test_stream_listener_accepts_normalized_text_stream_events():
+    class QA(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    predict = dspy.Predict(QA)
+    listener = dspy.streaming.StreamListener(signature_field_name="answer", predict=predict, predict_name="predict")
+
+    from dspy.core.types import LMStreamDeltaEvent, LMTextDelta
+
+    with dspy.context(adapter=dspy.ChatAdapter()):
+        assert listener.receive(LMStreamDeltaEvent(part_index=0, delta=LMTextDelta(text="[[ ## answer ## ]]\n"))) is None
+        chunk = listener.receive(LMStreamDeltaEvent(part_index=0, delta=LMTextDelta(text="Paris")))
+        assert isinstance(chunk, dspy.streaming.StreamResponse)
+        assert chunk.chunk == "Paris"
+        final = listener.receive(LMStreamDeltaEvent(part_index=0, delta=LMTextDelta(text="\n\n[[ ## completed ## ]]")))
+        assert isinstance(final, dspy.streaming.StreamResponse)
+        assert final.is_last_chunk is True
+
+
+@pytest.mark.anyio
+async def test_stream_listener_uses_type_stream_parser_for_normalized_events():
+    class QA(dspy.Signature):
+        question: str = dspy.InputField()
+        reasoning: dspy.Reasoning = dspy.OutputField()
+
+    predict = dspy.Predict(QA)
+    listener = dspy.streaming.StreamListener(signature_field_name="reasoning", predict=predict, predict_name="predict")
+
+    from dspy.core.types import LMStreamDeltaEvent, LMThinkingDelta
+
+    with dspy.context(adapter=dspy.ChatAdapter()):
+        chunk = listener.receive(LMStreamDeltaEvent(part_index=0, delta=LMThinkingDelta(text="Think")))
+        assert isinstance(chunk, dspy.streaming.StreamResponse)
+        assert chunk.signature_field_name == "reasoning"
+        assert chunk.chunk == "Think"
+
+
+@pytest.mark.anyio
+async def test_stream_listener_streams_normalized_tool_call_events():
+    class QA(dspy.Signature):
+        question: str = dspy.InputField()
+        tool_calls: dspy.ToolCalls = dspy.OutputField()
+
+    predict = dspy.Predict(QA)
+    listener = dspy.streaming.StreamListener(signature_field_name="tool_calls", predict=predict, predict_name="predict")
+
+    from dspy.core.types import LMStreamDeltaEvent, LMToolCallDelta
+
+    with dspy.context(adapter=dspy.ChatAdapter(native_response_types=[dspy.ToolCalls])):
+        first = listener.receive(
+            LMStreamDeltaEvent(part_index=0, delta=LMToolCallDelta(id="call_1", name="search", args_delta='{"query"'))
+        )
+        assert isinstance(first, dspy.streaming.StreamResponse)
+        assert isinstance(first.chunk, dspy.ToolCalls)
+        assert first.chunk.tool_calls[0].name == "search"
+
+        second = listener.receive(LMStreamDeltaEvent(part_index=0, delta=LMToolCallDelta(args_delta=': "DSPy"}')))
+        assert isinstance(second, dspy.streaming.StreamResponse)
+        assert second.chunk.tool_calls[0].args == {"query": "DSPy"}
+
+        final = listener.finalize()
+        assert isinstance(final, dspy.streaming.StreamResponse)
+        assert final.is_last_chunk is True
+        assert final.chunk.tool_calls[0].args == {"query": "DSPy"}
