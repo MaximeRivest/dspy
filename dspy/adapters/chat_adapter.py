@@ -43,6 +43,7 @@ class ChatAdapter(Adapter):
         use_native_function_calling: bool = False,
         native_response_types: list[type[type]] | None = None,
         use_json_adapter_fallback: bool = True,
+        _type_strategies: list[Any] | None = None,
     ):
         """
         Args:
@@ -57,6 +58,7 @@ class ChatAdapter(Adapter):
             callbacks=callbacks,
             use_native_function_calling=use_native_function_calling,
             native_response_types=native_response_types,
+            _type_strategies=_type_strategies,
         )
         self.use_json_adapter_fallback = use_json_adapter_fallback
 

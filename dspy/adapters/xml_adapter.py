@@ -10,8 +10,8 @@ from dspy.utils.callback import BaseCallback
 
 
 class XMLAdapter(ChatAdapter):
-    def __init__(self, callbacks: list[BaseCallback] | None = None):
-        super().__init__(callbacks)
+    def __init__(self, callbacks: list[BaseCallback] | None = None, _type_strategies: list[Any] | None = None):
+        super().__init__(callbacks=callbacks, _type_strategies=_type_strategies)
         self.field_pattern = re.compile(r"<(?P<name>\w+)>((?P<content>.*?))</\1>", re.DOTALL)
 
     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any]) -> str:
@@ -84,6 +84,22 @@ class XMLAdapter(ChatAdapter):
         message += ", then ".join(f"`<{f}>`" for f in signature.output_fields)
         message += "."
         return message
+
+    def input_field_anchor(self, field_name: str) -> str | None:
+        return f"<{field_name}>"
+
+    def output_field_anchor(self, field_name: str) -> str | None:
+        return f"<{field_name}>"
+
+    def native_input_header_parts(self, field_name: str):
+        from dspy.core.types import LMTextPart
+
+        return [LMTextPart(text=f"\n\n<{field_name}>\n")]
+
+    def native_input_footer_parts(self, field_name: str):
+        from dspy.core.types import LMTextPart
+
+        return [LMTextPart(text=f"\n</{field_name}>")]
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
         fields = {}

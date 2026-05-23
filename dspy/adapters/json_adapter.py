@@ -7,6 +7,7 @@ import pydantic
 import regex
 from pydantic.fields import FieldInfo
 
+from dspy.adapters._planning import _plan_adapter_call
 from dspy.adapters.chat_adapter import ChatAdapter, FieldInfoWithName
 from dspy.adapters.types.tool import ToolCalls
 from dspy.adapters.utils import (
@@ -38,9 +39,14 @@ def _has_open_ended_mapping(signature: SignatureMeta) -> bool:
 
 
 class JSONAdapter(ChatAdapter):
-    def __init__(self, callbacks: list[BaseCallback] | None = None, use_native_function_calling: bool = True):
+    def __init__(
+        self,
+        callbacks: list[BaseCallback] | None = None,
+        use_native_function_calling: bool = True,
+        _type_strategies: list[Any] | None = None,
+    ):
         # JSONAdapter uses native function calling by default.
-        super().__init__(callbacks=callbacks, use_native_function_calling=use_native_function_calling)
+        super().__init__(callbacks=callbacks, use_native_function_calling=use_native_function_calling, _type_strategies=_type_strategies)
 
     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):
         """Common call logic to be used for both sync and async calls."""
@@ -68,8 +74,9 @@ class JSONAdapter(ChatAdapter):
             return result
 
         try:
+            plan = _plan_adapter_call(self, lm, dict(lm_kwargs), signature, inputs)
             structured_output_model = _get_structured_outputs_response_format(
-                signature, self.use_native_function_calling
+                plan.render_signature, self.use_native_function_calling
             )
             lm_kwargs["response_format"] = structured_output_model
             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
@@ -91,8 +98,9 @@ class JSONAdapter(ChatAdapter):
             return await result
 
         try:
+            plan = _plan_adapter_call(self, lm, dict(lm_kwargs), signature, inputs)
             structured_output_model = _get_structured_outputs_response_format(
-                signature, self.use_native_function_calling
+                plan.render_signature, self.use_native_function_calling
             )
             lm_kwargs["response_format"] = structured_output_model
             return await super().acall(lm, lm_kwargs, signature, demos, inputs)

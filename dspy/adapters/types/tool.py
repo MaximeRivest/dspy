@@ -148,6 +148,16 @@ class Tool(Type):
     def format(self):
         return str(self)
 
+    def to_lm_tool_spec(self):
+        from dspy.core.types import LMToolSpec
+
+        args = self.args or {}
+        return LMToolSpec(
+            name=self.name or "",
+            description=self.desc,
+            parameters={"type": "object", "properties": args, "required": list(args.keys())},
+        )
+
     def format_as_litellm_function_call(self):
         return {
             "type": "function",

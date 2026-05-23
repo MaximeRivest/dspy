@@ -8,16 +8,19 @@ from dspy.adapters._legacy_type_markers import (
     _expand_legacy_custom_type_markers_in_chat_message,
     _expand_legacy_custom_type_markers_in_lm_message,
 )
+from dspy.adapters._planning import (
+    _AdapterPlan,
+    _apply_planned_messages,
+    _insert_user_part_segments_default,
+    _ParseStrategyContext,
+    _plan_adapter_call,
+)
 from dspy.adapters.types import History, Type
 from dspy.adapters.types.reasoning import Reasoning
 from dspy.adapters.types.tool import Tool, ToolCalls
 from dspy.clients.base_lm import BaseLM
-from dspy.clients.openai_format import (
-    legacy_outputs_from_lm_response,
-    lm_response_from_legacy_outputs,
-    to_openai_chat_request,
-)
-from dspy.core.types import LMMessage, LMRequest, LMResponse
+from dspy.clients.openai_format import lm_response_from_legacy_outputs, to_openai_chat_request, tool_to_openai
+from dspy.core.types import LMMessage, LMPart, LMRequest, LMResponse, LMTextPart
 from dspy.experimental import Citations
 from dspy.signatures.signature import Signature
 from dspy.utils.callback import BaseCallback, with_callbacks
@@ -50,6 +53,7 @@ class Adapter:
         callbacks: list[BaseCallback] | None = None,
         use_native_function_calling: bool = False,
         native_response_types: list[type[Type]] | None = None,
+        _type_strategies: list[Any] | None = None,
     ):
         """
         Args:
@@ -65,6 +69,10 @@ class Adapter:
         self.callbacks = callbacks or []
         self.use_native_function_calling = use_native_function_calling
         self.native_response_types = native_response_types or _DEFAULT_NATIVE_RESPONSE_TYPES
+        # Private for now: the public strategy API will be introduced after the
+        # planner/resolver contracts settle. This lets internal and experimental
+        # callers exercise the architecture without committing the surface area.
+        self._type_strategies = _type_strategies or []
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
@@ -80,51 +88,13 @@ class Adapter:
         signature: type[Signature],
         inputs: dict[str, Any],
     ) -> type[Signature]:
-        # TODO(adapters-plan): This remains the pre-normalized planning hook. It
-        # mutates `lm_kwargs` and returns only the render signature, which loses
-        # information we will need for plan-driven rendering/parsing. The next
-        # stacked PR should replace this with an explicit `_AdapterPlan` that
-        # records deleted fields, native tools, native output fields, inserted
-        # messages/parts, and LM config patches.
-        if self.use_native_function_calling:
-            tool_call_input_field_name = self._get_tool_call_input_field_name(signature)
-            tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
-
-            if tool_call_output_field_name and tool_call_input_field_name is None:
-                raise ValueError(
-                    f"You provided an output field {tool_call_output_field_name} to receive the tool calls information, "
-                    "but did not provide any tools as the input. Please provide a list of tools as the input by adding an "
-                    "input field with type `list[dspy.Tool]`."
-                )
-
-            if tool_call_output_field_name and lm.supports_function_calling:
-                tools = inputs[tool_call_input_field_name]
-                tools = tools if isinstance(tools, list) else [tools]
-
-                lm_tools = [tool.format_as_litellm_function_call() for tool in tools]
-
-                lm_kwargs["tools"] = lm_tools
-
-                signature_for_native_function_calling = signature.delete(tool_call_output_field_name)
-                signature_for_native_function_calling = signature_for_native_function_calling.delete(
-                    tool_call_input_field_name
-                )
-
-                return signature_for_native_function_calling
-
-        # TODO(adapters-plan): Built-in/native response planning should move out
-        # of `Type.adapt_to_native_lm_feature()` and into adapter-owned planning
-        # renderers. Keep this compatibility hook for this boundary-only PR.
-        # Handle custom types that use native LM features, e.g., reasoning, citations, etc.
-        for name, field in signature.output_fields.items():
-            if (
-                isinstance(field.annotation, type)
-                and field.annotation in self.native_response_types
-                and issubclass(field.annotation, Type)
-            ):
-                signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)
-
-        return signature
+        """Compatibility wrapper around the private plan/strategy pipeline."""
+        plan = _plan_adapter_call(self, lm, lm_kwargs, signature, inputs)
+        lm_kwargs.clear()
+        lm_kwargs.update(plan.lm_kwargs)
+        if plan.tools:
+            lm_kwargs["tools"] = [tool_to_openai(tool) for tool in plan.tools]
+        return plan.render_signature
 
     def _call_postprocess(
         self,
@@ -204,20 +174,26 @@ class Adapter:
 
     def _render_request(
         self,
+        plan: _AdapterPlan,
         lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-        messages: list[LMMessage | dict[str, Any]],
+        demos: list[dict[str, Any]],
     ) -> LMRequest:
-        """Build the normalized LM request for the current adapter call path.
+        """Render the planned adapter call into a normalized `LMRequest`.
 
-        TODO(adapters-plan): This currently receives already-rendered messages.
-        Once planning lands, this should render from `_AdapterPlan` and apply
-        planned message/part insertions before creating `LMRequest`.
+        The adapter only formats ``plan.render_signature`` and ``plan.inputs``:
+        fields consumed by strategies have already been removed. After ordinary
+        rendering, `_apply_planned_messages()` inserts strategy-owned messages,
+        native user part segments, tools, and config overlays. This keeps the
+        adapter responsible for grammar while the plan records non-text/native
+        ownership.
         """
+        messages = self.format(plan.render_signature, demos, plan.inputs)
+        messages = _apply_planned_messages(self, messages, plan)
         return LMRequest.from_call(
             model=lm.model,
-            messages=self._coerce_lm_messages(messages),
-            **lm_kwargs,
+            messages=messages,
+            tools=list(plan.tools),
+            **plan.lm_kwargs,
         )
 
     def _call_lm(self, lm: BaseLM, request: LMRequest) -> LMResponse:
@@ -300,13 +276,77 @@ class Adapter:
             return LMMessage(**message)
 
     def _normalize_legacy_outputs(self, outputs: list[dict[str, Any] | str | None], request: LMRequest) -> LMResponse:
-        """Convert current `BaseLM` outputs into a normalized `LMResponse`.
-
-        TODO(language-models): Current `BaseLM` returns `list[str | dict | None]`.
-        Future LMs should return `LMResponse` directly, making this method a
-        compatibility-only path for old/custom LMs.
-        """
+        """Convert current `BaseLM` outputs into a normalized `LMResponse`."""
         return lm_response_from_legacy_outputs(outputs, request)
+
+    def _parse_response(self, plan: _AdapterPlan, response: LMResponse, lm: BaseLM) -> list[dict[str, Any]]:
+        """Parse a normalized LM response according to the adapter plan.
+
+        Response parsing mirrors planning:
+
+        * fields still present in ``plan.render_signature.output_fields`` are
+          parsed by the adapter's ordinary text parser;
+        * fields removed by output strategies are reconstructed by the exact
+          `_PlannedOutputParser` selected during planning;
+        * legacy custom native response hooks are a compatibility fallback until
+          public strategies replace them.
+
+        This method should be the only merge point for text-parsed and
+        strategy-parsed outputs.
+        """
+        values: list[dict[str, Any]] = []
+        render_signature = plan.render_signature
+        original_signature = plan.original_signature
+
+        for output in response.outputs:
+            if output.metadata.get("empty_legacy_outputs"):
+                continue
+
+            if output.text and render_signature.output_fields:
+                value = self.parse(render_signature, output.text)
+            elif plan.output_parsers or output.tool_calls or output.reasoning_content is not None or output.citations:
+                value = {}
+            else:
+                raise AdapterParseError(
+                    adapter_name=type(self).__name__,
+                    signature=original_signature,
+                    lm_response=str(output),
+                    message="The LM returned an empty or null response.",
+                )
+
+            for parser in plan.output_parsers:
+                parsed = parser.strategy.parse_output_field(
+                    _ParseStrategyContext(
+                        field_name=parser.field_name,
+                        field=parser.field,
+                        output=output,
+                        plan=plan,
+                        lm=lm,
+                    )
+                )
+                if parsed is not None:
+                    value[parser.field_name] = parsed
+
+            # Compatibility fallback for custom native response types that have
+            # not yet migrated to private/public strategies.
+            for name, field in original_signature.output_fields.items():
+                if name in value:
+                    continue
+                if (
+                    isinstance(field.annotation, type)
+                    and field.annotation in self.native_response_types
+                    and issubclass(field.annotation, Type)
+                ):
+                    parsed_value = field.annotation.parse_lm_response(output.to_output_dict())
+                    if parsed_value is not None:
+                        value[name] = parsed_value
+
+            for field_name in original_signature.output_fields.keys():
+                value.setdefault(field_name, None)
+            if output.logprobs is not None:
+                value["logprobs"] = output.logprobs
+            values.append(value)
+        return values
 
     def __call__(
         self,
@@ -332,16 +372,10 @@ class Adapter:
             List of dictionaries representing parsed LM responses. Each dictionary contains keys matching the
             signature's output field names. For multiple generations (n > 1), returns multiple dictionaries.
         """
-        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
-        messages = self.format(processed_signature, demos, inputs)
-        request = self._render_request(lm, lm_kwargs, messages)
+        plan = _plan_adapter_call(self, lm, lm_kwargs, signature, inputs)
+        request = self._render_request(plan, lm, demos)
         response = self._call_lm(lm, request)
-        # TODO(adapters-response): We normalize at the LM boundary, but still
-        # convert back to legacy postprocess dictionaries here to keep this PR
-        # behavior-preserving. Replace with direct `LMResponse` parsing once the
-        # explicit adapter plan exists.
-        outputs = legacy_outputs_from_lm_response(response)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+        return self._parse_response(plan, response, lm)
 
     async def acall(
         self,
@@ -351,14 +385,10 @@ class Adapter:
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
-        messages = self.format(processed_signature, demos, inputs)
-        request = self._render_request(lm, lm_kwargs, messages)
+        plan = _plan_adapter_call(self, lm, lm_kwargs, signature, inputs)
+        request = self._render_request(plan, lm, demos)
         response = await self._acall_lm(lm, request)
-        # TODO(adapters-response): Keep in sync with `__call__()` until both use
-        # direct `LMResponse` parsing.
-        outputs = legacy_outputs_from_lm_response(response)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+        return self._parse_response(plan, response, lm)
 
     def format(
         self,
@@ -616,6 +646,37 @@ class Adapter:
             if field.annotation == ToolCalls:
                 return name
         return None
+
+    def input_field_anchor(self, field_name: str) -> str | None:
+        """Return the text anchor for an input field in this adapter's grammar."""
+        return f"[[ ## {field_name} ## ]]"
+
+    def output_field_anchor(self, field_name: str) -> str | None:
+        """Return the text anchor for an output field in this adapter's grammar."""
+        return f"[[ ## {field_name} ## ]]"
+
+    def output_requirements_anchor(self) -> str | None:
+        """Return an anchor near the inline output requirements, if present."""
+        return "Respond with"
+
+    def native_input_header_parts(self, field_name: str) -> list[LMPart]:
+        """Return adapter-owned text parts that introduce a native input segment."""
+        return [LMTextPart(text=f"\n\n[[ ## {field_name} ## ]]\n")]
+
+    def native_input_footer_parts(self, field_name: str) -> list[LMPart]:
+        """Return adapter-owned text parts that close a native input segment."""
+        return []
+
+    def place_user_part_segments(self, messages: list[LMMessage], segments: list[Any], plan: Any) -> list[LMMessage]:
+        """Place planned native user parts into messages using this adapter's grammar.
+
+        Strategies emit field-associated parts, not prompt delimiters. Custom
+        adapters that use non-Chat field syntax should override the anchor/header
+        hooks, and adapters with unusual layout rules can override this method
+        entirely. The default implementation inserts before the next rendered
+        input field or before the inline output requirements.
+        """
+        return _insert_user_part_segments_default(self, messages, segments, plan)
 
     def format_conversation_history(
         self,
