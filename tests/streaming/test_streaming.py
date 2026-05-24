@@ -1059,16 +1059,15 @@ async def test_streaming_allows_custom_streamable_type():
             return True
 
         @classmethod
-        def adapt_to_native_lm_feature(cls, signature, field_name, lm, lm_kwargs):
-            return signature.delete(field_name)
+        def default_parse_output(cls, ctx):
+            return CustomType(message=ctx.adapter.lm_parts_to_text(ctx.parts))
 
         @classmethod
         def parse_stream_chunk(cls, chunk):
-            return CustomType(message=chunk.choices[0].delta.content)
-
-        @classmethod
-        def parse_lm_response(cls, response: dict) -> "CustomType":
-            return CustomType(message=response.split("\n\n")[0])
+            content = chunk.choices[0].delta.content
+            if content in {"Hello", "World"}:
+                return CustomType(message=content)
+            return None
 
     class CustomSignature(dspy.Signature):
         question: str = dspy.InputField()
@@ -1082,6 +1081,9 @@ async def test_streaming_allows_custom_streamable_type():
     )
 
     async def stream(*args, **kwargs):
+        yield ModelResponseStream(
+            model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="[[ ## answer ## ]]\n\n"))]
+        )
         yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="Hello"))])
         yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="World"))])
         yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content="\n\n"))])
@@ -1091,9 +1093,7 @@ async def test_streaming_allows_custom_streamable_type():
         yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content=" ]]"))])
 
     with mock.patch("litellm.acompletion", side_effect=stream):
-        with dspy.context(
-            lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.ChatAdapter(native_response_types=[CustomType])
-        ):
+        with dspy.context(lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.ChatAdapter()):
             output = program(question="why did a chicken cross the kitchen?")
             all_chunks = []
             async for value in output:
@@ -1104,6 +1104,7 @@ async def test_streaming_allows_custom_streamable_type():
                     assert value.answer.message == "HelloWorld"
 
     assert all(isinstance(chunk.chunk, CustomType) for chunk in all_chunks)
+    assert [chunk.chunk.message for chunk in all_chunks] == ["Hello", "World"]
 
 
 @pytest.mark.anyio

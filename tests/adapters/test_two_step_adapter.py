@@ -189,6 +189,44 @@ async def test_two_step_adapter_async_call():
     assert "text from main LM" in content
 
 
+@pytest.mark.asyncio
+async def test_two_step_adapter_async_preserves_native_tool_call_ids():
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    class ToolSignature(dspy.Signature):
+        tools: list[dspy.Tool] = dspy.InputField()
+        tool_calls: dspy.ToolCalls = dspy.OutputField()
+
+    class NativeToolLM:
+        model = "openai/gpt-5-nano"
+        supports_function_calling = True
+        supports_reasoning = False
+        supports_response_schema = False
+        supported_params = frozenset()
+        kwargs = {}
+
+        async def acall(self, messages, **kwargs):
+            return [
+                {
+                    "text": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_add",
+                            "type": "function",
+                            "function": {"name": "add", "arguments": '{"a": 1, "b": 2}'},
+                        }
+                    ],
+                }
+            ]
+
+    adapter = dspy.TwoStepAdapter(dspy.utils.DummyLM([]), use_native_function_calling=True)
+
+    result = await adapter.acall(NativeToolLM(), {}, ToolSignature, [], {"tools": [dspy.Tool(add)]})
+
+    assert result[0]["tool_calls"].tool_calls[0].id == "call_add"
+
+
 def test_two_step_adapter_parse():
     class ComplexSignature(dspy.Signature):
         input_text: str = dspy.InputField()

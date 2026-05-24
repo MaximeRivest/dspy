@@ -1,12 +1,12 @@
 from typing import Any
 
-import json_repair
-
 from dspy.adapters.base import Adapter
 from dspy.adapters.chat_adapter import ChatAdapter
+from dspy.adapters._type_runtime import _CallContext
 from dspy.adapters.types import ToolCalls
 from dspy.adapters.utils import get_field_description_string
 from dspy.clients.base_lm import BaseLM
+from dspy.core.types import LMMessage
 from dspy.signatures.field import InputField
 from dspy.signatures.signature import Signature, make_signature
 
@@ -46,7 +46,15 @@ class TwoStepAdapter(Adapter):
         self.extraction_model = extraction_model
 
     def format(
-        self, signature: type[Signature], demos: list[dict[str, Any]], inputs: dict[str, Any]
+        self,
+        signature: type[Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+        *,
+        use_native_tool_calls: bool = False,
+        context: _CallContext | None = None,
+        source_signature: type[Signature] | None = None,
+        prepared_messages: list[LMMessage] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Format a prompt for the first stage with the main LM.
@@ -67,12 +75,43 @@ class TwoStepAdapter(Adapter):
         task_description = self.format_task_description(signature)
         messages.append({"role": "system", "content": task_description})
 
-        messages.extend(self.format_demos(signature, demos))
+        messages.extend(
+            self.format_demos(
+                signature,
+                demos,
+                use_native_tool_calls=use_native_tool_calls,
+                context=context,
+            )
+        )
+        messages.extend(prepared_messages or [])
 
         # Format the current input
         messages.append({"role": "user", "content": self.format_user_message_content(signature, inputs)})
 
         return messages
+
+    def render_messages(
+        self,
+        signature: type[Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+        *,
+        use_native_tool_calls: bool = False,
+        context: _CallContext | None = None,
+        source_signature: type[Signature] | None = None,
+        prepared_messages: list[LMMessage] | None = None,
+    ) -> list[LMMessage]:
+        return self._coerce_lm_messages(
+            self.format(
+                signature,
+                demos,
+                inputs,
+                use_native_tool_calls=use_native_tool_calls,
+                context=context,
+                source_signature=source_signature,
+                prepared_messages=prepared_messages,
+            )
+        )
 
     def parse(self, signature: Signature, completion: str) -> dict[str, Any]:
         """
@@ -111,51 +150,47 @@ class TwoStepAdapter(Adapter):
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        inputs = self.format(signature, demos, inputs)
-
-        outputs = await lm.acall(messages=inputs, **lm_kwargs)
-        # The signature is supposed to be "text -> {original output fields}"
-        extractor_signature = self._create_extractor_signature(signature)
+        rendered = self._render_request(lm, lm_kwargs, signature, demos, inputs)
+        response = await self._acall_lm(lm, rendered.request)
 
         values = []
-
         tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
-        for output in outputs:
-            output_logprobs = None
-            tool_calls = None
-            text = output
+        extractor_signature = self._create_extractor_signature(rendered.signature)
 
-            if isinstance(output, dict):
-                text = output["text"]
-                output_logprobs = output.get("logprobs")
-                tool_calls = output.get("tool_calls")
+        for output in response.outputs:
+            if output.metadata.get("empty_legacy_outputs"):
+                continue
 
-            try:
-                # Call the smaller LM to extract structured data from the raw completion text with ChatAdapter
-                value = await ChatAdapter().acall(
-                    lm=self.extraction_model,
-                    lm_kwargs={},
-                    signature=extractor_signature,
-                    demos=[],
-                    inputs={"text": text},
+            has_text_output = bool(output.text and rendered.signature.output_fields)
+            has_tool_output = bool(output.tool_calls and tool_call_output_field_name)
+
+            if has_text_output:
+                try:
+                    value = await ChatAdapter().acall(
+                        lm=self.extraction_model,
+                        lm_kwargs={},
+                        signature=extractor_signature,
+                        demos=[],
+                        inputs={"text": output.text},
+                    )
+                    value = value[0]
+                    for field_name in signature.output_fields:
+                        value.setdefault(field_name, None)
+                except Exception as e:
+                    raise ValueError(f"Failed to parse response from the original completion: {output}") from e
+            else:
+                value = dict.fromkeys(signature.output_fields.keys())
+
+            if has_tool_output:
+                value[tool_call_output_field_name] = ToolCalls.from_dict_list(
+                    [{"name": call.name, "args": call.args, "id": call.id} for call in output.tool_calls]
                 )
-                value = value[0]
 
-            except Exception as e:
-                raise ValueError(f"Failed to parse response from the original completion: {output}") from e
+            if not (has_text_output or has_tool_output):
+                raise ValueError(f"Failed to parse response from the original completion: {output}")
 
-            if tool_calls and tool_call_output_field_name:
-                tool_calls = [
-                    {
-                        "name": v["function"]["name"],
-                        "args": json_repair.loads(v["function"]["arguments"]),
-                    }
-                    for v in tool_calls
-                ]
-                value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)
-
-            if output_logprobs is not None:
-                value["logprobs"] = output_logprobs
+            if output.logprobs is not None:
+                value["logprobs"] = output.logprobs
 
             values.append(value)
         return values
@@ -180,6 +215,7 @@ class TwoStepAdapter(Adapter):
         inputs: dict[str, Any],
         prefix: str = "",
         suffix: str = "",
+        main_request: bool = False,
     ) -> str:
         parts = [prefix]
 

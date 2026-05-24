@@ -145,13 +145,15 @@ class StreamListener:
             and issubclass(self._output_type, Type)
             and self._output_type.is_streamable()
         ):
-            if parsed_chunk := self._output_type.parse_stream_chunk(chunk):
+            parsed_chunk = self._output_type.parse_stream_chunk(chunk)
+            if parsed_chunk is not None:
                 return StreamResponse(
                     self.predict_name,
                     self.signature_field_name,
                     parsed_chunk,
                     is_last_chunk=self.stream_end,
                 )
+            return None
 
         # For non-custom streamable types, the streaming chunks come from the content field of the ModelResponseStream.
         try:
