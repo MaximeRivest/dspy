@@ -5,12 +5,11 @@ from typing import TYPE_CHECKING, Any, Optional, get_args, get_origin
 import json_repair
 import pydantic
 
-from dspy.clients.base_lm import BaseLM
+from dspy.adapters._type_runtime import _TypeParseContext, _TypeRenderContext
+from dspy.core.types import LMPart
 
 if TYPE_CHECKING:
     from litellm import ModelResponseStream
-
-    from dspy.signatures.signature import Signature
 
 CUSTOM_TYPE_START_IDENTIFIER = "<<CUSTOM-TYPE-START-IDENTIFIER>>"
 CUSTOM_TYPE_END_IDENTIFIER = "<<CUSTOM-TYPE-END-IDENTIFIER>>"
@@ -35,6 +34,16 @@ class Type(pydantic.BaseModel):
 
     def format(self) -> list[dict[str, Any]] | str:
         raise NotImplementedError
+
+    def default_render_input(self, ctx: _TypeRenderContext) -> list[LMPart]:
+        return ctx.adapter.value_to_lm_parts(self, ctx.field_info)
+
+    def default_render_output(self, ctx: _TypeRenderContext) -> list[LMPart]:
+        return ctx.adapter.value_to_lm_parts(self, ctx.field_info)
+
+    @classmethod
+    def default_parse_output(cls, ctx: _TypeParseContext) -> object:
+        return ctx.adapter.lm_parts_to_value(ctx.parts, ctx.field_info)
 
     @classmethod
     def description(cls) -> str:
@@ -75,31 +84,6 @@ class Type(pydantic.BaseModel):
                 f"{CUSTOM_TYPE_START_IDENTIFIER}{json.dumps(formatted, ensure_ascii=False)}{CUSTOM_TYPE_END_IDENTIFIER}"
             )
         return formatted
-
-    @classmethod
-    def adapt_to_native_lm_feature(
-        cls,
-        signature: type["Signature"],
-        field_name: str,
-        lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-    ) -> type["Signature"]:
-        """Adapt the custom type to the native LM feature if possible.
-
-        When the LM and configuration supports the related native LM feature, e.g., native tool calling, native
-        reasoning, etc., we adapt the signature and `lm_kwargs` to enable the native LM feature.
-
-        Args:
-            signature: The DSPy signature for the LM call.
-            field_name: The name of the field in the signature to adapt to the native LM feature.
-            lm: The LM instance.
-            lm_kwargs: The keyword arguments for the LM call, subject to in-place updates if adaptation if required.
-
-        Returns:
-            The adapted signature. If the custom type is not natively supported by the LM, return the original
-            signature.
-        """
-        return signature
 
     @classmethod
     def is_streamable(cls) -> bool:
@@ -166,8 +150,11 @@ def split_message_content_for_custom_types(messages: list[dict[str, Any]]) -> li
         pattern = rf"{CUSTOM_TYPE_START_IDENTIFIER}(.*?){CUSTOM_TYPE_END_IDENTIFIER}"
         result = []
         last_end = 0
-        # DSPy adapter always formats user input into a string content before custom type splitting
-        content: str = message["content"]
+        # Normalized adapter paths may have already rendered custom values into
+        # content blocks. The legacy marker splitter only applies to text.
+        content = message["content"]
+        if not isinstance(content, str):
+            continue
 
         for match in re.finditer(pattern, content, re.DOTALL):
             start, end = match.span()
