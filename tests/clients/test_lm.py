@@ -408,6 +408,28 @@ def test_base_lm_custom_capabilities():
     assert lm.capabilities.streaming
 
 
+def test_base_lm_copy_is_shallow_runtime_copy_with_isolated_dspy_state():
+    class CustomLM(dspy.BaseLM):
+        pass
+
+    callback = object()
+    client = object()
+    lm = CustomLM(model="custom-model", callbacks=[callback], temperature=0.1)
+    lm.client = client
+    lm.history = [{"prompt": "original"}]
+
+    copied_lm = lm.copy(temperature=0.2, rollout_id=1)
+
+    assert copied_lm is not lm
+    assert copied_lm.client is client
+    assert copied_lm.history == []
+    assert copied_lm.history is not lm.history
+    assert copied_lm.callbacks == [callback]
+    assert copied_lm.callbacks is not lm.callbacks
+    assert copied_lm.kwargs == {"temperature": 0.2, "max_tokens": 1000, "rollout_id": 1}
+    assert lm.kwargs == {"temperature": 0.1, "max_tokens": 1000}
+
+
 def test_dump_state():
     lm = dspy.LM(
         model="openai/gpt-4o-mini",

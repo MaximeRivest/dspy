@@ -1,3 +1,4 @@
+import copy as copy_module
 import datetime
 import importlib
 import inspect
@@ -110,15 +111,18 @@ class BaseLM:
         temperature=0.0,
         max_tokens=1000,
         cache=True,
+        callbacks=None,
         num_retries=0,
         **kwargs,
     ):
         self.model = model
         self.model_type = model_type
         self.cache = cache
+        self.callbacks = callbacks or []
         self.num_retries = num_retries
         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
         self.history = []
+        self._warned_zero_temp_rollout = False
 
     @property
     def capabilities(self) -> LMCapabilities:
@@ -327,17 +331,22 @@ class BaseLM:
         Any provided keyword arguments update the corresponding attributes or LM kwargs of
         the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose
         requests use a different rollout ID at non-zero temperature to bypass cache collisions.
+
+        The default implementation uses a shallow runtime copy so provider clients, sessions,
+        and local model handles are preserved by reference while DSPy-owned mutable state is
+        isolated on the copy. Subclasses with additional mutable DSPy-owned state should
+        override this method.
         """
 
-        import copy
-
-        new_instance = copy.deepcopy(self)
+        new_instance = copy_module.copy(self)
         new_instance.history = []
+        new_instance.callbacks = list(getattr(self, "callbacks", []) or [])
+        new_instance.kwargs = dict(getattr(self, "kwargs", {}) or {})
 
         for key, value in kwargs.items():
-            if hasattr(self, key):
+            if hasattr(new_instance, key):
                 setattr(new_instance, key, value)
-            if (key in self.kwargs) or (not hasattr(self, key)):
+            if (key in new_instance.kwargs) or (not hasattr(self, key)):
                 if value is None:
                     new_instance.kwargs.pop(key, None)
                 else:
