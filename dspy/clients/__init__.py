@@ -8,6 +8,14 @@ from dspy.clients.base_lm import BaseLM, LMCapabilities, inspect_history
 from dspy.clients.cache import Cache
 from dspy.clients.embedding import Embedder
 from dspy.clients.lm import LM
+from dspy.clients.openai_compatible import (
+    OpenAIChatLM,
+    OpenAICompatibleChatLM,
+    OpenAICompatibleResponsesLM,
+    OpenAICompatibleTextLM,
+    OpenAIResponsesLM,
+    OpenAITextLM,
+)
 from dspy.clients.provider import Provider, TrainingJob
 
 logger = logging.getLogger(__name__)
@@ -114,6 +122,12 @@ __all__ = [
     "BaseLM",
     "LMCapabilities",
     "LM",
+    "OpenAIChatLM",
+    "OpenAITextLM",
+    "OpenAIResponsesLM",
+    "OpenAICompatibleChatLM",
+    "OpenAICompatibleTextLM",
+    "OpenAICompatibleResponsesLM",
     "Provider",
     "TrainingJob",
     "inspect_history",
