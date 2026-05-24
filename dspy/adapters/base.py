@@ -279,19 +279,101 @@ class Adapter:
         self,
         lm: BaseLM,
         lm_kwargs: dict[str, Any],
-        messages: list[LMMessage | dict[str, Any]],
-    ) -> LMRequest:
-        """Build the normalized LM request for the current adapter call path.
+        signature: type[Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> _RenderedAdapterRequest:
+        """Render the full signature into a normalized LM request."""
+        context = self.build_call_context(lm, lm_kwargs)
+        call_plan = _AdapterCallPlan.from_signature(signature, inputs, lm_kwargs)
+        self._prepare_call_plan(call_plan, context)
 
-        TODO(adapters-plan): This currently receives already-rendered messages.
-        Once planning lands, this should render from `_AdapterPlan` and apply
-        planned message/part insertions before creating `LMRequest`.
-        """
-        return LMRequest.from_call(
+        request_kwargs = self._prepare_request_kwargs(lm, call_plan.lm_kwargs, signature, call_plan.render_signature, context)
+        tools = list(call_plan.tools)
+        if "tools" in request_kwargs:
+            tools.extend(request_kwargs.pop("tools") or [])
+        request_kwargs = self._merge_config_kwargs(request_kwargs, call_plan.config)
+        if not tools:
+            request_kwargs.pop("tool_choice", None)
+
+        messages = self._format_request_messages(call_plan, demos, context)
+        request = LMRequest.from_call(
             model=lm.model,
             messages=self._coerce_lm_messages(messages),
-            **lm_kwargs,
+            tools=tools,
+            **request_kwargs,
         )
+        return _RenderedAdapterRequest(request=request, call_plan=call_plan, context=context)
+
+    def _type_feature_handlers(self) -> list[_TypeFeatureHandler]:
+        return [_ToolTypeHandler(), _ReasoningTypeHandler(), _CitationsTypeHandler()]
+
+    def _prepare_call_plan(self, call: _AdapterCallPlan, context: _CallContext) -> None:
+        for field_name, field_info in call.source_signature.output_fields.items():
+            annotation = self._type_annotation_class(field_info.annotation)
+            if annotation is not None:
+                call.output_parsers[field_name] = annotation.default_parse_output
+
+        for handler in self._type_feature_handlers():
+            handler.prepare(call, context)
+
+        if (
+            call.render_signature is not call.source_signature
+            and call.source_signature.instructions == self._default_signature_instructions(call.source_signature)
+        ):
+            call.render_signature = call.render_signature.with_instructions(
+                self._default_signature_instructions(call.render_signature)
+            )
+
+    @staticmethod
+    def _default_signature_instructions(signature: type[Signature]) -> str:
+        inputs = ", ".join([f"`{field}`" for field in signature.input_fields])
+        outputs = ", ".join([f"`{field}`" for field in signature.output_fields])
+        if not outputs:
+            return f"Given the fields {inputs}, follow the instructions."
+        return f"Given the fields {inputs}, produce the fields {outputs}."
+
+    def _format_request_messages(
+        self,
+        call_plan: _AdapterCallPlan,
+        demos: list[dict[str, Any]],
+        context: _CallContext,
+    ) -> list[LMMessage | dict[str, Any]]:
+        format_signature = inspect.signature(self.format)
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in format_signature.parameters.values())
+        kwargs: dict[str, Any] = {}
+        if accepts_kwargs or "use_native_tool_calls" in format_signature.parameters:
+            kwargs["use_native_tool_calls"] = bool(call_plan.tools)
+        if accepts_kwargs or "context" in format_signature.parameters:
+            kwargs["context"] = context
+        if accepts_kwargs or "source_signature" in format_signature.parameters:
+            kwargs["source_signature"] = call_plan.source_signature
+        if accepts_kwargs or "prepared_messages" in format_signature.parameters:
+            kwargs["prepared_messages"] = call_plan.messages
+        sentinel = object()
+        previous_context = getattr(self, "_call_context", sentinel)
+        self._call_context = context
+        try:
+            messages = self.format(call_plan.render_signature, demos, call_plan.inputs, **kwargs)
+        finally:
+            if previous_context is sentinel:
+                del self._call_context
+            else:
+                self._call_context = previous_context
+
+        if not (accepts_kwargs or "prepared_messages" in format_signature.parameters):
+            messages = [*messages, *call_plan.messages]
+        return messages
+
+    def _prepare_request_kwargs(
+        self,
+        lm: BaseLM,
+        lm_kwargs: dict[str, Any],
+        source_signature: type[Signature],
+        render_signature: type[Signature],
+        context: _CallContext,
+    ) -> dict[str, Any]:
+        return dict(lm_kwargs)
 
     def _call_lm(self, lm: BaseLM, request: LMRequest) -> LMResponse:
         """Call current `BaseLM` through the normalized request/response boundary.
@@ -381,6 +463,116 @@ class Adapter:
         """
         return lm_response_from_legacy_outputs(outputs, request)
 
+    def _parse_response(
+        self,
+        source_signature: type[Signature],
+        call_plan: _AdapterCallPlan,
+        response: LMResponse,
+        context: _CallContext,
+    ) -> list[dict[str, Any]]:
+        """Parse a normalized LM response into dictionaries for the source signature."""
+        values = []
+
+        for output in response.outputs:
+            if output.metadata.get("empty_legacy_outputs"):
+                continue
+
+            field_parts: dict[str, list[LMPart]] = {}
+            has_text_output = bool(output.text and call_plan.render_signature.output_fields)
+            if has_text_output:
+                field_parts = self.parse_output_fields_to_parts(output, call_plan.render_signature)
+
+            value: dict[str, Any] = {}
+            for field_name, field_info in call_plan.render_signature.output_fields.items():
+                if field_name in field_parts:
+                    value[field_name] = self._parse_field_from_parts(
+                        field_name,
+                        field_info,
+                        call_plan.render_signature,
+                        field_parts[field_name],
+                        output,
+                        context,
+                        call_plan.output_parsers.get(field_name),
+                    )
+
+            before_type_handler_count = len(value)
+            for handler in self._type_feature_handlers():
+                handler.parse(value, output, call_plan, context)
+            parsed_by_type_handler = len(value) > before_type_handler_count
+
+            for field_name in source_signature.output_fields:
+                value.setdefault(field_name, None)
+
+            if not (field_parts or parsed_by_type_handler):
+                raise AdapterParseError(
+                    adapter_name=type(self).__name__,
+                    signature=source_signature,
+                    lm_response=str(output.to_output_dict()),
+                    message="The LM returned an empty or null response.",
+                )
+
+            if output.logprobs is not None:
+                value["logprobs"] = output.logprobs
+
+            self._validate_tool_call_parallel_policy(source_signature, value)
+            values.append(value)
+
+        return values
+
+    def _parse_field_from_parts(
+        self,
+        field_name: str,
+        field_info: FieldInfo,
+        signature: type[Signature],
+        parts: list[LMPart],
+        output: LMOutput,
+        context: _CallContext,
+        output_parser: _OutputParser | None = None,
+    ) -> Any:
+        if output_parser is not None:
+            return output_parser(
+                _TypeParseContext(
+                    field_name=field_name,
+                    field_info=field_info,
+                    signature=signature,
+                    adapter=self,
+                    call_context=context,
+                    parts=parts,
+                    lm_output=output,
+                )
+            )
+
+        annotation = self._type_annotation_class(field_info.annotation)
+        if annotation is not None:
+            return annotation.default_parse_output(
+                _TypeParseContext(
+                    field_name=field_name,
+                    field_info=field_info,
+                    signature=signature,
+                    adapter=self,
+                    call_context=context,
+                    parts=parts,
+                    lm_output=output,
+                )
+            )
+        return self.lm_parts_to_value(parts, field_info)
+
+    def _validate_tool_call_parallel_policy(self, signature: type[Signature], value: dict[str, Any]) -> None:
+        if self.allow_parallel_tool_calls is not False:
+            return
+
+        tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
+        if not tool_call_output_field_name or tool_call_output_field_name not in value:
+            return
+
+        tool_calls = value[tool_call_output_field_name]
+        if tool_calls is None:
+            return
+        if not isinstance(tool_calls, ToolCalls):
+            tool_calls = ToolCalls.model_validate(tool_calls)
+            value[tool_call_output_field_name] = tool_calls
+        tool_calls.validate_max_items(1)
+
     def __call__(
         self,
         lm: BaseLM,
@@ -405,16 +597,9 @@ class Adapter:
             List of dictionaries representing parsed LM responses. Each dictionary contains keys matching the
             signature's output field names. For multiple generations (n > 1), returns multiple dictionaries.
         """
-        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
-        messages = self.format(processed_signature, demos, inputs)
-        request = self._render_request(lm, lm_kwargs, messages)
-        response = self._call_lm(lm, request)
-        # TODO(adapters-response): We normalize at the LM boundary, but still
-        # convert back to legacy postprocess dictionaries here to keep this PR
-        # behavior-preserving. Replace with direct `LMResponse` parsing once the
-        # explicit adapter plan exists.
-        outputs = legacy_outputs_from_lm_response(response)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+        rendered = self._render_request(lm, lm_kwargs, signature, demos, inputs)
+        response = self._call_lm(lm, rendered.request)
+        return self._parse_response(signature, rendered.call_plan, response, rendered.context)
 
     async def acall(
         self,
@@ -424,20 +609,20 @@ class Adapter:
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
-        messages = self.format(processed_signature, demos, inputs)
-        request = self._render_request(lm, lm_kwargs, messages)
-        response = await self._acall_lm(lm, request)
-        # TODO(adapters-response): Keep in sync with `__call__()` until both use
-        # direct `LMResponse` parsing.
-        outputs = legacy_outputs_from_lm_response(response)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+        rendered = self._render_request(lm, lm_kwargs, signature, demos, inputs)
+        response = await self._acall_lm(lm, rendered.request)
+        return self._parse_response(signature, rendered.call_plan, response, rendered.context)
 
     def format(
         self,
         signature: type[Signature],
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
+        *,
+        use_native_tool_calls: bool = False,
+        context: _CallContext | None = None,
+        source_signature: type[Signature] | None = None,
+        prepared_messages: list[LMMessage] | None = None,
     ) -> list[dict[str, Any]]:
         """Format the input messages for the LM call.
 
