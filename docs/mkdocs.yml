@@ -170,6 +170,7 @@ nav:
             - disable_logging: api/utils/disable_logging.md
             - enable_litellm_logging: api/utils/enable_litellm_logging.md
             - enable_logging: api/utils/enable_logging.md
+            - exceptions: api/utils/exceptions.md
             - inspect_history: api/utils/inspect_history.md
             - load: api/utils/load.md
             - streamify: api/utils/streamify.md
