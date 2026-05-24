@@ -368,7 +368,7 @@ def test_chat_adapter_format_exact_messages_with_history():
                  "\n"
                  "[[ ## completed ## ]]\n"
                  "In adhering to this structure, your objective is: \n"
-                 "        Given the fields `history`, `question`, produce the fields `answer`."},
+                 "        Given the fields `question`, produce the fields `answer`."},
      {"role": "user", "content": "[[ ## question ## ]]\nWhat is 1+1?"},
      {"role": "assistant", "content": "[[ ## answer ## ]]\n2\n\n[[ ## completed ## ]]\n"},
      {"role": "user", "content": "[[ ## question ## ]]\nWhat is 2+2?"},

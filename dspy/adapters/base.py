@@ -663,33 +663,93 @@ class Adapter:
         Returns:
             A list of multiturn messages as expected by the LM.
         """
+        return [
+            message_to_openai_chat(message)
+            for message in self.render_messages(
+                signature,
+                demos,
+                inputs,
+                use_native_tool_calls=use_native_tool_calls,
+                context=context,
+                source_signature=source_signature,
+                prepared_messages=prepared_messages,
+            )
+        ]
+
+    def render_messages(
+        self,
+        signature: type[Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+        *,
+        use_native_tool_calls: bool = False,
+        context: _CallContext | None = None,
+        source_signature: type[Signature] | None = None,
+        prepared_messages: list[LMMessage] | None = None,
+    ) -> list[LMMessage]:
+        """Render adapter messages as normalized LM messages."""
+        context = context or self._default_call_context(use_native_tool_calls=use_native_tool_calls)
+        source_signature = source_signature or signature
         inputs_copy = dict(inputs)
 
-        # If the signature and inputs have conversation history, we need to format the conversation history and
-        # remove the history field from the signature.
-        history_field_name = self._get_history_field_name(signature)
+        render_signature = signature
+        conversation_history: list[LMMessage] = []
+        history_field_name = self._get_history_field_name(source_signature)
         if history_field_name:
-            # In order to format the conversation history, we need to remove the history field from the signature.
-            signature_without_history = signature.delete(history_field_name)
-            conversation_history = self.format_conversation_history(
-                signature_without_history,
-                history_field_name,
-                inputs_copy,
-            )
+            if history_field_name in render_signature.fields:
+                previous_render_signature = render_signature
+                render_signature = render_signature.delete(history_field_name)
+                if previous_render_signature.instructions == self._default_signature_instructions(
+                    previous_render_signature
+                ):
+                    render_signature = render_signature.with_instructions(
+                        self._default_signature_instructions(render_signature)
+                    )
+            history_obj = inputs_copy.pop(history_field_name, None)
+            if history_obj is not None:
+                conversation_history = self.format_history(
+                    history_obj,
+                    source_signature.delete(history_field_name),
+                    context=context,
+                )
 
-        messages = []
-        system_message = self.format_system_message(signature)
-        messages.append({"role": "system", "content": system_message})
-        messages.extend(self.format_demos(signature, demos))
-        if history_field_name:
-            # Conversation history and current input
-            content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)
-            messages.extend(conversation_history)
-            messages.append({"role": "user", "content": content})
-        else:
-            # Only current input
-            content = self.format_user_message_content(signature, inputs_copy, main_request=True)
-            messages.append({"role": "user", "content": content})
+        messages: list[LMMessage | dict[str, Any]] = [
+            {"role": "system", "content": self.format_system_message(render_signature)}
+        ]
+        messages.extend(
+            self.format_demos(
+                source_signature.delete(history_field_name) if history_field_name else source_signature,
+                demos,
+                context=context,
+            )
+        )
+        messages.extend(conversation_history)
+        messages.extend(prepared_messages or [])
+        messages.extend(
+            self._format_input_messages(
+                render_signature,
+                inputs_copy,
+                main_request=True,
+                context=context,
+            )
+        )
+
+        return self._coerce_lm_messages(messages)
+
+    def format_history(
+        self,
+        history: History,
+        signature: type[Signature],
+        *,
+        use_native_tool_calls: bool = False,
+        context: _CallContext | None = None,
+    ) -> list[LMMessage]:
+        """Render stored field history using this adapter's field format."""
+        context = context or self._default_call_context(use_native_tool_calls=use_native_tool_calls)
+        messages: list[LMMessage] = []
+        for message_idx, entry in enumerate(history.messages):
+            if not isinstance(entry, dict):
+                continue
 
         return [_expand_legacy_custom_type_markers_in_chat_message(message) for message in messages]
 
