@@ -2,6 +2,7 @@ import datetime
 import importlib
 import inspect
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, TextIO
 
 from dspy.dsp.utils import settings
@@ -42,6 +43,22 @@ def _import_lm_class(class_path: str) -> type:
     raise ImportError(f"Could not import serialized LM class `{class_path}`.") from last_error
 
 
+@dataclass
+class LMCapabilities:
+    """Optional model and deployment metadata for an LM backend.
+
+    Capabilities are descriptive hints. Adapters can use them to select native
+    paths, but concrete LM implementations still decide how to handle requests.
+    """
+
+    function_calling: bool = False
+    reasoning: bool = False
+    response_schema: bool = False
+    streaming: bool = False
+    supported_params: set[str] = field(default_factory=set)
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+
 class BaseLM:
     """Base class for handling LLM calls.
 
@@ -51,7 +68,8 @@ class BaseLM:
     [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
 
     Subclasses whose state is captured by `BaseLM.__init__` can use the default `dump_state` and `load_state`
-    methods. Subclasses with extra persistent state should override both methods.
+    methods. Subclasses with extra persistent state should override both methods. To describe native provider
+    features, custom LMs should override `get_capabilities()` and return `dspy.LMCapabilities`.
 
     Examples:
 
@@ -62,23 +80,13 @@ class BaseLM:
 
 
     class MyLM(dspy.BaseLM):
-        @property
-        def supports_function_calling(self) -> bool:
-            return self.model.startswith("openai/gpt-4o")
-
-        @property
-        def supports_reasoning(self) -> bool:
-            return self.model.startswith("anthropic/claude-3-7")
-
-        @property
-        def supports_response_schema(self) -> bool:
-            return self.model.startswith("openai/gpt-4o")
-
-        @property
-        def supported_params(self) -> set[str]:
-            if self.model.startswith("openai/gpt-4o"):
-                return {"response_format"}  # accepts response_format=...
-            return set()
+        def get_capabilities(self) -> dspy.LMCapabilities:
+            is_gpt4o = self.model.startswith("openai/gpt-4o")
+            return dspy.LMCapabilities(
+                function_calling=is_gpt4o,
+                response_schema=is_gpt4o,
+                supported_params={"response_format"} if is_gpt4o else set(),
+            )
 
         def forward(self, prompt, messages=None, **kwargs):
             client = OpenAI()
@@ -113,24 +121,33 @@ class BaseLM:
         self.history = []
 
     @property
+    def capabilities(self) -> LMCapabilities:
+        """Native metadata available for this model instance."""
+        return self.get_capabilities()
+
+    def get_capabilities(self) -> LMCapabilities:
+        """Return optional native model and deployment hints."""
+        return LMCapabilities()
+
+    @property
     def supports_function_calling(self) -> bool:
         """Whether the model supports function calling (tool use)."""
-        return False
+        return self.capabilities.function_calling
 
     @property
     def supports_reasoning(self) -> bool:
         """Whether the model supports native reasoning (extended thinking)."""
-        return False
+        return self.capabilities.reasoning
 
     @property
     def supports_response_schema(self) -> bool:
         """Whether the model supports structured output via response schema."""
-        return False
+        return self.capabilities.response_schema
 
     @property
     def supported_params(self) -> set[str]:
         """Set of supported OpenAI-style parameter names for the model."""
-        return set()
+        return set(self.capabilities.supported_params)
 
     def _process_lm_response(self, response, prompt, messages, **kwargs):
         merged_kwargs = {**self.kwargs, **kwargs}

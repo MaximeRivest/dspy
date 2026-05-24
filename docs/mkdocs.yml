@@ -111,6 +111,7 @@ nav:
             - BaseLM: api/models/BaseLM.md
             - Embedder: api/models/Embedder.md
             - LM: api/models/LM.md
+            - LMCapabilities: api/models/LMCapabilities.md
         - Modules:
             - BestOfN: api/modules/BestOfN.md
             - ChainOfThought: api/modules/ChainOfThought.md

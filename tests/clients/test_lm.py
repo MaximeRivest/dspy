@@ -339,7 +339,7 @@ def test_reasoning_model_requirements(model_name):
     # Should raise assertion error if temperature or max_tokens requirements not met
     with pytest.raises(
         ValueError,
-        match="reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None",
+        match=r"reasoning models require passing temperature=1\.0 or None and max_tokens >= 16000 or None",
     ):
         dspy.LM(
             model=model_name,
@@ -376,6 +376,36 @@ def test_gpt_5_chat_not_reasoning_model():
     assert "max_tokens" in lm.kwargs
     assert lm.kwargs["max_tokens"] == 1000
     assert lm.kwargs["temperature"] == 0.7
+
+
+def test_base_lm_default_capabilities():
+    lm = dspy.BaseLM(model="custom-model")
+
+    assert lm.capabilities == dspy.LMCapabilities()
+    assert not lm.supports_function_calling
+    assert not lm.supports_reasoning
+    assert not lm.supports_response_schema
+    assert lm.supported_params == set()
+
+
+def test_base_lm_custom_capabilities():
+    class CustomLM(dspy.BaseLM):
+        def get_capabilities(self):
+            return dspy.LMCapabilities(
+                function_calling=True,
+                reasoning=True,
+                response_schema=True,
+                streaming=True,
+                supported_params={"response_format"},
+            )
+
+    lm = CustomLM(model="custom-model")
+
+    assert lm.supports_function_calling
+    assert lm.supports_reasoning
+    assert lm.supports_response_schema
+    assert lm.supported_params == {"response_format"}
+    assert lm.capabilities.streaming
 
 
 def test_dump_state():

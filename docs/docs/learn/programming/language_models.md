@@ -320,3 +320,37 @@ program.load("program.json", allow_unsafe_lm_state=True)
 
 Use this only for files you trust. The flag also preserves serialized LM endpoint configuration such as `api_base`, `base_url`, and `model_list`.
 
+### Describing custom LM capabilities
+
+The recommended way for a custom LM to describe native provider features is to override `get_capabilities()` and return `dspy.LMCapabilities`. DSPy adapters can use these hints to choose native paths for function calling, reasoning, response schemas, streaming, and other provider-specific features.
+
+```python linenums="1"
+class MyLM(dspy.BaseLM):
+    def get_capabilities(self) -> dspy.LMCapabilities:
+        return dspy.LMCapabilities(
+            function_calling=True,
+            reasoning=False,
+            response_schema=True,
+            streaming=True,
+            supported_params={"response_format"},
+        )
+```
+
+Consumers can read either the full capability object:
+
+```python linenums="1"
+if lm.capabilities.function_calling:
+    ...
+```
+
+or the compatibility properties:
+
+```python linenums="1"
+lm.supports_function_calling
+lm.supports_reasoning
+lm.supports_response_schema
+lm.supported_params
+```
+
+For new custom LMs, prefer `get_capabilities()` over overriding each `supports_*` property individually. The built-in `dspy.LM` derives these hints from LiteLLM.
+

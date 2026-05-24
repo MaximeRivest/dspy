@@ -8,11 +8,17 @@
             - __call__
             - acall
             - aforward
+            - capabilities
             - copy
             - dump_state
             - forward
+            - get_capabilities
             - inspect_history
             - load_state
+            - supported_params
+            - supports_function_calling
+            - supports_reasoning
+            - supports_response_schema
             - update_history
         show_source: true
         show_root_heading: true

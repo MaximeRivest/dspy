@@ -12,12 +12,17 @@
             - dump_state
             - finetune
             - forward
+            - get_capabilities
             - infer_provider
             - inspect_history
             - kill
             - launch
             - load_state
             - reinforce
+            - supported_params
+            - supports_function_calling
+            - supports_reasoning
+            - supports_response_schema
             - update_history
         show_source: true
         show_root_heading: true
