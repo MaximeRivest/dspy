@@ -7,6 +7,7 @@ import pydantic
 import regex
 from pydantic.fields import FieldInfo
 
+from dspy.adapters._type_runtime import _CallContext
 from dspy.adapters.chat_adapter import ChatAdapter, FieldInfoWithName
 from dspy.adapters.types.tool import ToolCalls
 from dspy.adapters.utils import (
@@ -17,6 +18,7 @@ from dspy.adapters.utils import (
     translate_field_type,
 )
 from dspy.clients.base_lm import BaseLM
+from dspy.core.types import LMOutput, LMPart, LMTextPart
 from dspy.signatures.signature import Signature, SignatureMeta
 from dspy.utils.callback import BaseCallback
 from dspy.utils.exceptions import AdapterParseError
@@ -38,9 +40,20 @@ def _has_open_ended_mapping(signature: SignatureMeta) -> bool:
 
 
 class JSONAdapter(ChatAdapter):
-    def __init__(self, callbacks: list[BaseCallback] | None = None, use_native_function_calling: bool = True):
+    def __init__(
+        self,
+        callbacks: list[BaseCallback] | None = None,
+        use_native_function_calling: bool = True,
+        native_response_types: list[type[type]] | None = None,
+        allow_parallel_tool_calls: bool | None = None,
+    ):
         # JSONAdapter uses native function calling by default.
-        super().__init__(callbacks=callbacks, use_native_function_calling=use_native_function_calling)
+        super().__init__(
+            callbacks=callbacks,
+            use_native_function_calling=use_native_function_calling,
+            native_response_types=native_response_types,
+            allow_parallel_tool_calls=allow_parallel_tool_calls,
+        )
 
     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):
         """Common call logic to be used for both sync and async calls."""
@@ -68,10 +81,6 @@ class JSONAdapter(ChatAdapter):
             return result
 
         try:
-            structured_output_model = _get_structured_outputs_response_format(
-                signature, self.use_native_function_calling
-            )
-            lm_kwargs["response_format"] = structured_output_model
             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
         except Exception:
             logger.warning("Failed to use structured output format, falling back to JSON mode.")
@@ -91,15 +100,37 @@ class JSONAdapter(ChatAdapter):
             return await result
 
         try:
-            structured_output_model = _get_structured_outputs_response_format(
-                signature, self.use_native_function_calling
-            )
-            lm_kwargs["response_format"] = structured_output_model
             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
         except Exception:
             logger.warning("Failed to use structured output format, falling back to JSON mode.")
             lm_kwargs["response_format"] = {"type": "json_object"}
             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+
+    def _prepare_request_kwargs(
+        self,
+        lm: BaseLM,
+        lm_kwargs: dict[str, Any],
+        source_signature: type[Signature],
+        render_signature: type[Signature],
+        context: _CallContext,
+    ) -> dict[str, Any]:
+        request_kwargs = dict(lm_kwargs)
+        if "response_format" in request_kwargs or "response_format" not in lm.supported_params:
+            return request_kwargs
+
+        has_tool_calls = any(field.annotation == ToolCalls for field in source_signature.output_fields.values())
+        if (
+            _has_open_ended_mapping(render_signature)
+            or (not self.use_native_function_calling and has_tool_calls)
+            or not lm.supports_response_schema
+        ):
+            request_kwargs["response_format"] = {"type": "json_object"}
+            return request_kwargs
+
+        request_kwargs["response_format"] = _get_structured_outputs_response_format(
+            render_signature, self.use_native_function_calling
+        )
+        return request_kwargs
 
     def format_field_structure(self, signature: type[Signature]) -> str:
         parts = []
@@ -116,11 +147,15 @@ class JSONAdapter(ChatAdapter):
 
         parts.append("Inputs will have the following structure:")
         parts.append(format_signature_fields_for_instructions(signature.input_fields, role="user"))
-        parts.append("Outputs will be a JSON object with the following fields.")
-        parts.append(format_signature_fields_for_instructions(signature.output_fields, role="assistant"))
+        if signature.output_fields:
+            parts.append("Outputs will be a JSON object with the following fields.")
+            parts.append(format_signature_fields_for_instructions(signature.output_fields, role="assistant"))
         return "\n\n".join(parts).strip()
 
-    def user_message_output_requirements(self, signature: type[Signature]) -> str:
+    def user_message_output_requirements(self, signature: type[Signature]) -> str | None:
+        if not signature.output_fields:
+            return None
+
         def type_info(v):
             return (
                 f" (must be formatted as a valid Python {get_annotation_name(v.annotation)})"
@@ -146,6 +181,45 @@ class JSONAdapter(ChatAdapter):
         return self.format_field_with_value(fields_with_values, role="assistant")
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+        fields = self._parse_json_fields(completion, signature)
+        fields = {k: v for k, v in fields.items() if k in signature.output_fields}
+
+        # Attempt to cast each value to type signature.output_fields[k].annotation.
+        for k, v in fields.items():
+            if k in signature.output_fields:
+                fields[k] = parse_value(v, signature.output_fields[k].annotation)
+
+        if fields.keys() != signature.output_fields.keys():
+            raise AdapterParseError(
+                adapter_name="JSONAdapter",
+                signature=signature,
+                lm_response=completion,
+                parsed_result=fields,
+            )
+
+        return fields
+
+    def parse_output_fields_to_parts(
+        self,
+        output: LMOutput,
+        signature: type[Signature],
+    ) -> dict[str, list[LMPart]]:
+        completion = output.text or ""
+        fields = self._parse_json_fields(completion, signature)
+        fields = {k: v for k, v in fields.items() if k in signature.output_fields}
+        if fields.keys() != signature.output_fields.keys():
+            raise AdapterParseError(
+                adapter_name="JSONAdapter",
+                signature=signature,
+                lm_response=completion,
+                parsed_result=fields,
+            )
+        return {
+            key: [LMTextPart(text=value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))]
+            for key, value in fields.items()
+        }
+
+    def _parse_json_fields(self, completion: str, signature: type[Signature]) -> dict[str, Any]:
         fields = json_repair.loads(completion)
 
         if not isinstance(fields, dict):
@@ -162,22 +236,6 @@ class JSONAdapter(ChatAdapter):
                 lm_response=completion,
                 message="LM response cannot be serialized to a JSON object.",
             )
-
-        fields = {k: v for k, v in fields.items() if k in signature.output_fields}
-
-        # Attempt to cast each value to type signature.output_fields[k].annotation.
-        for k, v in fields.items():
-            if k in signature.output_fields:
-                fields[k] = parse_value(v, signature.output_fields[k].annotation)
-
-        if fields.keys() != signature.output_fields.keys():
-            raise AdapterParseError(
-                adapter_name="JSONAdapter",
-                signature=signature,
-                lm_response=completion,
-                parsed_result=fields,
-            )
-
         return fields
 
     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any], role: str = "user") -> str:

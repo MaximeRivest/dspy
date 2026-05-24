@@ -5,6 +5,7 @@ from pydantic.fields import FieldInfo
 
 from dspy.adapters.chat_adapter import ChatAdapter, FieldInfoWithName
 from dspy.adapters.utils import format_field_value, translate_field_type
+from dspy.core.types import LMOutput, LMPart, LMTextPart
 from dspy.signatures.signature import Signature
 from dspy.utils.callback import BaseCallback
 
@@ -38,7 +39,8 @@ class XMLAdapter(ChatAdapter):
             )
 
         parts.append(format_signature_fields_for_instructions(signature.input_fields))
-        parts.append(format_signature_fields_for_instructions(signature.output_fields))
+        if signature.output_fields:
+            parts.append(format_signature_fields_for_instructions(signature.output_fields))
         return "\n\n".join(parts).strip()
 
     def format_user_message_content(
@@ -79,19 +81,17 @@ class XMLAdapter(ChatAdapter):
             },
         )
 
-    def user_message_output_requirements(self, signature: type[Signature]) -> str:
+    def user_message_output_requirements(self, signature: type[Signature]) -> str | None:
+        if not signature.output_fields:
+            return None
+
         message = "Respond with the corresponding output fields wrapped in XML tags "
         message += ", then ".join(f"`<{f}>`" for f in signature.output_fields)
         message += "."
         return message
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
-        fields = {}
-        for match in self.field_pattern.finditer(completion):
-            name = match.group("name")
-            content = match.group("content").strip()
-            if name in signature.output_fields and name not in fields:
-                fields[name] = content
+        fields = self._parse_xml_fields(completion, signature)
         # Cast values using base class parse_value helper
         for k, v in fields.items():
             fields[k] = self._parse_field_value(signature.output_fields[k], v, completion, signature)
@@ -104,6 +104,39 @@ class XMLAdapter(ChatAdapter):
                 lm_response=completion,
                 parsed_result=fields,
             )
+        return fields
+
+    def parse_output_fields_to_parts(
+        self,
+        output: LMOutput,
+        signature: type[Signature],
+    ) -> dict[str, list[LMPart]]:
+        completion = output.text or ""
+        fields = self._parse_xml_fields(completion, signature)
+        if fields.keys() != signature.output_fields.keys():
+            from dspy.utils.exceptions import AdapterParseError
+
+            raise AdapterParseError(
+                adapter_name="XMLAdapter",
+                signature=signature,
+                lm_response=completion,
+                parsed_result=fields,
+            )
+        return {key: [LMTextPart(text=value)] for key, value in fields.items()}
+
+    def wrap_input_field_parts(self, field_name: str, parts: list[LMPart]) -> list[LMPart]:
+        return [LMTextPart(text=f"<{field_name}>\n"), *parts, LMTextPart(text=f"\n</{field_name}>")]
+
+    def wrap_output_field_parts(self, field_name: str, parts: list[LMPart]) -> list[LMPart]:
+        return [LMTextPart(text=f"<{field_name}>\n"), *parts, LMTextPart(text=f"\n</{field_name}>")]
+
+    def _parse_xml_fields(self, completion: str, signature: type[Signature]) -> dict[str, str]:
+        fields = {}
+        for match in self.field_pattern.finditer(completion):
+            name = match.group("name")
+            content = match.group("content").strip()
+            if name in signature.output_fields and name not in fields:
+                fields[name] = content
         return fields
 
     def _parse_field_value(self, field_info, raw, completion, signature):

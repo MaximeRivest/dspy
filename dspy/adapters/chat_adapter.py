@@ -13,6 +13,7 @@ from dspy.adapters.utils import (
     translate_field_type,
 )
 from dspy.clients.base_lm import BaseLM
+from dspy.core.types import LMOutput, LMPart, LMTextPart
 from dspy.signatures.signature import Signature
 from dspy.utils.callback import BaseCallback
 from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
@@ -42,6 +43,7 @@ class ChatAdapter(Adapter):
         callbacks: list[BaseCallback] | None = None,
         use_native_function_calling: bool = False,
         native_response_types: list[type[type]] | None = None,
+        allow_parallel_tool_calls: bool | None = None,
         use_json_adapter_fallback: bool = True,
     ):
         """
@@ -49,6 +51,7 @@ class ChatAdapter(Adapter):
             callbacks: List of callback functions to execute during adapter methods.
             use_native_function_calling: Whether to enable native function calling capabilities.
             native_response_types: List of output field types handled by native LM features.
+            allow_parallel_tool_calls: Whether to allow multiple tool calls in one LM turn.
             use_json_adapter_fallback: Whether to automatically fallback to JSONAdapter if the ChatAdapter fails.
                 If True, when an error occurs (except ContextWindowExceededError), the adapter will retry using
                 JSONAdapter. Defaults to True.
@@ -57,6 +60,7 @@ class ChatAdapter(Adapter):
             callbacks=callbacks,
             use_native_function_calling=use_native_function_calling,
             native_response_types=native_response_types,
+            allow_parallel_tool_calls=allow_parallel_tool_calls,
         )
         self.use_json_adapter_fallback = use_json_adapter_fallback
 
@@ -82,7 +86,12 @@ class ChatAdapter(Adapter):
                 # On context window exceeded error, already using JSONAdapter, or use_json_adapter_fallback is False
                 # we don't want to retry with a different adapter. Raise the original error instead of the fallback error.
                 raise e
-            return JSONAdapter()(lm, lm_kwargs, signature, demos, inputs)
+            return JSONAdapter(
+                callbacks=self.callbacks,
+                use_native_function_calling=self.use_native_function_calling,
+                native_response_types=self.native_response_types,
+                allow_parallel_tool_calls=self.allow_parallel_tool_calls,
+            )(lm, lm_kwargs, signature, demos, inputs)
 
     async def acall(
         self,
@@ -106,13 +115,18 @@ class ChatAdapter(Adapter):
                 # On context window exceeded error, already using JSONAdapter, or use_json_adapter_fallback is False
                 # we don't want to retry with a different adapter. Raise the original error instead of the fallback error.
                 raise e
-            return await JSONAdapter().acall(lm, lm_kwargs, signature, demos, inputs)
+            return await JSONAdapter(
+                callbacks=self.callbacks,
+                use_native_function_calling=self.use_native_function_calling,
+                native_response_types=self.native_response_types,
+                allow_parallel_tool_calls=self.allow_parallel_tool_calls,
+            ).acall(lm, lm_kwargs, signature, demos, inputs)
 
     def format_field_description(self, signature: type[Signature]) -> str:
-        return (
-            f"Your input fields are:\n{get_field_description_string(signature.input_fields)}\n"
-            f"Your output fields are:\n{get_field_description_string(signature.output_fields)}"
-        )
+        description = f"Your input fields are:\n{get_field_description_string(signature.input_fields)}"
+        if signature.output_fields:
+            description += f"\nYour output fields are:\n{get_field_description_string(signature.output_fields)}"
+        return description
 
     def format_field_structure(self, signature: type[Signature]) -> str:
         """
@@ -132,8 +146,9 @@ class ChatAdapter(Adapter):
             )
 
         parts.append(format_signature_fields_for_instructions(signature.input_fields))
-        parts.append(format_signature_fields_for_instructions(signature.output_fields))
-        parts.append("[[ ## completed ## ]]\n")
+        if signature.output_fields:
+            parts.append(format_signature_fields_for_instructions(signature.output_fields))
+            parts.append("[[ ## completed ## ]]\n")
         return "\n\n".join(parts).strip()
 
     def format_task_description(self, signature: type[Signature]) -> str:
@@ -164,7 +179,7 @@ class ChatAdapter(Adapter):
         messages.append(suffix)
         return "\n\n".join(messages).strip()
 
-    def user_message_output_requirements(self, signature: type[Signature]) -> str:
+    def user_message_output_requirements(self, signature: type[Signature]) -> str | None:
         """Returns a simplified format reminder for the language model.
 
         In chat-based interactions, language models may lose track of the required output format
@@ -181,6 +196,8 @@ class ChatAdapter(Adapter):
             This is a more lightweight version of `format_field_structure` specifically designed
             for inline reminders within chat messages.
         """
+        if not signature.output_fields:
+            return None
 
         def type_info(v):
             if v.annotation is not str:
@@ -209,20 +226,7 @@ class ChatAdapter(Adapter):
         return assistant_message_content
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
-        sections = [(None, [])]
-
-        for line in completion.splitlines():
-            match = field_header_pattern.match(line.strip())
-            if match:
-                # If the header pattern is found, split the rest of the line as content
-                header = match.group(1)
-                remaining_content = line[match.end() :].strip()
-                sections.append((header, [remaining_content] if remaining_content else []))
-            else:
-                sections[-1][1].append(line)
-
-        sections = [(k, "\n".join(v).strip()) for k, v in sections]
-
+        sections = self._split_field_sections(completion)
         fields = {}
         for k, v in sections:
             if (k not in fields) and (k in signature.output_fields):
@@ -244,6 +248,47 @@ class ChatAdapter(Adapter):
             )
 
         return fields
+
+    def parse_output_fields_to_parts(
+        self,
+        output: LMOutput,
+        signature: type[Signature],
+    ) -> dict[str, list[LMPart]]:
+        completion = output.text or ""
+        sections = self._split_field_sections(completion)
+        fields: dict[str, list[LMPart]] = {}
+        for key, value in sections:
+            if key not in fields and key in signature.output_fields:
+                fields[key] = [LMTextPart(text=value)]
+        if fields.keys() != signature.output_fields.keys():
+            raise AdapterParseError(
+                adapter_name="ChatAdapter",
+                signature=signature,
+                lm_response=completion,
+                parsed_result={key: value[0].text if value else "" for key, value in fields.items()},
+            )
+        return fields
+
+    def wrap_input_field_parts(self, field_name: str, parts: list[LMPart]) -> list[LMPart]:
+        return [LMTextPart(text=f"[[ ## {field_name} ## ]]\n"), *parts]
+
+    def wrap_output_field_parts(self, field_name: str, parts: list[LMPart]) -> list[LMPart]:
+        return [LMTextPart(text=f"[[ ## {field_name} ## ]]\n"), *parts]
+
+    def _split_field_sections(self, completion: str) -> list[tuple[str | None, str]]:
+        sections = [(None, [])]
+
+        for line in completion.splitlines():
+            match = field_header_pattern.match(line.strip())
+            if match:
+                # If the header pattern is found, split the rest of the line as content
+                header = match.group(1)
+                remaining_content = line[match.end() :].strip()
+                sections.append((header, [remaining_content] if remaining_content else []))
+            else:
+                sections[-1][1].append(line)
+
+        return [(k, "\n".join(v).strip()) for k, v in sections]
 
     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any]) -> str:
         """

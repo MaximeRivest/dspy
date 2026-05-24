@@ -20,11 +20,11 @@ from dspy.adapters._type_runtime import (
     _AdapterCallPlan,
     _CallContext,
     _LMCapabilities,
+    _merge_lm_config,
     _OutputParser,
     _TypeFeatureHandler,
     _TypeParseContext,
     _TypeRenderContext,
-    _merge_lm_config,
 )
 from dspy.adapters.types import History, Type
 from dspy.adapters.types.reasoning import Reasoning
@@ -316,14 +316,6 @@ class Adapter:
 
         for handler in self._type_feature_handlers():
             handler.prepare(call, context)
-
-        if (
-            call.render_signature is not call.source_signature
-            and call.source_signature.instructions == self._default_signature_instructions(call.source_signature)
-        ):
-            call.render_signature = call.render_signature.with_instructions(
-                self._default_signature_instructions(call.render_signature)
-            )
 
     @staticmethod
     def _default_signature_instructions(signature: type[Signature]) -> str:
@@ -697,13 +689,11 @@ class Adapter:
         history_field_name = self._get_history_field_name(source_signature)
         if history_field_name:
             if history_field_name in render_signature.fields:
-                previous_render_signature = render_signature
                 render_signature = render_signature.delete(history_field_name)
-                if previous_render_signature.instructions == self._default_signature_instructions(
-                    previous_render_signature
-                ):
+                if source_signature.instructions == self._default_signature_instructions(source_signature):
+                    instruction_signature = source_signature.delete(history_field_name)
                     render_signature = render_signature.with_instructions(
-                        self._default_signature_instructions(render_signature)
+                        self._default_signature_instructions(instruction_signature)
                     )
             history_obj = inputs_copy.pop(history_field_name, None)
             if history_obj is not None:
@@ -1192,27 +1182,16 @@ class Adapter:
         """
         context = context or self._default_call_context(use_native_tool_calls=use_native_tool_calls)
         active_fields = signature.fields
-        complete_demos = []
-        incomplete_demos = []
+        messages = []
+        incomplete_demo_prefix = "This is an example of the task, though some input or output fields are not supplied."
 
         for demo in demos:
-            # Check if all fields are present and not None
             is_complete = all(k in demo and demo[k] is not None for k in active_fields)
-
-            # Check if demo has at least one input and one output field
             has_input = any(k in demo for k in signature.input_fields)
             has_output = any(k in demo for k in signature.output_fields)
+            if not (is_complete or (has_input and has_output)):
+                continue
 
-            if is_complete:
-                complete_demos.append(demo)
-            elif has_input and has_output:
-                # We only keep incomplete demos that have at least one input and one output field
-                incomplete_demos.append(demo)
-
-        messages = []
-
-        incomplete_demo_prefix = "This is an example of the task, though some input or output fields are not supplied."
-        for demo in incomplete_demos:
             demo_call = _AdapterCallPlan.from_signature(
                 signature,
                 {key: demo[key] for key in signature.input_fields if key in demo},
@@ -1231,7 +1210,7 @@ class Adapter:
                     demo_inputs,
                     main_request=False,
                     context=context,
-                    prefix=incomplete_demo_prefix,
+                    prefix="" if is_complete else incomplete_demo_prefix,
                 )
             )
             messages.extend(
@@ -1240,39 +1219,11 @@ class Adapter:
                     demo_outputs,
                     len(messages),
                     context=context,
-                    missing_field_message="Not supplied for this particular example. ",
-                )
-            )
-            messages.extend(demo_call.messages)
-
-        for demo in complete_demos:
-            demo_call = _AdapterCallPlan.from_signature(
-                signature,
-                {key: demo[key] for key in signature.input_fields if key in demo},
-                context.lm_kwargs,
-            )
-            self._prepare_call_plan(demo_call, context)
-            demo_inputs = {
-                key: demo_call.inputs[key]
-                for key in demo_call.render_signature.input_fields
-                if key in demo_call.inputs
-            }
-            demo_outputs = {key: demo[key] for key in signature.output_fields if key in demo}
-            messages.extend(
-                self._format_input_messages(
-                    demo_call.render_signature,
-                    demo_inputs,
-                    main_request=False,
-                    context=context,
-                )
-            )
-            messages.extend(
-                self._format_output_messages_for_call(
-                    demo_call,
-                    demo_outputs,
-                    len(messages),
-                    context=context,
-                    missing_field_message="Not supplied for this conversation history message. ",
+                    missing_field_message=(
+                        "Not supplied for this conversation history message. "
+                        if is_complete
+                        else "Not supplied for this particular example. "
+                    ),
                 )
             )
             messages.extend(demo_call.messages)
