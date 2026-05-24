@@ -1,6 +1,9 @@
 import pytest
 
 import dspy
+from dspy.adapters._type_feature_handlers import _ReasoningTypeHandler
+from dspy.adapters._type_runtime import _AdapterCallPlan
+from dspy.core.types import LMOutput, LMThinkingPart
 
 
 def test_reasoning_basic_operations():
@@ -109,3 +112,33 @@ def test_reasoning_error_message():
 
     with pytest.raises(AttributeError, match="`Reasoning` object has no attribute 'nonexistent_method'"):
         reasoning.nonexistent_method
+
+
+def test_reasoning_type_handler_uses_native_lm_output_and_config():
+    class ReasoningSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        reasoning: dspy.Reasoning = dspy.OutputField()
+
+    class NativeReasoningLM:
+        model = "anthropic/claude-3-7-sonnet"
+        model_type = "chat"
+        supports_function_calling = False
+        supports_reasoning = True
+        supports_response_schema = False
+        supported_params = frozenset()
+        kwargs = {}
+
+    adapter = dspy.Adapter()
+    context = adapter.build_call_context(NativeReasoningLM())
+    call = _AdapterCallPlan.from_signature(ReasoningSignature, {"question": "Q?"}, {})
+    type_handler = _ReasoningTypeHandler()
+
+    type_handler.prepare(call, context)
+
+    assert "reasoning" not in call.render_signature.output_fields
+    assert call.config.reasoning.effort == "low"
+
+    values = {}
+    type_handler.parse(values, LMOutput(parts=[LMThinkingPart(text="think")]), call, context)
+
+    assert values["reasoning"] == dspy.Reasoning(content="think")

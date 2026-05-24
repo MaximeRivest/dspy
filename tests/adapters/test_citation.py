@@ -2,6 +2,9 @@ import pydantic
 import pytest
 
 import dspy
+from dspy.adapters._type_feature_handlers import _CitationsTypeHandler
+from dspy.adapters._type_runtime import _AdapterCallPlan
+from dspy.core.types import LMCitationPart, LMOutput
 from dspy.experimental import Citations
 
 
@@ -106,6 +109,52 @@ def test_citations_format():
     assert formatted[1]["document_title"] == "Source"
 
 
+def test_citations_type_handler_uses_native_lm_output_and_parts():
+    class CitationSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        citations: Citations = dspy.OutputField()
+
+    adapter = dspy.Adapter(native_response_types=[Citations])
+    lm = dspy.LM(model="anthropic/claude-3-5-sonnet-20241022")
+    context = adapter.build_call_context(lm)
+    call = _AdapterCallPlan.from_signature(CitationSignature, {"question": "Q?"}, {})
+    type_handler = _CitationsTypeHandler()
+    type_handler.prepare(call, context)
+
+    citation = Citations.Citation(
+        cited_text="The sky is blue",
+        document_index=0,
+        document_title="Weather Guide",
+        start_char_index=10,
+        end_char_index=25,
+        supported_text="The sky is blue",
+    )
+    rendered = type_handler.format_output("citations", Citations(citations=[citation]), call, context)
+
+    assert "citations" not in call.render_signature.output_fields
+    assert rendered.parts[0].text == "The sky is blue"
+
+    values = {}
+    type_handler.parse(
+        values,
+        LMOutput(
+            parts=[
+                LMCitationPart(
+                    text="The sky is blue",
+                    title="Weather Guide",
+                    metadata={"document_index": 0, "start_char_index": 10, "end_char_index": 25},
+                )
+            ]
+        ),
+        call,
+        context,
+    )
+
+    parsed = values["citations"]
+    assert parsed.citations[0].cited_text == "The sky is blue"
+    assert parsed.citations[0].document_title == "Weather Guide"
+
+
 def test_citations_from_dict_list():
     citations_data = [
         {
@@ -151,13 +200,12 @@ def test_citations_postprocessing():
         ]
     }]
 
-    result = adapter._call_postprocess(
-        CitationSignature.delete("citations"),
-        CitationSignature,
-        outputs,
-        dspy.LM(model="anthropic/claude-3-5-sonnet-20241022"),
-        lm_kwargs={},
-    )
+    from dspy.clients.openai_format import lm_response_from_legacy_outputs
+
+    lm = dspy.LM(model="anthropic/claude-3-5-sonnet-20241022")
+    rendered = adapter._render_request(lm, {}, CitationSignature, [], {"question": "What color is the sky?"})
+    response = lm_response_from_legacy_outputs(outputs, rendered.request)
+    result = adapter._parse_response(CitationSignature, rendered.call_plan, response, rendered.context)
 
     assert len(result) == 1
     assert "citations" in result[0]

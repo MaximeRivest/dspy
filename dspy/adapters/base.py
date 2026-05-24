@@ -751,7 +751,326 @@ class Adapter:
             if not isinstance(entry, dict):
                 continue
 
-        return [_expand_legacy_custom_type_markers_in_chat_message(message) for message in messages]
+            input_values = {key: value for key, value in entry.items() if key in signature.input_fields}
+            tool_result_values = {
+                key: value
+                for key, value in input_values.items()
+                if self._coerce_tool_call_results_value(value, signature.input_fields.get(key)) is not None
+            }
+            output_values = {key: value for key, value in entry.items() if key in signature.output_fields}
+            unknown_values = {
+                key: value for key, value in entry.items() if key not in input_values and key not in output_values
+            }
+
+            turn_call = _AdapterCallPlan.from_signature(signature, input_values, context.lm_kwargs)
+            self._prepare_call_plan(turn_call, context)
+
+            regular_input_values = {
+                key: turn_call.inputs[key]
+                for key in turn_call.render_signature.input_fields
+                if key in turn_call.inputs and key not in tool_result_values
+            }
+            if regular_input_values:
+                messages.extend(
+                    self._format_input_messages(
+                        turn_call.render_signature,
+                        regular_input_values,
+                        main_request=False,
+                        context=context,
+                    )
+                )
+
+            assistant_values = dict(output_values)
+            if not turn_call.messages:
+                assistant_values.update(unknown_values)
+
+            if assistant_values:
+                messages.extend(
+                    self._format_output_messages_for_call(
+                        turn_call,
+                        assistant_values,
+                        message_idx,
+                        context=context,
+                    )
+                )
+
+            messages.extend(turn_call.messages)
+
+            fallback_tool_result_values = {
+                key: value
+                for key, value in tool_result_values.items()
+                if key in turn_call.render_signature.input_fields and not turn_call.messages
+            }
+            if fallback_tool_result_values:
+                messages.extend(
+                    self._format_input_messages(
+                        turn_call.render_signature,
+                        fallback_tool_result_values,
+                        main_request=False,
+                        context=context,
+                    )
+                )
+
+            if (turn_call.messages or fallback_tool_result_values) and unknown_values:
+                messages.extend(
+                    self._format_output_messages_for_call(
+                        turn_call,
+                        unknown_values,
+                        message_idx,
+                        context=context,
+                    )
+                )
+
+        return messages
+
+    def _format_input_messages(
+        self,
+        signature: type[Signature],
+        inputs: dict[str, Any],
+        *,
+        main_request: bool,
+        context: _CallContext | None = None,
+        prefix: str = "",
+        suffix: str = "",
+    ) -> list[LMMessage]:
+        context = context or self._current_call_context()
+        regular_inputs = self._drop_absent_optional_inputs(signature, dict(inputs))
+        if self._should_render_input_as_parts(signature, regular_inputs, context):
+            parts: list[LMPart] = []
+            if prefix:
+                parts.append(LMTextPart(text=prefix))
+            field_seen = False
+            for key, field_info in signature.input_fields.items():
+                if key not in regular_inputs:
+                    continue
+                if field_seen:
+                    parts.append(LMTextPart(text="\n\n"))
+                value_parts = self._default_render_type_value(
+                    field_name=key,
+                    field_info=field_info,
+                    signature=signature,
+                    values=regular_inputs,
+                    value=regular_inputs[key],
+                    role="input",
+                    context=context,
+                )
+                if value_parts is None:
+                    value_parts = self.value_to_lm_parts(regular_inputs[key], field_info)
+                parts.extend(self.wrap_input_field_parts(key, value_parts))
+                field_seen = True
+            if main_request:
+                output_requirements_fn = getattr(self, "user_message_output_requirements", lambda _signature: None)
+                output_requirements = output_requirements_fn(signature)
+                if output_requirements is not None:
+                    if parts:
+                        parts.append(LMTextPart(text="\n\n"))
+                    parts.append(LMTextPart(text=output_requirements))
+            if suffix:
+                parts.append(LMTextPart(text=suffix))
+            parts = self._merge_adjacent_text_parts(parts)
+            return [LMMessage(role="user", parts=parts)] if parts else []
+
+        content = self.format_user_message_content(
+            signature,
+            regular_inputs,
+            prefix=prefix,
+            suffix=suffix,
+            main_request=main_request,
+        )
+        if self._has_content(content):
+            return [self._content_message("user", content)]
+        return []
+
+    def _format_output_messages_for_call(
+        self,
+        call: _AdapterCallPlan,
+        outputs: dict[str, Any],
+        message_idx: int,
+        *,
+        context: _CallContext | None = None,
+        missing_field_message: str | None = "Not supplied for this conversation history message. ",
+    ) -> list[LMMessage]:
+        context = context or self._current_call_context()
+        regular_outputs = {}
+        native_parts: list[LMPart] = []
+        native_messages: list[LMMessage] = []
+
+        for key, value in outputs.items():
+            if key in call.render_signature.output_fields:
+                regular_outputs[key] = value
+                continue
+
+            rendered_type = self._format_type_feature_output(key, value, call, context)
+            if rendered_type is not None and rendered_type.consumed:
+                native_parts.extend(rendered_type.parts)
+                native_messages.extend(rendered_type.messages)
+                for message in rendered_type.messages:
+                    if message.role == "assistant":
+                        native_parts.extend(message.parts)
+                continue
+            regular_outputs[key] = value
+
+        if native_parts:
+            content = self._format_native_output_content(
+                call.render_signature,
+                regular_outputs,
+                missing_field_message=missing_field_message,
+            )
+            parts: list[LMPart] = []
+            if content:
+                parts.append(LMTextPart(text=content))
+            parts.extend(native_parts)
+            return [LMMessage(role="assistant", parts=parts)]
+
+        if native_messages:
+            return native_messages
+
+        return [
+            self._content_message(
+                "assistant",
+                self._format_output_content(
+                    call.render_signature,
+                    regular_outputs,
+                    missing_field_message=missing_field_message,
+                ),
+            )
+        ]
+
+    def _format_type_feature_output(
+        self,
+        field_name: str,
+        value: object,
+        call: _AdapterCallPlan,
+        context: _CallContext,
+    ) -> _RenderedTypeOutput | None:
+        for handler in self._type_feature_handlers():
+            formatter = getattr(handler, "format_output", None)
+            if formatter is None:
+                continue
+            rendered_type = formatter(field_name, value, call, context)
+            if rendered_type is not None:
+                return rendered_type
+        return None
+
+    def _format_output_content(
+        self,
+        signature: type[Signature],
+        outputs: dict[str, Any],
+        *,
+        missing_field_message: str | None,
+    ) -> str:
+        signature_outputs = {key: value for key, value in outputs.items() if key in signature.output_fields}
+        unknown_outputs = {key: value for key, value in outputs.items() if key not in signature.output_fields}
+        if signature_outputs and not unknown_outputs:
+            return self.format_assistant_message_content(
+                signature,
+                signature_outputs,
+                missing_field_message=missing_field_message,
+            )
+
+        sections = []
+        if signature_outputs:
+            sections.append(
+                self.format_assistant_message_content(
+                    signature,
+                    signature_outputs,
+                    missing_field_message=missing_field_message,
+                ).strip()
+            )
+
+        for key, value in unknown_outputs.items():
+            sections.append(f"[[ ## {key} ## ]]\n{self._format_value(value)}")
+
+        sections.append("[[ ## completed ## ]]")
+        return "\n\n".join(section for section in sections if section)
+
+    def _format_native_output_content(
+        self,
+        signature: type[Signature],
+        outputs: dict[str, Any],
+        *,
+        missing_field_message: str | None,
+    ) -> str | None:
+        if not outputs:
+            return None
+        if len(outputs) == 1:
+            return str(next(iter(outputs.values())))
+        return self._format_output_content(signature, outputs, missing_field_message=missing_field_message)
+
+    @staticmethod
+    def _drop_absent_optional_inputs(signature: type[Signature], inputs: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in inputs.items()
+            if not (value is None and key in signature.input_fields and signature.input_fields[key].default is None)
+        }
+
+    def _should_render_input_as_parts(
+        self,
+        signature: type[Signature],
+        inputs: dict[str, Any],
+        context: _CallContext,
+    ) -> bool:
+        for key, value in inputs.items():
+            field_info = signature.input_fields.get(key)
+            if field_info is None:
+                continue
+            parts = self._default_render_type_value(
+                field_name=key,
+                field_info=field_info,
+                signature=signature,
+                values=inputs,
+                value=value,
+                role="input",
+                context=context,
+            )
+            if parts is not None and any(not isinstance(part, LMTextPart) for part in parts):
+                return True
+        return False
+
+    @staticmethod
+    def _merge_adjacent_text_parts(parts: list[LMPart]) -> list[LMPart]:
+        merged: list[LMPart] = []
+        for part in parts:
+            if (
+                isinstance(part, LMTextPart)
+                and merged
+                and isinstance(merged[-1], LMTextPart)
+                and not part.metadata
+                and not merged[-1].metadata
+            ):
+                merged[-1] = LMTextPart(text=merged[-1].text + part.text)
+            else:
+                merged.append(part)
+        return merged
+
+    @staticmethod
+    def _coerce_tool_call_results_value(field_value: Any, field_info: Any = None) -> ToolCallResults | None:
+        if field_value is None:
+            return None
+        if isinstance(field_value, ToolCallResults):
+            return field_value
+
+        annotation = getattr(field_info, "annotation", None)
+        if annotation is ToolCallResults or ToolCallResults in get_args(annotation):
+            return ToolCallResults.model_validate(field_value)
+        return None
+
+    @staticmethod
+    def _format_value(value: Any) -> str:
+        if isinstance(value, list):
+            return "\n".join(str(item) for item in value)
+        return str(value)
+
+    @staticmethod
+    def _has_content(content: Any) -> bool:
+        if isinstance(content, str):
+            return bool(content.strip())
+        return bool(content)
+
+    @staticmethod
+    def _content_message(role: str, content: Any) -> LMMessage:
+        return LMMessage.model_validate({"role": role, "content": content})
 
     def format_system_message(self, signature: type[Signature]) -> str:
         """Format the system message for the LM call.
