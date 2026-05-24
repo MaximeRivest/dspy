@@ -1,23 +1,43 @@
+import inspect
 import json
 import logging
-from typing import Any, get_origin
+from dataclasses import dataclass
+from typing import Any, get_args
 
-import json_repair
+from pydantic.fields import FieldInfo
 
 from dspy.adapters._legacy_type_markers import (
-    _expand_legacy_custom_type_markers_in_chat_message,
     _expand_legacy_custom_type_markers_in_lm_message,
+    _split_legacy_custom_type_text_to_parts,
+)
+from dspy.adapters._type_feature_handlers import (
+    _CitationsTypeHandler,
+    _ReasoningTypeHandler,
+    _RenderedTypeOutput,
+    _ToolTypeHandler,
+)
+from dspy.adapters._type_runtime import (
+    _AdapterCallPlan,
+    _CallContext,
+    _LMCapabilities,
+    _OutputParser,
+    _TypeFeatureHandler,
+    _TypeParseContext,
+    _TypeRenderContext,
+    _merge_lm_config,
 )
 from dspy.adapters.types import History, Type
 from dspy.adapters.types.reasoning import Reasoning
-from dspy.adapters.types.tool import Tool, ToolCalls
+from dspy.adapters.types.tool import ToolCallResults, ToolCalls
+from dspy.adapters.utils import format_field_value, parse_value
 from dspy.clients.base_lm import BaseLM
 from dspy.clients.openai_format import (
-    legacy_outputs_from_lm_response,
     lm_response_from_legacy_outputs,
+    message_to_openai_chat,
+    parts_to_openai_content,
     to_openai_chat_request,
 )
-from dspy.core.types import LMMessage, LMRequest, LMResponse
+from dspy.core.types import LMConfig, LMMessage, LMOutput, LMPart, LMRequest, LMResponse, LMTextPart
 from dspy.experimental import Citations
 from dspy.signatures.signature import Signature
 from dspy.utils.callback import BaseCallback, with_callbacks
@@ -26,6 +46,17 @@ from dspy.utils.exceptions import AdapterParseError
 logger = logging.getLogger(__name__)
 
 _DEFAULT_NATIVE_RESPONSE_TYPES = [Citations, Reasoning]
+
+
+@dataclass
+class _RenderedAdapterRequest:
+    request: LMRequest
+    call_plan: _AdapterCallPlan
+    context: _CallContext
+
+    @property
+    def signature(self) -> type[Signature]:
+        return self.call_plan.render_signature
 
 
 class Adapter:
@@ -50,6 +81,7 @@ class Adapter:
         callbacks: list[BaseCallback] | None = None,
         use_native_function_calling: bool = False,
         native_response_types: list[type[Type]] | None = None,
+        allow_parallel_tool_calls: bool | None = None,
     ):
         """
         Args:
@@ -60,11 +92,16 @@ class Adapter:
                 or `list[dspy.Tool]` types. Defaults to False.
             native_response_types: List of output field types that should be handled by native LM features rather than
                 adapter parsing. For example, `dspy.Citations` can be populated directly by citation APIs
-                (e.g., Anthropic's citation feature). Defaults to `[Citations]`.
+                (e.g., Anthropic's citation feature). Defaults to `[Citations, Reasoning]`.
+            allow_parallel_tool_calls: Optional provider/tool-call policy. `False` enforces one call per turn for
+                native and non-native tool calling; `None` preserves provider/model defaults.
         """
         self.callbacks = callbacks or []
         self.use_native_function_calling = use_native_function_calling
-        self.native_response_types = native_response_types or _DEFAULT_NATIVE_RESPONSE_TYPES
+        self.native_response_types = list(
+            _DEFAULT_NATIVE_RESPONSE_TYPES if native_response_types is None else native_response_types
+        )
+        self.allow_parallel_tool_calls = allow_parallel_tool_calls
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
@@ -73,134 +110,170 @@ class Adapter:
         cls.format = with_callbacks(cls.format)
         cls.parse = with_callbacks(cls.parse)
 
-    def _call_preprocess(
-        self,
-        lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-        signature: type[Signature],
-        inputs: dict[str, Any],
-    ) -> type[Signature]:
-        # TODO(adapters-plan): This remains the pre-normalized planning hook. It
-        # mutates `lm_kwargs` and returns only the render signature, which loses
-        # information we will need for plan-driven rendering/parsing. The next
-        # stacked PR should replace this with an explicit `_AdapterPlan` that
-        # records deleted fields, native tools, native output fields, inserted
-        # messages/parts, and LM config patches.
-        if self.use_native_function_calling:
-            tool_call_input_field_name = self._get_tool_call_input_field_name(signature)
-            tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
+    def build_call_context(self, lm: BaseLM, lm_kwargs: dict[str, Any] | None = None) -> _CallContext:
+        return _CallContext(
+            adapter=self,
+            use_native_function_calling=self.use_native_function_calling,
+            allow_parallel_tool_calls=self.allow_parallel_tool_calls,
+            native_response_types=tuple(self.native_response_types),
+            lm=_LMCapabilities(
+                model=lm.model,
+                model_type=getattr(lm, "model_type", "chat"),
+                supported_params=frozenset(getattr(lm, "supported_params", set())),
+                supports_function_calling=bool(getattr(lm, "supports_function_calling", False)),
+                supports_response_schema=bool(getattr(lm, "supports_response_schema", False)),
+                supports_reasoning=bool(getattr(lm, "supports_reasoning", False)),
+            ),
+            lm_kwargs=dict(lm_kwargs or {}),
+            lm_default_kwargs=dict(getattr(lm, "kwargs", {}) or {}),
+        )
 
-            if tool_call_output_field_name and tool_call_input_field_name is None:
-                raise ValueError(
-                    f"You provided an output field {tool_call_output_field_name} to receive the tool calls information, "
-                    "but did not provide any tools as the input. Please provide a list of tools as the input by adding an "
-                    "input field with type `list[dspy.Tool]`."
-                )
+    def _default_call_context(self, *, use_native_tool_calls: bool = False) -> _CallContext:
+        return _CallContext(
+            adapter=self,
+            use_native_function_calling=use_native_tool_calls,
+            allow_parallel_tool_calls=self.allow_parallel_tool_calls,
+            native_response_types=tuple(self.native_response_types),
+            lm=_LMCapabilities(
+                model="",
+                model_type="chat",
+                supported_params=frozenset(),
+                supports_function_calling=use_native_tool_calls,
+                supports_response_schema=False,
+                supports_reasoning=False,
+            ),
+        )
 
-            if tool_call_output_field_name and lm.supports_function_calling:
-                tools = inputs[tool_call_input_field_name]
-                tools = tools if isinstance(tools, list) else [tools]
+    def value_to_lm_parts(self, value: object, field_info: FieldInfo) -> list[LMPart]:
+        rendered = format_field_value(field_info=field_info, value=value)
+        return self.coerce_field_payload_to_lm_parts(rendered)
 
-                lm_tools = [tool.format_as_litellm_function_call() for tool in tools]
+    def coerce_field_payload_to_lm_parts(self, rendered: object) -> list[LMPart]:
+        if isinstance(rendered, str):
+            if "<<CUSTOM-TYPE-START-IDENTIFIER>>" in rendered:
+                return _split_legacy_custom_type_text_to_parts(rendered)
+            return [LMTextPart(text=rendered)]
+        if isinstance(rendered, list):
+            return LMMessage.model_validate({"role": "user", "content": rendered}).parts
+        if isinstance(rendered, dict):
+            if "type" in rendered:
+                return LMMessage.model_validate({"role": "user", "content": [rendered]}).parts
+            return [LMTextPart(text=json.dumps(rendered, ensure_ascii=False))]
+        return [LMTextPart(text=str(rendered))]
 
-                lm_kwargs["tools"] = lm_tools
-
-                signature_for_native_function_calling = signature.delete(tool_call_output_field_name)
-                signature_for_native_function_calling = signature_for_native_function_calling.delete(
-                    tool_call_input_field_name
-                )
-
-                return signature_for_native_function_calling
-
-        # TODO(adapters-plan): Built-in/native response planning should move out
-        # of `Type.adapt_to_native_lm_feature()` and into adapter-owned planning
-        # renderers. Keep this compatibility hook for this boundary-only PR.
-        # Handle custom types that use native LM features, e.g., reasoning, citations, etc.
-        for name, field in signature.output_fields.items():
-            if (
-                isinstance(field.annotation, type)
-                and field.annotation in self.native_response_types
-                and issubclass(field.annotation, Type)
-            ):
-                signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)
-
-        return signature
-
-    def _call_postprocess(
-        self,
-        processed_signature: type[Signature],
-        original_signature: type[Signature],
-        outputs: list[dict[str, Any] | str],
-        lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        # TODO(adapters-plan): This still parses legacy adapter output objects.
-        # PR1 normalizes the LM boundary, then immediately converts back to this
-        # shape to avoid changing parser semantics. A later PR should parse
-        # `LMResponse` directly and merge text-parsed fields with explicit
-        # native fields from `_AdapterPlan`.
-        values = []
-
-        tool_call_output_field_name = self._get_tool_call_output_field_name(original_signature)
-
-        for output in outputs:
-            output_logprobs = None
-            tool_calls = None
-            text = output
-
-            if isinstance(output, dict):
-                text = output["text"]
-                output_logprobs = output.get("logprobs")
-                tool_calls = output.get("tool_calls")
-
-            if text:
-                value = self.parse(processed_signature, text)
-                for field_name in original_signature.output_fields.keys():
-                    if field_name not in value:
-                        # We need to set the field not present in the processed signature to None for consistency.
-                        value[field_name] = None
-            elif tool_calls and tool_call_output_field_name:
-                value = {}
-                for field_name in original_signature.output_fields.keys():
-                    value[field_name] = None
+    def lm_parts_to_text(self, parts: list[LMPart]) -> str:
+        texts: list[str] = []
+        for part in parts:
+            text = getattr(part, "text", None)
+            if text is not None:
+                texts.append(str(text))
             else:
-                raise AdapterParseError(
-                    adapter_name=type(self).__name__,
-                    signature=original_signature,
-                    lm_response=str(output),
-                    message="The LM returned an empty or null response.",
-                )
+                texts.append(str(part))
+        return "".join(texts)
 
-            if tool_calls and tool_call_output_field_name:
-                tool_calls = [
-                    {
-                        "name": v["function"]["name"],
-                        "args": json_repair.loads(v["function"]["arguments"]),
-                    }
-                    for v in tool_calls
-                ]
-                value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)
+    def lm_parts_to_value(self, parts: list[LMPart], field_info: FieldInfo) -> object:
+        text = self.lm_parts_to_text(parts)
+        return parse_value(text, field_info.annotation)
 
-            # TODO(adapter-types): Once `Type.parse_lm_output(context, output)` is
-            # the real normalized hook, this should not call the legacy
-            # provider-shaped `parse_lm_response()` directly.
-            # Parse custom types that does not rely on the `Adapter.parse()` method
-            for name, field in original_signature.output_fields.items():
-                if (
-                    isinstance(field.annotation, type)
-                    and field.annotation in self.native_response_types
-                    and issubclass(field.annotation, Type)
-                ):
-                    parsed_value = field.annotation.parse_lm_response(output)
-                    if parsed_value is not None:
-                        value[name] = parsed_value
+    def wrap_input_field_parts(self, field_name: str, parts: list[LMPart]) -> list[LMPart]:
+        raise NotImplementedError
 
-            if output_logprobs:
-                value["logprobs"] = output_logprobs
+    def wrap_output_field_parts(self, field_name: str, parts: list[LMPart]) -> list[LMPart]:
+        raise NotImplementedError
 
-            values.append(value)
+    def parse_output_fields_to_parts(
+        self,
+        output: LMOutput,
+        signature: type[Signature],
+    ) -> dict[str, list[LMPart]]:
+        parsed = self.parse(signature, output.text or "")
+        return {
+            field_name: self.value_to_lm_parts(parsed[field_name], field_info)
+            for field_name, field_info in signature.output_fields.items()
+            if field_name in parsed
+        }
 
-        return values
+    def _parts_to_message_content(self, parts: list[LMPart]) -> str | list[dict[str, Any]]:
+        return parts_to_openai_content(parts)
+
+    def _make_type_render_context(
+        self,
+        *,
+        field_name: str,
+        field_info: FieldInfo,
+        signature: type[Signature],
+        values: dict[str, Any],
+        role: str,
+        context: _CallContext | None,
+    ) -> _TypeRenderContext:
+        return _TypeRenderContext(
+            field_name=field_name,
+            field_info=field_info,
+            signature=signature,
+            values=values,
+            adapter=self,
+            call_context=context or self._current_call_context(),
+            role=role,
+        )
+
+    def _current_call_context(self) -> _CallContext:
+        return getattr(self, "_call_context", None) or self._default_call_context()
+
+    def _default_render_type_value(
+        self,
+        *,
+        field_name: str,
+        field_info: FieldInfo,
+        signature: type[Signature],
+        values: dict[str, Any],
+        value: Any,
+        role: str,
+        context: _CallContext | None = None,
+    ) -> list[LMPart] | None:
+        annotation = self._type_annotation_class(field_info.annotation)
+        if annotation is not None and not isinstance(value, annotation):
+            try:
+                value = annotation.model_validate(value)
+            except Exception:
+                pass
+
+        if not isinstance(value, Type):
+            return None
+
+        render_ctx = self._make_type_render_context(
+            field_name=field_name,
+            field_info=field_info,
+            signature=signature,
+            values=values,
+            role=role,
+            context=context,
+        )
+        if role == "input":
+            return value.default_render_input(render_ctx)
+        return value.default_render_output(render_ctx)
+
+    def _type_annotation_class(self, annotation: Any) -> type[Type] | None:
+        try:
+            if isinstance(annotation, type) and issubclass(annotation, Type):
+                return annotation
+        except TypeError:
+            return None
+
+        for arg in get_args(annotation):
+            annotation_class = self._type_annotation_class(arg)
+            if annotation_class is not None:
+                return annotation_class
+        return None
+
+    def _merge_config_kwargs(self, kwargs: dict[str, Any], config: LMConfig | None) -> dict[str, Any]:
+        if config is None:
+            return kwargs
+        base_config = LMConfig.from_kwargs(**kwargs)
+        merged_config = _merge_lm_config(base_config, config)
+        return merged_config.model_dump(exclude_none=True)
+
+    def _merge_lm_config(self, left: LMConfig | None, right: LMConfig | None) -> LMConfig | None:
+        return _merge_lm_config(left, right)
 
     def _render_request(
         self,
