@@ -374,6 +374,8 @@ class Adapter:
         """
         data = self._legacy_call_kwargs(request)
         outputs = lm(messages=data.pop("messages"), **data)
+        if isinstance(outputs, LMResponse):
+            return outputs
         return self._normalize_legacy_outputs(outputs, request)
 
     async def _acall_lm(self, lm: BaseLM, request: LMRequest) -> LMResponse:
@@ -384,6 +386,8 @@ class Adapter:
         """
         data = self._legacy_call_kwargs(request)
         outputs = await lm.acall(messages=data.pop("messages"), **data)
+        if isinstance(outputs, LMResponse):
+            return outputs
         return self._normalize_legacy_outputs(outputs, request)
 
     def _legacy_call_kwargs(self, request: LMRequest) -> dict[str, Any]:
