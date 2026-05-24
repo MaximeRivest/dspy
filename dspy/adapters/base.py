@@ -1170,7 +1170,14 @@ class Adapter:
         """
         raise NotImplementedError
 
-    def format_demos(self, signature: type[Signature], demos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def format_demos(
+        self,
+        signature: type[Signature],
+        demos: list[dict[str, Any]],
+        *,
+        use_native_tool_calls: bool = False,
+        context: _CallContext | None = None,
+    ) -> list[LMMessage | dict[str, Any]]:
         """Format the few-shot examples.
 
         This method formats the few-shot examples as multiturn messages.
@@ -1183,12 +1190,14 @@ class Adapter:
         Returns:
             A list of multiturn messages.
         """
+        context = context or self._default_call_context(use_native_tool_calls=use_native_tool_calls)
+        active_fields = signature.fields
         complete_demos = []
         incomplete_demos = []
 
         for demo in demos:
             # Check if all fields are present and not None
-            is_complete = all(k in demo and demo[k] is not None for k in signature.fields)
+            is_complete = all(k in demo and demo[k] is not None for k in active_fields)
 
             # Check if demo has at least one input and one output field
             has_input = any(k in demo for k in signature.input_fields)
@@ -1204,55 +1213,98 @@ class Adapter:
 
         incomplete_demo_prefix = "This is an example of the task, though some input or output fields are not supplied."
         for demo in incomplete_demos:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": self.format_user_message_content(signature, demo, prefix=incomplete_demo_prefix),
-                }
+            demo_call = _AdapterCallPlan.from_signature(
+                signature,
+                {key: demo[key] for key in signature.input_fields if key in demo},
+                context.lm_kwargs,
             )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": self.format_assistant_message_content(
-                        signature, demo, missing_field_message="Not supplied for this particular example. "
-                    ),
-                }
+            self._prepare_call_plan(demo_call, context)
+            demo_inputs = {
+                key: demo_call.inputs[key]
+                for key in demo_call.render_signature.input_fields
+                if key in demo_call.inputs
+            }
+            demo_outputs = {key: demo[key] for key in signature.output_fields if key in demo}
+            messages.extend(
+                self._format_input_messages(
+                    demo_call.render_signature,
+                    demo_inputs,
+                    main_request=False,
+                    context=context,
+                    prefix=incomplete_demo_prefix,
+                )
             )
+            messages.extend(
+                self._format_output_messages_for_call(
+                    demo_call,
+                    demo_outputs,
+                    len(messages),
+                    context=context,
+                    missing_field_message="Not supplied for this particular example. ",
+                )
+            )
+            messages.extend(demo_call.messages)
 
         for demo in complete_demos:
-            messages.append({"role": "user", "content": self.format_user_message_content(signature, demo)})
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": self.format_assistant_message_content(
-                        signature, demo, missing_field_message="Not supplied for this conversation history message. "
-                    ),
-                }
+            demo_call = _AdapterCallPlan.from_signature(
+                signature,
+                {key: demo[key] for key in signature.input_fields if key in demo},
+                context.lm_kwargs,
             )
+            self._prepare_call_plan(demo_call, context)
+            demo_inputs = {
+                key: demo_call.inputs[key]
+                for key in demo_call.render_signature.input_fields
+                if key in demo_call.inputs
+            }
+            demo_outputs = {key: demo[key] for key in signature.output_fields if key in demo}
+            messages.extend(
+                self._format_input_messages(
+                    demo_call.render_signature,
+                    demo_inputs,
+                    main_request=False,
+                    context=context,
+                )
+            )
+            messages.extend(
+                self._format_output_messages_for_call(
+                    demo_call,
+                    demo_outputs,
+                    len(messages),
+                    context=context,
+                    missing_field_message="Not supplied for this conversation history message. ",
+                )
+            )
+            messages.extend(demo_call.messages)
 
         return messages
 
-    def _get_history_field_name(self, signature: type[Signature]) -> bool:
+    def _get_history_field_name(self, signature: type[Signature]) -> str | None:
         for name, field in signature.input_fields.items():
             if field.annotation == History:
                 return name
         return None
 
-    def _get_tool_call_input_field_name(self, signature: type[Signature]) -> bool:
-        for name, field in signature.input_fields.items():
-            # Look for annotation `list[dspy.Tool]` or `dspy.Tool`
-            origin = get_origin(field.annotation)
-            if origin is list and field.annotation.__args__[0] == Tool:
-                return name
-            if field.annotation == Tool:
+    def _get_tool_call_output_field_name(self, signature: type[Signature]) -> str | None:
+        return self._find_tool_call_output_field_name(signature)
+
+    @classmethod
+    def _find_tool_call_output_field_name(cls, signature: type[Signature]) -> str | None:
+        for name, field in signature.output_fields.items():
+            if cls._annotation_includes_static(field.annotation, ToolCalls):
                 return name
         return None
 
-    def _get_tool_call_output_field_name(self, signature: type[Signature]) -> bool:
-        for name, field in signature.output_fields.items():
-            if field.annotation == ToolCalls:
-                return name
-        return None
+    @classmethod
+    def _annotation_includes_static(cls, annotation: Any, target: type) -> bool:
+        if annotation is target:
+            return True
+        return any(cls._annotation_includes_static(arg, target) for arg in get_args(annotation))
+
+    def force_tool_call_config(self, tool_name: str) -> dict[str, Any]:
+        if not self.use_native_function_calling:
+            return {}
+        return {"tool_choice": {"mode": "required", "allowed": [tool_name]}}
 
     def format_conversation_history(
         self,
@@ -1277,25 +1329,10 @@ class Adapter:
         if conversation_history is None:
             return []
 
-        messages = []
-        for message in conversation_history:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": self.format_user_message_content(signature, message),
-                }
-            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": self.format_assistant_message_content(signature, message),
-                }
-            )
-
         # Remove the history field from the inputs
         del inputs[history_field_name]
-
-        return messages
+        history = History(messages=conversation_history)
+        return [message_to_openai_chat(message) for message in self.format_history(history, signature)]
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
         """Parse the LM output into a dictionary of the output fields.
