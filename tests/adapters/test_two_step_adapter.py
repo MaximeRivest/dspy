@@ -4,6 +4,13 @@ import pytest
 
 import dspy
 from tests.adapters.conftest import format_messages_and_lm_kwargs
+from dspy.clients.openai_format import to_openai_chat_request
+
+
+def _messages_from_normalized_call(call_kwargs):
+    if "request" in call_kwargs:
+        return to_openai_chat_request(call_kwargs["request"])["messages"]
+    return call_kwargs["messages"]
 
 
 def test_two_step_adapter_format_exact_messages_for_simple_signature_with_demo():
@@ -90,36 +97,38 @@ def test_two_step_adapter_call():
     # main LM call
     mock_main_lm.assert_called_once()
     _, call_kwargs = mock_main_lm.call_args
-    assert len(call_kwargs["messages"]) == 2
+    messages = _messages_from_normalized_call(call_kwargs)
+    assert len(messages) == 2
 
     # assert first message
-    assert call_kwargs["messages"][0]["role"] == "system"
-    content = call_kwargs["messages"][0]["content"]
+    assert messages[0]["role"] == "system"
+    content = messages[0]["content"]
     assert "1. `question` (str)" in content
     assert "1. `solution` (str)" in content
     assert "2. `answer` (float)" in content
 
     # assert second message
-    assert call_kwargs["messages"][1]["role"] == "user"
-    content = call_kwargs["messages"][1]["content"]
+    assert messages[1]["role"] == "user"
+    content = messages[1]["content"]
     assert "question:" in content.lower()
     assert "What is 5 + 7?" in content
 
     # extraction LM call
     mock_extraction_lm.assert_called_once()
     _, call_kwargs = mock_extraction_lm.call_args
-    assert len(call_kwargs["messages"]) == 2
+    messages = _messages_from_normalized_call(call_kwargs)
+    assert len(messages) == 2
 
     # assert first message
-    assert call_kwargs["messages"][0]["role"] == "system"
-    content = call_kwargs["messages"][0]["content"]
+    assert messages[0]["role"] == "system"
+    content = messages[0]["content"]
     assert "`text` (str)" in content
     assert "`solution` (str)" in content
     assert "`answer` (float)" in content
 
     # assert second message
-    assert call_kwargs["messages"][1]["role"] == "user"
-    content = call_kwargs["messages"][1]["content"]
+    assert messages[1]["role"] == "user"
+    content = messages[1]["content"]
     assert "text from main LM" in content
 
 
@@ -156,36 +165,38 @@ async def test_two_step_adapter_async_call():
     # main LM call
     mock_main_lm.acall.assert_called_once()
     _, call_kwargs = mock_main_lm.acall.call_args
-    assert len(call_kwargs["messages"]) == 2
+    messages = _messages_from_normalized_call(call_kwargs)
+    assert len(messages) == 2
 
     # assert first message
-    assert call_kwargs["messages"][0]["role"] == "system"
-    content = call_kwargs["messages"][0]["content"]
+    assert messages[0]["role"] == "system"
+    content = messages[0]["content"]
     assert "1. `question` (str)" in content
     assert "1. `solution` (str)" in content
     assert "2. `answer` (float)" in content
 
     # assert second message
-    assert call_kwargs["messages"][1]["role"] == "user"
-    content = call_kwargs["messages"][1]["content"]
+    assert messages[1]["role"] == "user"
+    content = messages[1]["content"]
     assert "question:" in content.lower()
     assert "What is 5 + 7?" in content
 
     # extraction LM call
     mock_extraction_lm.acall.assert_called_once()
     _, call_kwargs = mock_extraction_lm.acall.call_args
-    assert len(call_kwargs["messages"]) == 2
+    messages = _messages_from_normalized_call(call_kwargs)
+    assert len(messages) == 2
 
     # assert first message
-    assert call_kwargs["messages"][0]["role"] == "system"
-    content = call_kwargs["messages"][0]["content"]
+    assert messages[0]["role"] == "system"
+    content = messages[0]["content"]
     assert "`text` (str)" in content
     assert "`solution` (str)" in content
     assert "`answer` (float)" in content
 
     # assert second message
-    assert call_kwargs["messages"][1]["role"] == "user"
-    content = call_kwargs["messages"][1]["content"]
+    assert messages[1]["role"] == "user"
+    content = messages[1]["content"]
     assert "text from main LM" in content
 
 

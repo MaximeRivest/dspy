@@ -1858,6 +1858,22 @@ def test_chat_adapter_respects_use_json_adapter_fallback_flag():
         mock_json_adapter_call.assert_not_called()
 
 
+def test_chat_adapter_does_not_fallback_to_json_adapter_on_lm_error():
+    class FailingLM(dspy.BaseLM):
+        def forward(self, request):
+            raise dspy.LMRateLimitError("rate limited", model=request.model, status=429)
+
+    signature = dspy.make_signature("question->answer")
+    adapter = dspy.ChatAdapter()
+    lm = FailingLM("test/failing", cache=False, num_retries=0)
+
+    with dspy.context(experimental=True):
+        with mock.patch("dspy.adapters.json_adapter.JSONAdapter.__call__") as mock_json_adapter_call:
+            with pytest.raises(dspy.LMRateLimitError, match="rate limited"):
+                adapter(lm, {}, signature, [], {"question": "What is the capital of France?"})
+        mock_json_adapter_call.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_chat_adapter_fallback_to_json_adapter_on_exception_async():
     signature = dspy.make_signature("question->answer")

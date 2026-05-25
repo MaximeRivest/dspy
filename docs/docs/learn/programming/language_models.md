@@ -152,7 +152,10 @@ It's easy to call the `lm` you configured above directly. This gives you a unifi
 ```python linenums="1"       
 lm("Say this is a test!", temperature=0.7)  # => ['This is a test!']
 lm(messages=[{"role": "user", "content": "Say this is a test!"}])  # => ['This is a test!']
-``` 
+```
+
+!!! note "Experimental typed LM calls"
+    DSPy 3.3 also includes an experimental typed `BaseLM` path for custom LM backends. Opt in with `dspy.configure(experimental=True)` or `dspy.context(experimental=True)` to call v2 `BaseLM` subclasses with `dspy.System`, `dspy.User`, media parts, tools, or `request=dspy.LMRequest(...)`, and receive `dspy.LMResponse`. See [BaseLM Migration](base_lm_migration.md) for examples.
 
 ## Using the LM with DSPy modules.
 
@@ -282,7 +285,19 @@ Please note that not all models or providers support the Responses API, check [L
 
 ## Advanced: Building custom LMs and writing your own Adapters.
 
-Though rarely needed, you can write custom LMs by inheriting from `dspy.BaseLM`. Another advanced layer in the DSPy ecosystem is that of _adapters_, which sit between DSPy signatures and LMs. A future version of this guide will discuss these advanced features, though you likely don't need them.
+Though rarely needed, you can write custom LMs by inheriting from `dspy.BaseLM`. New custom LMs should use the typed LM contract:
+
+```python linenums="1"
+import dspy
+
+class MyLM(dspy.BaseLM):
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        return dspy.LMResponse.from_text("hello", model=request.model)
+```
+
+Legacy custom LMs that implement `forward(prompt=None, messages=None, **kwargs)` still work in DSPy 3.3. The expected timeline is stronger warnings in 3.4, the typed contract becoming the default in 3.5, and legacy removal in a later release, likely 3.6 or 4.0. See [BaseLM Migration](base_lm_migration.md) for the full migration guide.
+
+Another advanced layer in the DSPy ecosystem is that of _adapters_, which sit between DSPy signatures and LMs. A future version of this guide will discuss these advanced features, though you likely don't need them.
 
 ### Saving programs that use custom LMs
 
@@ -308,7 +323,7 @@ class MyLM(dspy.BaseLM):
         state.pop("_dspy_lm_class", None)
         return cls(**state)
 
-    def forward(self, prompt=None, messages=None, **kwargs):
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         ...
 ```
 

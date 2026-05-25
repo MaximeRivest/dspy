@@ -19,7 +19,7 @@ from dspy.clients.utils_finetune import TrainDataFormat
 from dspy.utils.callback import BaseCallback
 from dspy.utils.exceptions import ContextWindowExceededError
 
-from .base_lm import BaseLM
+from .base_lm import BaseLM, LMCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ class LM(BaseLM):
         self.train_kwargs = train_kwargs or {}
         self.use_developer_role = use_developer_role
 
-        self._warn_zero_temp_rollout(self.kwargs.get("temperature"), self.kwargs.get("rollout_id"))
+        self._warn_zero_temp_rollout_for_values(self.kwargs.get("temperature"), self.kwargs.get("rollout_id"))
 
     def _get_initial_kwargs(self, *, temperature, max_tokens, **kwargs) -> dict[str, Any]:
         # Override BaseLM's default kwargs shape for LiteLLM/model-family-specific token parameters.
@@ -127,24 +127,22 @@ class LM(BaseLM):
             return self.model.split("/", 1)[0]
         return "openai"
 
-    @property
-    def supports_function_calling(self) -> bool:
-        return _get_litellm().supports_function_calling(model=self.model)
-
-    @property
-    def supports_reasoning(self) -> bool:
-        return _get_litellm().supports_reasoning(self.model)
-
-    @property
-    def supports_response_schema(self) -> bool:
-        return _get_litellm().supports_response_schema(model=self.model, custom_llm_provider=self._provider_name)
+    def get_capabilities(self) -> LMCapabilities:
+        return LMCapabilities(
+            function_calling=_get_litellm().supports_function_calling(model=self.model),
+            reasoning=_get_litellm().supports_reasoning(self.model),
+            response_schema=_get_litellm().supports_response_schema(
+                model=self.model,
+                custom_llm_provider=self._provider_name,
+            ),
+        )
 
     @property
     def supported_params(self) -> set[str]:
         params = _get_litellm().get_supported_openai_params(model=self.model, custom_llm_provider=self._provider_name)
         return set(params) if params else set()
 
-    def _warn_zero_temp_rollout(self, temperature: float | None, rollout_id):
+    def _warn_zero_temp_rollout_for_values(self, temperature: float | None, rollout_id):
         if not self._warned_zero_temp_rollout and rollout_id is not None and temperature == 0:
             warnings.warn(
                 "rollout_id has no effect when temperature=0; set temperature>0 to bypass the cache.",
@@ -178,7 +176,7 @@ class LM(BaseLM):
         if self.use_developer_role and self.model_type == "responses":
             messages = [{**m, "role": "developer"} if m.get("role") == "system" else m for m in messages]
         kwargs = {**self.kwargs, **kwargs}
-        self._warn_zero_temp_rollout(kwargs.get("temperature"), kwargs.get("rollout_id"))
+        self._warn_zero_temp_rollout_for_values(kwargs.get("temperature"), kwargs.get("rollout_id"))
         if kwargs.get("rollout_id") is None:
             kwargs.pop("rollout_id", None)
 
@@ -219,7 +217,7 @@ class LM(BaseLM):
         if self.use_developer_role and self.model_type == "responses":
             messages = [{**m, "role": "developer"} if m.get("role") == "system" else m for m in messages]
         kwargs = {**self.kwargs, **kwargs}
-        self._warn_zero_temp_rollout(kwargs.get("temperature"), kwargs.get("rollout_id"))
+        self._warn_zero_temp_rollout_for_values(kwargs.get("temperature"), kwargs.get("rollout_id"))
         if kwargs.get("rollout_id") is None:
             kwargs.pop("rollout_id", None)
 

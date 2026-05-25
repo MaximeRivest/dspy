@@ -536,12 +536,18 @@ def responses_tool_output_text(content: Any) -> str:
 def completion_to_lm_response(response: Any, request: LMRequest) -> LMResponse:
     """Convert an OpenAI Chat or text completion response into `LMResponse`."""
     choices = get_value(response, "choices", []) or []
+    model = get_value(response, "model")
+    response_id = get_value(response, "id")
+    outputs = [choice_to_lm_output(choice) for choice in choices]
+    if not outputs:
+        outputs = [LMOutput(parts=[], metadata={"empty_legacy_outputs": True})]
     return LMResponse(
-        model=get_value(response, "model") or request.model,
-        outputs=[choice_to_lm_output(choice) for choice in choices],
+        model=model if isinstance(model, str) else request.model,
+        outputs=outputs,
         usage=usage_from_response(response),
+        cost=cost_from_response(response),
         cache_hit=bool(get_value(response, "cache_hit", False)),
-        response_id=get_value(response, "id"),
+        response_id=response_id if isinstance(response_id, str) else None,
         provider_response=response,
     )
 
@@ -607,6 +613,7 @@ def responses_to_lm_response(response: Any, request: LMRequest) -> LMResponse:
         model=get_value(response, "model") or request.model,
         outputs=[LMOutput(parts=parts, provider_output=response)],
         usage=usage_from_response(response),
+        cost=cost_from_response(response),
         cache_hit=bool(get_value(response, "cache_hit", False)),
         response_id=get_value(response, "id"),
         provider_response=response,
@@ -893,7 +900,7 @@ def legacy_outputs_from_lm_response(response: LMResponse) -> list[dict[str, Any]
     for output in response.outputs:
         if output.metadata.get("empty_legacy_outputs"):
             continue
-        if output.provider_output is not None:
+        if output.metadata.get("legacy_output") and output.provider_output is not None:
             outputs.append(output.provider_output)
         elif output.text is not None and not output.reasoning_content and not output.tool_calls and not output.citations and output.logprobs is None:
             outputs.append(output.text)
@@ -905,9 +912,9 @@ def legacy_outputs_from_lm_response(response: LMResponse) -> list[dict[str, Any]
 def lm_output_from_legacy_output(output: dict[str, Any] | str | None) -> LMOutput:
     """Normalize one current legacy `BaseLM` output item into an `LMOutput`."""
     if isinstance(output, str):
-        return LMOutput(parts=[LMTextPart(text=output)], provider_output=output)
+        return LMOutput(parts=[LMTextPart(text=output)], provider_output=output, metadata={"legacy_output": True})
     if output is None:
-        return LMOutput(parts=[])
+        return LMOutput(parts=[], metadata={"legacy_output": True})
 
     parts = []
     text = output.get("text")
@@ -920,4 +927,4 @@ def lm_output_from_legacy_output(output: dict[str, Any] | str | None) -> LMOutpu
         parts.append(provider_tool_call_to_part(tool_call))
     for citation in output.get("citations") or []:
         parts.append(citation_to_part(citation))
-    return LMOutput(parts=parts, logprobs=output.get("logprobs"), provider_output=output)
+    return LMOutput(parts=parts, logprobs=output.get("logprobs"), provider_output=output, metadata={"legacy_output": True})

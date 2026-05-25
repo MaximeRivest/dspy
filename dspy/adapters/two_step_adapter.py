@@ -7,6 +7,7 @@ from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.adapters.types import ToolCalls
 from dspy.adapters.utils import get_field_description_string
 from dspy.clients.base_lm import BaseLM
+from dspy.clients.openai_format import legacy_outputs_from_lm_response
 from dspy.signatures.field import InputField
 from dspy.signatures.signature import Signature, make_signature
 
@@ -111,11 +112,14 @@ class TwoStepAdapter(Adapter):
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        inputs = self.format(signature, demos, inputs)
+        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
+        messages = self.format(processed_signature, demos, inputs)
 
-        outputs = await lm.acall(messages=inputs, **lm_kwargs)
+        request = self._render_request(lm, lm_kwargs, messages)
+        response = await self._acall_lm(lm, request)
+        outputs = legacy_outputs_from_lm_response(response)
         # The signature is supposed to be "text -> {original output fields}"
-        extractor_signature = self._create_extractor_signature(signature)
+        extractor_signature = self._create_extractor_signature(processed_signature)
 
         values = []
 
@@ -140,6 +144,9 @@ class TwoStepAdapter(Adapter):
                     inputs={"text": text},
                 )
                 value = value[0]
+                for field_name in signature.output_fields.keys():
+                    if field_name not in value:
+                        value[field_name] = None
 
             except Exception as e:
                 raise ValueError(f"Failed to parse response from the original completion: {output}") from e

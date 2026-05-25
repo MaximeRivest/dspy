@@ -35,6 +35,7 @@ DEFAULT_CONFIG = dotdict(
     max_history_size=10000,
     max_trace_size=10000,
     warn_on_type_mismatch=True,  # Whether to log warnings when a module's input type doesn't match the signature type.
+    experimental=False,  # Opt in to experimental DSPy features.
 )
 
 # Global base configuration and owner tracking
@@ -45,7 +46,7 @@ config_owner_async_task = None
 # Global lock for settings configuration
 global_lock = threading.Lock()
 
-thread_local_overrides = contextvars.ContextVar("context_overrides", default=dotdict())
+thread_local_overrides = contextvars.ContextVar("context_overrides", default=dotdict())  # noqa: B039
 
 
 class Settings:

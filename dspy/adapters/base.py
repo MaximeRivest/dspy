@@ -18,6 +18,7 @@ from dspy.clients.openai_format import (
     to_openai_chat_request,
 )
 from dspy.core.types import LMMessage, LMRequest, LMResponse
+from dspy.dsp.utils import settings
 from dspy.experimental import Citations
 from dspy.signatures.signature import Signature
 from dspy.utils.callback import BaseCallback, with_callbacks
@@ -221,38 +222,30 @@ class Adapter:
         )
 
     def _call_lm(self, lm: BaseLM, request: LMRequest) -> LMResponse:
-        """Call current `BaseLM` through the normalized request/response boundary.
-
-        TODO(language-models): When `BaseLM` is replaced by/updated to the
-        normalized `BaseLM.forward(request: LMRequest) -> LMResponse` contract,
-        remove this compatibility shim and let adapters call the normalized LM
-        entry point directly. The OpenAI-shaped compatibility kwargs should live
-        only inside concrete LM backends.
-        """
-        data = self._legacy_call_kwargs(request)
-        outputs = lm(messages=data.pop("messages"), **data)
-        return self._normalize_legacy_outputs(outputs, request)
+        """Call `BaseLM`, using the typed boundary only when experimental mode is enabled."""
+        if settings.experimental:
+            response = lm(request=request)
+        else:
+            data = self._legacy_call_kwargs(request)
+            response = lm(messages=data.pop("messages"), **data)
+        if isinstance(response, LMResponse):
+            return response
+        return self._normalize_legacy_outputs(response, request)
 
     async def _acall_lm(self, lm: BaseLM, request: LMRequest) -> LMResponse:
-        """Async variant of `_call_lm`.
-
-        TODO(language-models): Same transitional boundary as `_call_lm()`; this
-        should eventually call a normalized async LM method directly.
-        """
-        data = self._legacy_call_kwargs(request)
-        outputs = await lm.acall(messages=data.pop("messages"), **data)
-        return self._normalize_legacy_outputs(outputs, request)
+        """Async variant of `_call_lm`."""
+        if settings.experimental:
+            response = await lm.acall(request=request)
+        else:
+            data = self._legacy_call_kwargs(request)
+            response = await lm.acall(messages=data.pop("messages"), **data)
+        if isinstance(response, LMResponse):
+            return response
+        return self._normalize_legacy_outputs(response, request)
 
     def _legacy_call_kwargs(self, request: LMRequest) -> dict[str, Any]:
-        # TODO(language-models): Current `BaseLM` expects OpenAI/LiteLLM-shaped
-        # chat kwargs. We intentionally use `dspy.clients.openai_format` here so
-        # the conversion code lives in the future LM/client layer, not in
-        # adapters. Remove this adapter helper once `BaseLM` accepts `LMRequest`.
         data = to_openai_chat_request(request)
         data.pop("model", None)
-        # TODO(language-models): `cache` and `rollout_id` are DSPy BaseLM
-        # execution controls, not provider request fields. The future
-        # normalized LM base should own them before provider-format conversion.
         if request.config.cache is not None:
             if request.config.cache.enabled is not None:
                 data["cache"] = request.config.cache.enabled

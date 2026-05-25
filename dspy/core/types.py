@@ -589,7 +589,13 @@ class LMRequestPatch:
 
 
 class LMRequest(BaseModel):
-    """A normalized request passed to a `LanguageModel`."""
+    """A normalized request passed across DSPy's typed LM boundary.
+
+    `BaseLM.normalize_request()` and `LMRequest.from_call()` build this object
+    from direct user inputs such as `lm("hello", temperature=0.7)`, OpenAI-style
+    `messages=...`, tools, and LM kwargs. Custom v2 `BaseLM` subclasses receive
+    this object in `forward(request)`.
+    """
 
     model: str
     messages: list[LMMessage]
@@ -690,7 +696,12 @@ class LMUsage(BaseModel):
 
 
 class LMOutput(BaseModel):
-    """One generated candidate in an LM response."""
+    """One generated candidate in an `LMResponse`.
+
+    Each output stores typed parts such as text, reasoning, tool calls,
+    citations, images, audio, and files. Compatibility properties expose common
+    legacy views like `.text`, `.reasoning_content`, and `.tool_calls`.
+    """
 
     parts: list[LMPart] = Field(default_factory=list)
     finish_reason: str | None = None
@@ -774,7 +785,13 @@ class LMOutput(BaseModel):
 
 
 class LMResponse(BaseModel):
-    """The normalized result of one LM request."""
+    """The normalized result returned by a typed `BaseLM` backend.
+
+    An `LMResponse` contains one or more `LMOutput` candidates plus usage,
+    cost, cache, response ID, and provider metadata. It also behaves like the
+    legacy output list for common cases: iterating over it yields each output's
+    value, and `to_outputs()` returns the legacy `list[str | dict]` shape.
+    """
 
     model: str | None = None
     outputs: list[LMOutput] = Field(min_length=1)
@@ -1264,8 +1281,8 @@ def System(*parts: Any, name: str | None = None, metadata: dict[str, Any] | None
         metadata: Extra information to keep with the message.
 
     Returns:
-        An `LMMessage` that can be passed to `dspy.LanguageModel`, `dspy.LM`, or
-        `dspy.LMRequest`.
+        An `LMMessage` that can be passed to a typed `dspy.BaseLM` direct call
+        or `dspy.LMRequest`.
 
     Examples:
         System instruction with a user turn:
@@ -1273,7 +1290,7 @@ def System(*parts: Any, name: str | None = None, metadata: dict[str, Any] | None
         ```python
         import dspy
 
-        lm = dspy.LanguageModel(model="test/model")
+        lm = dspy.BaseLM(model="test/model")
         request = lm.normalize_request(
             dspy.System("You are concise."),
             dspy.User("What is DSPy?"),
@@ -1696,7 +1713,6 @@ def _coerce_message(value: dict[str, Any] | LMMessage) -> LMMessage:
 
 
 def _messages_from_items(items: tuple[Any, ...], *, prompt: str | None = None) -> tuple[list[LMMessage], list[Any]]:
-    # TODO: Normalize DSPy-specific LM(...) objects in the LM call layer before building LMRequest.
     if prompt is not None:
         items = (prompt, *items)
     if not items:
@@ -1714,8 +1730,10 @@ def _messages_from_items(items: tuple[Any, ...], *, prompt: str | None = None) -
                 messages.extend(_messages_from_response(item))
         return messages, []
 
-    parts = [_coerce_part(item) for item in items]
-    return [LMMessage(role="user", parts=parts)], []
+    tools = [item for item in items if _is_dspy_tool(item)]
+    content_items = tuple(item for item in items if not _is_dspy_tool(item))
+    parts = [_coerce_part(item) for item in content_items]
+    return [LMMessage(role="user", parts=parts)], tools
 
 
 def _messages_from_response(response: LMResponse) -> list[LMMessage]:
@@ -1726,6 +1744,39 @@ def _is_message_sequence(value: Any) -> bool:
     return isinstance(value, (list, tuple)) and all(
         isinstance(item, LMMessage) or isinstance(item, LMResponse) for item in value
     )
+
+
+def _is_dspy_tool(value: Any) -> bool:
+    return hasattr(value, "format_as_litellm_function_call")
+
+
+def _coerce_dspy_adapter_value_to_part(value: Any) -> LMPart | None:
+    try:
+        from dspy.adapters.types.audio import Audio
+        from dspy.adapters.types.base_type import Type as DSPyType
+        from dspy.adapters.types.file import File
+        from dspy.adapters.types.image import Image
+        from dspy.adapters.types.reasoning import Reasoning
+    except Exception:
+        return None
+
+    if isinstance(value, Reasoning):
+        return LMThinkingPart(text=value.content)
+    if isinstance(value, Image):
+        return _parts_from_openai_content(value.format())[0]
+    if isinstance(value, Audio):
+        return _parts_from_openai_content(value.format())[0]
+    if isinstance(value, File):
+        return _parts_from_openai_content(value.format())[0]
+    if isinstance(value, DSPyType):
+        formatted = value.format()
+        if isinstance(formatted, list):
+            parts = _parts_from_openai_content(formatted)
+            if len(parts) == 1:
+                return parts[0]
+        elif isinstance(formatted, str):
+            return LMTextPart(text=formatted)
+    return None
 
 
 def _coerce_part(value: Any) -> LMPart:
@@ -1750,6 +1801,9 @@ def _coerce_part(value: Any) -> LMPart:
         return LMTextPart(text=value)
     if isinstance(value, dict) and "type" in value:
         return pydantic.TypeAdapter(LMPart).validate_python(value)
+    dspy_part = _coerce_dspy_adapter_value_to_part(value)
+    if dspy_part is not None:
+        return dspy_part
     raise TypeError(f"Cannot convert {type(value)!r} to an LMPart.")
 
 
@@ -1927,6 +1981,8 @@ def _coerce_tool_spec(tool: Any) -> LMToolSpec:
         return tool
     if hasattr(tool, "to_lm_tool_spec"):
         return tool.to_lm_tool_spec()
+    if hasattr(tool, "format_as_litellm_function_call"):
+        return _coerce_tool_spec(tool.format_as_litellm_function_call())
     if isinstance(tool, dict):
         if "function" in tool:
             function = tool["function"]

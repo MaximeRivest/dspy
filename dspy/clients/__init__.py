@@ -4,7 +4,21 @@ from pathlib import Path
 from typing import Any
 
 from dspy.clients._litellm import get_litellm
-from dspy.clients.base_lm import BaseLM, inspect_history
+from dspy.clients.base_lm import BaseLM, LMCapabilities, inspect_history
+from dspy.core.types import (
+    AsyncLMStream,
+    Assistant,
+    Developer,
+    LMConfig,
+    LMRequest,
+    LMRequestPatch,
+    LMResponse,
+    LMStream,
+    System,
+    ToolCall,
+    ToolResult,
+    User,
+)
 from dspy.clients.cache import Cache
 from dspy.clients.embedding import Embedder
 from dspy.clients.lm import LM
@@ -113,6 +127,19 @@ def disable_litellm_logging():
 __all__ = [
     "BaseLM",
     "LM",
+    "LMCapabilities",
+    "LMConfig",
+    "LMRequest",
+    "LMRequestPatch",
+    "LMResponse",
+    "LMStream",
+    "AsyncLMStream",
+    "System",
+    "Developer",
+    "User",
+    "Assistant",
+    "ToolCall",
+    "ToolResult",
     "Provider",
     "TrainingJob",
     "inspect_history",

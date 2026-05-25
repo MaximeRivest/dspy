@@ -15,6 +15,7 @@ nav:
         - DSPy Programming:
             - Programming Overview: learn/programming/overview.md
             - Language Models: learn/programming/language_models.md
+            - BaseLM Migration: learn/programming/base_lm_migration.md
             - Signatures: learn/programming/signatures.md
             - Modules: learn/programming/modules.md
             - Adapters: learn/programming/adapters.md

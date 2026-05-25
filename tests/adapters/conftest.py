@@ -38,7 +38,16 @@ class CapturingLM(dspy.BaseLM):
     def supported_params(self):
         return self.source_lm.supported_params
 
-    def __call__(self, messages=None, **kwargs):
+    def __call__(self, *args, messages=None, request=None, **kwargs):
+        if request is not None:
+            from dspy.clients.openai_format import to_openai_chat_request
+
+            data = to_openai_chat_request(request)
+            data.pop("model", None)
+            messages = data.pop("messages")
+            if request.config.cache is not None and request.config.cache.enabled is not None:
+                data["cache"] = request.config.cache.enabled
+            kwargs = data
         self.calls.append({"messages": messages, "kwargs": kwargs})
         raise StopAdapterCallCapture
 
