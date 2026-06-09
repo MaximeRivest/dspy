@@ -103,7 +103,14 @@ class Recorder:
 
     def __init__(self, responses=None, stop_after=None):
         self.responses = list(responses or [])
-        self.stop_after = stop_after if stop_after is not None else len(self.responses) + 1
+        if stop_after == "complete":
+            # Replay-to-completion mode (parse-side corpus): never stop the
+            # run; the adapter must finish and return parsed values.
+            self.stop_after = None
+        elif stop_after is None:
+            self.stop_after = len(self.responses) + 1
+        else:
+            self.stop_after = stop_after
         self.calls = []
 
     def record(self, lm_name, messages, kwargs):
@@ -115,10 +122,15 @@ class Recorder:
             }
         )
         index = len(self.calls)
-        if index >= self.stop_after:
+        if self.stop_after is not None and index >= self.stop_after:
             raise StopGoldenCapture
         if index <= len(self.responses):
             return copy.deepcopy(self.responses[index - 1])
+        if self.stop_after is None:
+            raise AssertionError(
+                f"replay-to-completion case ran out of canned responses at call {index}; "
+                "add a response for every LM call the flow makes"
+            )
         raise StopGoldenCapture
 
 
@@ -198,6 +210,93 @@ def run_adapter_capture(adapter, lm, lm_kwargs, signature, demos, inputs, mode, 
         "calls": recorder.calls,
         "outcome": outcome,
     }
+
+
+def run_adapter_to_completion(adapter, lm, lm_kwargs, signature, demos, inputs, mode, recorder):
+    """Execute one adapter call to completion, capturing parsed values.
+
+    Unlike ``run_adapter_capture`` (request-side: stops at the last expected
+    call), this replays every canned response and records what the adapter
+    PARSED: the returned value dicts with their typed objects canonicalized,
+    or the exception it raised. Recorded LM payloads are kept so fallback
+    flows pin all calls alongside the final result.
+    """
+    result = {}
+    try:
+        if mode == "sync":
+            values = adapter(lm, dict(lm_kwargs), signature, list(demos), dict(inputs))
+        elif mode == "async":
+            values = asyncio.run(adapter.acall(lm, dict(lm_kwargs), signature, list(demos), dict(inputs)))
+        else:
+            raise ValueError(f"Unknown mode: {mode!r}")
+        result["outcome"] = "completed"
+        result["values"] = canonicalize(values)
+    except Exception as error:
+        result["outcome"] = f"raised:{type(error).__name__}"
+        result["error"] = canonical_error(error)
+    result["call_count"] = len(recorder.calls)
+    result["calls"] = recorder.calls
+    return result
+
+
+def canonical_error(error):
+    """Pin an exception as fixture data.
+
+    ``AdapterParseError`` is dspy-owned, so its message and attributes are
+    pinned exactly; other exception types pin only the type name because
+    their wording may belong to third-party libraries.
+    """
+    from dspy.utils.exceptions import AdapterParseError
+
+    info = {"type": type(error).__name__}
+    if isinstance(error, AdapterParseError):
+        info["message"] = canonicalize(str(error))
+        info["adapter_name"] = canonicalize(getattr(error, "adapter_name", None))
+        info["lm_response"] = canonicalize(getattr(error, "lm_response", None))
+        info["parsed_result"] = canonicalize(getattr(error, "parsed_result", None))
+    return info
+
+
+class CallbackProbe:
+    """Records the ordered adapter callback event stream as strings.
+
+    Entries look like ``"format_start:ChatAdapter"`` / ``"format_end"`` /
+    ``"parse_end:raised:AdapterParseError"``. End hooks do not receive the
+    instance, so pairing is positional — which is exactly what the fixture
+    pins (including the JSONAdapter/XMLAdapter double-fire from depth-2
+    ``with_callbacks`` wrapping and TwoStep's nested inner-adapter events).
+    Stub LMs override ``__call__`` without ``with_callbacks``, so no LM
+    events appear; the corpus pins ADAPTER event sequences only.
+    """
+
+    def __init__(self):
+        from dspy.utils.callback import BaseCallback
+
+        # Compose dynamically so this module never subclasses at import time
+        # with a stale signature if BaseCallback gains hooks.
+        probe = self
+
+        class _Probe(BaseCallback):
+            def on_adapter_format_start(self, call_id, instance, inputs):
+                probe.events.append(f"format_start:{type(instance).__name__}")
+
+            def on_adapter_format_end(self, call_id, outputs, exception):
+                probe.events.append(_end_event("format_end", exception))
+
+            def on_adapter_parse_start(self, call_id, instance, inputs):
+                probe.events.append(f"parse_start:{type(instance).__name__}")
+
+            def on_adapter_parse_end(self, call_id, outputs, exception):
+                probe.events.append(_end_event("parse_end", exception))
+
+        self.events = []
+        self.callback = _Probe()
+
+
+def _end_event(name, exception):
+    if exception is None:
+        return name
+    return f"{name}:raised:{type(exception).__name__}"
 
 
 def capture_surfaces(adapter, signature, demos, inputs, surfaces, surface_outputs=None):

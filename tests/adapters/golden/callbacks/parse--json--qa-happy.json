@@ -1,0 +1,31 @@
+{
+  "adapter": "json",
+  "case_id": "parse--json--qa-happy",
+  "expected": {
+    "acall": {
+      "events": [
+        "format_start:JSONAdapter",
+        "format_start:JSONAdapter",
+        "format_end",
+        "format_end",
+        "parse_start:JSONAdapter",
+        "parse_end"
+      ],
+      "outcome": "completed"
+    },
+    "call": {
+      "events": [
+        "format_start:JSONAdapter",
+        "format_start:JSONAdapter",
+        "format_end",
+        "format_end",
+        "parse_start:JSONAdapter",
+        "parse_end"
+      ],
+      "outcome": "completed"
+    }
+  },
+  "tags": [
+    "family:parse"
+  ]
+}

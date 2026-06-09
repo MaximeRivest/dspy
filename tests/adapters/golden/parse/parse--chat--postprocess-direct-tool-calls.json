@@ -1,0 +1,58 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {
+    "use_native_function_calling": true
+  },
+  "case_id": "parse--chat--postprocess-direct-tool-calls",
+  "expected": {
+    "postprocess": {
+      "outcome": "completed",
+      "values": [
+        {
+          "next_thought": null,
+          "tool_calls": {
+            "__pydantic_instance__": "ToolCalls",
+            "value": {
+              "tool_calls": [
+                {
+                  "args": {
+                    "query": "eiffel tower height"
+                  },
+                  "name": "search_web"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "extraction_lm": {},
+  "lm": {
+    "supports_function_calling": true
+  },
+  "lm_kwargs": {},
+  "parse_text": null,
+  "postprocess_output": {
+    "text": "",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"query\": \"eiffel tower height\"}",
+          "name": "search_web"
+        },
+        "id": "call_1",
+        "type": "function"
+      }
+    ]
+  },
+  "responses": [],
+  "runners": [
+    "postprocess"
+  ],
+  "tags": [
+    "family:parse",
+    "native-tools",
+    "pins-postprocess-signature"
+  ]
+}

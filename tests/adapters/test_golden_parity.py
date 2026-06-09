@@ -12,7 +12,13 @@ import warnings
 
 import pytest
 from golden.cases import CASES, case_fixture
-from golden.generate_fixtures import REQUEST_DIR, _versions, render_fixture
+from golden.generate_fixtures import GOLDEN_DIR, REQUEST_DIR, _versions, render_fixture
+from golden.parse_cases import (
+    CALLBACK_CASE_IDS,
+    PARSE_CASES,
+    callback_case_fixture,
+    parse_case_fixture,
+)
 
 MISSING_FIXTURE_HINT = (
     "fixture missing — generate the corpus with "
@@ -36,6 +42,28 @@ def _skip_if_python_sensitive(case):
         )
 
 
+def _assert_parity(fixture_path, actual_text):
+    assert fixture_path.exists(), MISSING_FIXTURE_HINT
+    expected_text = fixture_path.read_text(encoding="utf-8")
+    # Structured comparison first for a readable diff on failure, then exact
+    # byte equality.
+    assert json.loads(actual_text) == json.loads(expected_text)
+    assert actual_text == expected_text
+
+
+@pytest.mark.parametrize("case_id", sorted(PARSE_CASES))
+def test_parse_parity(case_id):
+    _skip_if_python_sensitive(PARSE_CASES[case_id])
+    actual = render_fixture(parse_case_fixture(PARSE_CASES[case_id]))
+    _assert_parity(GOLDEN_DIR / "parse" / f"{case_id}.json", actual)
+
+
+@pytest.mark.parametrize("case_id", sorted(CALLBACK_CASE_IDS))
+def test_callback_sequence_parity(case_id):
+    actual = render_fixture(callback_case_fixture(PARSE_CASES[case_id]))
+    _assert_parity(GOLDEN_DIR / "callbacks" / f"{case_id}.json", actual)
+
+
 @pytest.mark.parametrize("case_id", sorted(CASES))
 def test_request_parity(case_id):
     _skip_if_python_sensitive(CASES[case_id])
@@ -53,8 +81,17 @@ def test_request_parity(case_id):
 
 
 def test_fixture_files_match_registry():
-    expected_files = {f"{case_id}.json" for case_id in CASES} | {"_metadata.json"}
-    on_disk = {path.name for path in REQUEST_DIR.glob("*.json")}
+    expected_files = (
+        {f"request/{case_id}.json" for case_id in CASES}
+        | {f"parse/{case_id}.json" for case_id in PARSE_CASES}
+        | {f"callbacks/{case_id}.json" for case_id in CALLBACK_CASE_IDS}
+        | {"request/_metadata.json"}
+    )
+    on_disk = {
+        str(path.relative_to(GOLDEN_DIR))
+        for corpus in ("request", "parse", "callbacks")
+        for path in (GOLDEN_DIR / corpus).glob("*.json")
+    }
     assert on_disk == expected_files, (
         "fixture files out of sync with the case registry "
         f"(missing: {sorted(expected_files - on_disk)}, stale: {sorted(on_disk - expected_files)})"

@@ -1,0 +1,31 @@
+{
+  "adapter": "xml",
+  "case_id": "parse--xml--qa-happy",
+  "expected": {
+    "acall": {
+      "events": [
+        "format_start:XMLAdapter",
+        "format_start:XMLAdapter",
+        "format_end",
+        "format_end",
+        "parse_start:XMLAdapter",
+        "parse_end"
+      ],
+      "outcome": "completed"
+    },
+    "call": {
+      "events": [
+        "format_start:XMLAdapter",
+        "format_start:XMLAdapter",
+        "format_end",
+        "format_end",
+        "parse_start:XMLAdapter",
+        "parse_end"
+      ],
+      "outcome": "completed"
+    }
+  },
+  "tags": [
+    "family:parse"
+  ]
+}

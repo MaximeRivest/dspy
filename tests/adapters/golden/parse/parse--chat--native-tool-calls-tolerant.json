@@ -1,0 +1,205 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {
+    "use_native_function_calling": true
+  },
+  "case_id": "parse--chat--native-tool-calls-tolerant",
+  "expected": {
+    "acall": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {
+            "tools": [
+              {
+                "function": {
+                  "description": "Search the web for documents.",
+                  "name": "search_web",
+                  "parameters": {
+                    "properties": {
+                      "k": {
+                        "default": 3,
+                        "type": "integer"
+                      },
+                      "query": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "query",
+                      "k"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "type": "function"
+              },
+              {
+                "function": {
+                  "description": "Look up a user profile by id.",
+                  "name": "lookup_user",
+                  "parameters": {
+                    "properties": {
+                      "user_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "user_id"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "type": "function"
+              }
+            ]
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `next_thought` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## next_thought ## ]]\n{next_thought}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Decide the next step, calling tools if useful.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nHow tall is the Eiffel Tower?\n\nRespond with the corresponding output fields, starting with the field `[[ ## next_thought ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "next_thought": null,
+          "tool_calls": {
+            "__pydantic_instance__": "ToolCalls",
+            "value": {
+              "tool_calls": [
+                {
+                  "args": {
+                    "query": "eiffel tower height"
+                  },
+                  "name": "search_web"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "call": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {
+            "tools": [
+              {
+                "function": {
+                  "description": "Search the web for documents.",
+                  "name": "search_web",
+                  "parameters": {
+                    "properties": {
+                      "k": {
+                        "default": 3,
+                        "type": "integer"
+                      },
+                      "query": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "query",
+                      "k"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "type": "function"
+              },
+              {
+                "function": {
+                  "description": "Look up a user profile by id.",
+                  "name": "lookup_user",
+                  "parameters": {
+                    "properties": {
+                      "user_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "user_id"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "type": "function"
+              }
+            ]
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `next_thought` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## next_thought ## ]]\n{next_thought}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Decide the next step, calling tools if useful.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nHow tall is the Eiffel Tower?\n\nRespond with the corresponding output fields, starting with the field `[[ ## next_thought ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "next_thought": null,
+          "tool_calls": {
+            "__pydantic_instance__": "ToolCalls",
+            "value": {
+              "tool_calls": [
+                {
+                  "args": {
+                    "query": "eiffel tower height"
+                  },
+                  "name": "search_web"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "extraction_lm": {},
+  "lm": {
+    "supports_function_calling": true
+  },
+  "lm_kwargs": {},
+  "parse_text": null,
+  "postprocess_output": null,
+  "responses": [
+    [
+      {
+        "text": "",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"query\": \"eiffel tower height\"}",
+              "name": "search_web"
+            },
+            "id": "call_1",
+            "type": "function"
+          }
+        ]
+      }
+    ]
+  ],
+  "runners": [
+    "call",
+    "acall"
+  ],
+  "tags": [
+    "family:parse",
+    "native-tools"
+  ]
+}

@@ -1,0 +1,138 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {},
+  "case_id": "parse--chat--native-citations",
+  "expected": {
+    "acall": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `document` (Document): \n    Type description of Document: A document containing text content that can be referenced and cited. Include the full text content and optionally a title for proper referencing.\n2. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## document ## ]]\n{document}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer with citations.",
+              "role": "system"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## document ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "citations": {
+                    "enabled": true
+                  },
+                  "source": {
+                    "data": "Water boils at 100C.",
+                    "media_type": "text/plain",
+                    "type": "text"
+                  },
+                  "title": "Physics",
+                  "type": "document"
+                },
+                {
+                  "text": "\n\n[[ ## question ## ]]\nWhen does water boil?\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "answer": "At 100C.",
+          "citations": {
+            "__pydantic_instance__": "Citations",
+            "value": "<<CUSTOM-TYPE-START-IDENTIFIER>>[{\"type\": \"char_location\", \"cited_text\": \"Water boils at 100C.\", \"document_index\": 0, \"start_char_index\": 0, \"end_char_index\": 20}]<<CUSTOM-TYPE-END-IDENTIFIER>>"
+          }
+        }
+      ]
+    },
+    "call": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `document` (Document): \n    Type description of Document: A document containing text content that can be referenced and cited. Include the full text content and optionally a title for proper referencing.\n2. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## document ## ]]\n{document}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer with citations.",
+              "role": "system"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## document ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "citations": {
+                    "enabled": true
+                  },
+                  "source": {
+                    "data": "Water boils at 100C.",
+                    "media_type": "text/plain",
+                    "type": "text"
+                  },
+                  "title": "Physics",
+                  "type": "document"
+                },
+                {
+                  "text": "\n\n[[ ## question ## ]]\nWhen does water boil?\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "answer": "At 100C.",
+          "citations": {
+            "__pydantic_instance__": "Citations",
+            "value": "<<CUSTOM-TYPE-START-IDENTIFIER>>[{\"type\": \"char_location\", \"cited_text\": \"Water boils at 100C.\", \"document_index\": 0, \"start_char_index\": 0, \"end_char_index\": 20}]<<CUSTOM-TYPE-END-IDENTIFIER>>"
+          }
+        }
+      ]
+    }
+  },
+  "extraction_lm": {},
+  "lm": {
+    "model": "anthropic/claude-3-7-sonnet-20250219"
+  },
+  "lm_kwargs": {},
+  "parse_text": null,
+  "postprocess_output": null,
+  "responses": [
+    [
+      {
+        "citations": [
+          {
+            "cited_text": "Water boils at 100C.",
+            "document_index": 0,
+            "end_char_index": 20,
+            "start_char_index": 0
+          }
+        ],
+        "text": "[[ ## answer ## ]]\nAt 100C.\n\n[[ ## completed ## ]]"
+      }
+    ]
+  ],
+  "runners": [
+    "call",
+    "acall"
+  ],
+  "tags": [
+    "family:parse",
+    "native-citations",
+    "provider-sniff"
+  ]
+}
