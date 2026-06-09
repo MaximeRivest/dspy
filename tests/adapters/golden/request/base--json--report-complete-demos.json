@@ -1,0 +1,76 @@
+{
+  "adapter": "json",
+  "adapter_kwargs": {},
+  "case_id": "base--json--report-complete-demos",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `context` (list[str]): Background passages.\n2. `question` (str):\nYour output fields are:\n1. `verdict` (Literal['yes', 'no']): Final yes/no call.\n2. `confidence` (float): Between 0 and 1.\n3. `keywords` (list[str]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## context ## ]]\n{context}\n\n[[ ## question ## ]]\n{question}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"verdict\": \"{verdict}        # note: the value you produce must exactly match (no extra characters) one of: yes; no\",\n  \"confidence\": \"{confidence}        # note: the value you produce must be a single float value\",\n  \"keywords\": \"{keywords}        # note: the value you produce must adhere to the JSON schema: {\\\"type\\\": \\\"array\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}}\"\n}\nIn adhering to this structure, your objective is: \n        Produce a careful report.\n        \n        Use every signal available and keep each field short.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## context ## ]]\n[\"The sky is blue.\", \"Water is wet.\"]\n\n[[ ## question ## ]]\nIs the sky blue?",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"verdict\": \"yes\",\n  \"confidence\": 0.9,\n  \"keywords\": [\n    \"sky\",\n    \"blue\"\n  ]\n}",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## context ## ]]\n[\"Mars is red.\", \"Mars has two moons.\"]\n\n[[ ## question ## ]]\nIs Mars red?\n\nRespond with a JSON object in the following order of fields: `verdict` (must be formatted as a valid Python Literal['yes', 'no']), then `confidence` (must be formatted as a valid Python float), then `keywords` (must be formatted as a valid Python list[str]).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `context` (list[str]): Background passages.\n2. `question` (str):\nYour output fields are:\n1. `verdict` (Literal['yes', 'no']): Final yes/no call.\n2. `confidence` (float): Between 0 and 1.\n3. `keywords` (list[str]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## context ## ]]\n{context}\n\n[[ ## question ## ]]\n{question}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"verdict\": \"{verdict}        # note: the value you produce must exactly match (no extra characters) one of: yes; no\",\n  \"confidence\": \"{confidence}        # note: the value you produce must be a single float value\",\n  \"keywords\": \"{keywords}        # note: the value you produce must adhere to the JSON schema: {\\\"type\\\": \\\"array\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}}\"\n}\nIn adhering to this structure, your objective is: \n        Produce a careful report.\n        \n        Use every signal available and keep each field short.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## context ## ]]\n[\"The sky is blue.\", \"Water is wet.\"]\n\n[[ ## question ## ]]\nIs the sky blue?",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"verdict\": \"yes\",\n  \"confidence\": 0.9,\n  \"keywords\": [\n    \"sky\",\n    \"blue\"\n  ]\n}",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## context ## ]]\n[\"Mars is red.\", \"Mars has two moons.\"]\n\n[[ ## question ## ]]\nIs Mars red?\n\nRespond with a JSON object in the following order of fields: `verdict` (must be formatted as a valid Python Literal['yes', 'no']), then `confidence` (must be formatted as a valid Python float), then `keywords` (must be formatted as a valid Python list[str]).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:base"
+  ]
+}

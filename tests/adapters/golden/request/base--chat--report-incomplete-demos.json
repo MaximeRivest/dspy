@@ -1,0 +1,76 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {},
+  "case_id": "base--chat--report-incomplete-demos",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `context` (list[str]): Background passages.\n2. `question` (str):\nYour output fields are:\n1. `verdict` (Literal['yes', 'no']): Final yes/no call.\n2. `confidence` (float): Between 0 and 1.\n3. `keywords` (list[str]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## context ## ]]\n{context}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## verdict ## ]]\n{verdict}        # note: the value you produce must exactly match (no extra characters) one of: yes; no\n\n[[ ## confidence ## ]]\n{confidence}        # note: the value you produce must be a single float value\n\n[[ ## keywords ## ]]\n{keywords}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"array\", \"items\": {\"type\": \"string\"}}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Produce a careful report.\n        \n        Use every signal available and keep each field short.",
+              "role": "system"
+            },
+            {
+              "content": "This is an example of the task, though some input or output fields are not supplied.\n\n[[ ## context ## ]]\n[\"Grass is green.\"]\n\n[[ ## question ## ]]\nIs grass green?",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## verdict ## ]]\nyes\n\n[[ ## confidence ## ]]\nNot supplied for this particular example. \n\n[[ ## keywords ## ]]\nNot supplied for this particular example.\n\n[[ ## completed ## ]]\n",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## context ## ]]\n[\"Mars is red.\", \"Mars has two moons.\"]\n\n[[ ## question ## ]]\nIs Mars red?\n\nRespond with the corresponding output fields, starting with the field `[[ ## verdict ## ]]` (must be formatted as a valid Python Literal['yes', 'no']), then `[[ ## confidence ## ]]` (must be formatted as a valid Python float), then `[[ ## keywords ## ]]` (must be formatted as a valid Python list[str]), and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `context` (list[str]): Background passages.\n2. `question` (str):\nYour output fields are:\n1. `verdict` (Literal['yes', 'no']): Final yes/no call.\n2. `confidence` (float): Between 0 and 1.\n3. `keywords` (list[str]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## context ## ]]\n{context}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## verdict ## ]]\n{verdict}        # note: the value you produce must exactly match (no extra characters) one of: yes; no\n\n[[ ## confidence ## ]]\n{confidence}        # note: the value you produce must be a single float value\n\n[[ ## keywords ## ]]\n{keywords}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"array\", \"items\": {\"type\": \"string\"}}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Produce a careful report.\n        \n        Use every signal available and keep each field short.",
+              "role": "system"
+            },
+            {
+              "content": "This is an example of the task, though some input or output fields are not supplied.\n\n[[ ## context ## ]]\n[\"Grass is green.\"]\n\n[[ ## question ## ]]\nIs grass green?",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## verdict ## ]]\nyes\n\n[[ ## confidence ## ]]\nNot supplied for this particular example. \n\n[[ ## keywords ## ]]\nNot supplied for this particular example.\n\n[[ ## completed ## ]]\n",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## context ## ]]\n[\"Mars is red.\", \"Mars has two moons.\"]\n\n[[ ## question ## ]]\nIs Mars red?\n\nRespond with the corresponding output fields, starting with the field `[[ ## verdict ## ]]` (must be formatted as a valid Python Literal['yes', 'no']), then `[[ ## confidence ## ]]` (must be formatted as a valid Python float), then `[[ ## keywords ## ]]` (must be formatted as a valid Python list[str]), and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:base"
+  ]
+}

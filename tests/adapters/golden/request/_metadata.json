@@ -1,0 +1,11 @@
+{
+  "case_count": 143,
+  "corpus": "request",
+  "versions": {
+    "dspy": "3.3.0b1",
+    "json_repair": "0.54.2",
+    "litellm": "1.68.0",
+    "pydantic": "2.12.4",
+    "python": "3.13.3"
+  }
+}

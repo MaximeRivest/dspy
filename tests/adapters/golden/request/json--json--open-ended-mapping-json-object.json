@@ -1,0 +1,75 @@
+{
+  "adapter": "json",
+  "adapter_kwargs": {},
+  "case_id": "json--json--open-ended-mapping-json-object",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {
+            "response_format": {
+              "type": "json_object"
+            }
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str):\nYour output fields are:\n1. `info` (dict[str, Any]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## text ## ]]\n{text}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"info\": \"{info}        # note: the value you produce must adhere to the JSON schema: {\\\"type\\\": \\\"object\\\", \\\"additionalProperties\\\": true}\"\n}\nIn adhering to this structure, your objective is: \n        Extract everything.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## text ## ]]\nAlice, 30, lives in Paris.\n\nRespond with a JSON object in the following order of fields: `info` (must be formatted as a valid Python dict[str, Any]).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {
+            "response_format": {
+              "type": "json_object"
+            }
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str):\nYour output fields are:\n1. `info` (dict[str, Any]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## text ## ]]\n{text}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"info\": \"{info}        # note: the value you produce must adhere to the JSON schema: {\\\"type\\\": \\\"object\\\", \\\"additionalProperties\\\": true}\"\n}\nIn adhering to this structure, your objective is: \n        Extract everything.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## text ## ]]\nAlice, 30, lives in Paris.\n\nRespond with a JSON object in the following order of fields: `info` (must be formatted as a valid Python dict[str, Any]).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {
+    "supported_params": [
+      "response_format",
+      "tools",
+      "temperature"
+    ],
+    "supports_response_schema": true
+  },
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:json"
+  ]
+}

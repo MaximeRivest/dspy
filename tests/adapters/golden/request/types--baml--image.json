@@ -1,0 +1,136 @@
+{
+  "adapter": "baml",
+  "adapter_kwargs": {},
+  "case_id": "types--baml--image",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `image` (Image): \n2. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## image ## ]]\n{image}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\nOutput field `answer` should be of type: string\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Inspect the image.",
+              "role": "system"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## image ## ]]\n\"",
+                  "type": "text"
+                },
+                {
+                  "image_url": {
+                    "url": "https://example.com/golden/photo.png"
+                  },
+                  "type": "image_url"
+                },
+                {
+                  "text": "\"\n\n[[ ## question ## ]]\nWhat is shown?",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"answer\": \"A mug.\"\n}",
+              "role": "assistant"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## image ## ]]\n\"",
+                  "type": "text"
+                },
+                {
+                  "image_url": {
+                    "url": "https://example.com/golden/photo.png"
+                  },
+                  "type": "image_url"
+                },
+                {
+                  "text": "\"\n\n[[ ## question ## ]]\nWhat color is it?\n\nRespond with a JSON object in the following order of fields: `answer`.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `image` (Image): \n2. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## image ## ]]\n{image}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\nOutput field `answer` should be of type: string\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Inspect the image.",
+              "role": "system"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## image ## ]]\n\"",
+                  "type": "text"
+                },
+                {
+                  "image_url": {
+                    "url": "https://example.com/golden/photo.png"
+                  },
+                  "type": "image_url"
+                },
+                {
+                  "text": "\"\n\n[[ ## question ## ]]\nWhat is shown?",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"answer\": \"A mug.\"\n}",
+              "role": "assistant"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## image ## ]]\n\"",
+                  "type": "text"
+                },
+                {
+                  "image_url": {
+                    "url": "https://example.com/golden/photo.png"
+                  },
+                  "type": "image_url"
+                },
+                {
+                  "text": "\"\n\n[[ ## question ## ]]\nWhat color is it?\n\nRespond with a JSON object in the following order of fields: `answer`.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:types"
+  ]
+}

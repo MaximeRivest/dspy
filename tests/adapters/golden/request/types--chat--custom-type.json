@@ -1,0 +1,90 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {},
+  "case_id": "types--chat--custom-type",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `event` (GoldenEvent): \n    Type description of GoldenEvent: An event block.\n2. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## event ## ]]\n{event}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Describe the event.",
+              "role": "system"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## event ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "event": {
+                    "label": "launch"
+                  },
+                  "type": "event"
+                },
+                {
+                  "text": "\n\n[[ ## question ## ]]\nWhat happened?\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `event` (GoldenEvent): \n    Type description of GoldenEvent: An event block.\n2. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## event ## ]]\n{event}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Describe the event.",
+              "role": "system"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## event ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "event": {
+                    "label": "launch"
+                  },
+                  "type": "event"
+                },
+                {
+                  "text": "\n\n[[ ## question ## ]]\nWhat happened?\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:types"
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "adapter": "two_step",
+  "adapter_kwargs": {},
+  "case_id": "types--two_step--pydantic-io",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `profile` (GoldenProfile): \n2. `question` (str):\nYour outputs must contain:\n1. `card` (GoldenAnswerCard):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Answer about the profile.",
+              "role": "system"
+            },
+            {
+              "content": "profile: name='Ada' location=GoldenLocation(city='London', country='UK') interests=['math']\n\nquestion: Who is Ada?",
+              "role": "user"
+            },
+            {
+              "content": "card: answer='A mathematician.' sources=['memory']",
+              "role": "assistant"
+            },
+            {
+              "content": "profile: name='Grace' location=GoldenLocation(city='Arlington', country='USA') interests=['compilers', 'navy']\n\nquestion: Who is Grace?",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `profile` (GoldenProfile): \n2. `question` (str):\nYour outputs must contain:\n1. `card` (GoldenAnswerCard):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Answer about the profile.",
+              "role": "system"
+            },
+            {
+              "content": "profile: name='Ada' location=GoldenLocation(city='London', country='UK') interests=['math']\n\nquestion: Who is Ada?",
+              "role": "user"
+            },
+            {
+              "content": "card: answer='A mathematician.' sources=['memory']",
+              "role": "assistant"
+            },
+            {
+              "content": "profile: name='Grace' location=GoldenLocation(city='Arlington', country='USA') interests=['compilers', 'navy']\n\nquestion: Who is Grace?",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:types"
+  ]
+}
