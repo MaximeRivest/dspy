@@ -1,0 +1,136 @@
+{
+  "adapter": "xml",
+  "adapter_kwargs": {},
+  "case_id": "multicall--xml--inherited-json-fallback",
+  "expected": {
+    "async": {
+      "call_count": 2,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n<question>\n{question}\n</question>\n\n<answer>\n{answer}\n</answer>\nIn adhering to this structure, your objective is: \n        Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "<question>\nWhat is the capital of Germany?\n</question>\n\nRespond with the corresponding output fields wrapped in XML tags `<answer>`.",
+              "role": "user"
+            }
+          ]
+        },
+        {
+          "kwargs": {
+            "response_format": {
+              "__pydantic_model__": "DSPyProgramOutputs",
+              "json_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "title": "Answer",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "answer"
+                ],
+                "title": "DSPyProgramOutputs",
+                "type": "object"
+              }
+            }
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## question ## ]]\n{question}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"answer\": \"{answer}\"\n}\nIn adhering to this structure, your objective is: \n        Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nWhat is the capital of Germany?\n\nRespond with a JSON object in the following order of fields: `answer`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 2,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n<question>\n{question}\n</question>\n\n<answer>\n{answer}\n</answer>\nIn adhering to this structure, your objective is: \n        Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "<question>\nWhat is the capital of Germany?\n</question>\n\nRespond with the corresponding output fields wrapped in XML tags `<answer>`.",
+              "role": "user"
+            }
+          ]
+        },
+        {
+          "kwargs": {
+            "response_format": {
+              "__pydantic_model__": "DSPyProgramOutputs",
+              "json_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "title": "Answer",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "answer"
+                ],
+                "title": "DSPyProgramOutputs",
+                "type": "object"
+              }
+            }
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## question ## ]]\n{question}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"answer\": \"{answer}\"\n}\nIn adhering to this structure, your objective is: \n        Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nWhat is the capital of Germany?\n\nRespond with a JSON object in the following order of fields: `answer`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {
+    "supported_params": [
+      "response_format",
+      "tools",
+      "temperature"
+    ],
+    "supports_response_schema": true
+  },
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [
+    [
+      "no xml tags at all"
+    ]
+  ],
+  "stop_after": 2,
+  "surfaces": [],
+  "tags": [
+    "family:multicall",
+    "fallback"
+  ]
+}

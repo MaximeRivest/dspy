@@ -1,0 +1,69 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {},
+  "case_id": "misc--chat--temperature-and-max-tokens",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {
+            "max_tokens": 64,
+            "temperature": 0.3
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nWhat is the capital of Germany?\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {
+            "max_tokens": 64,
+            "temperature": 0.3
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nWhat is the capital of Germany?\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {
+    "max_tokens": 64,
+    "temperature": 0.3
+  },
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:misc"
+  ]
+}

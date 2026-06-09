@@ -1,0 +1,76 @@
+{
+  "adapter": "two_step",
+  "adapter_kwargs": {},
+  "case_id": "types--two_step--history",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `history` (History): \n2. `question` (str):\nYour outputs must contain:\n1. `answer` (str):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Continue the conversation.",
+              "role": "system"
+            },
+            {
+              "content": "history: messages=[]\n\nquestion: Hi?",
+              "role": "user"
+            },
+            {
+              "content": "answer: Hello!",
+              "role": "assistant"
+            },
+            {
+              "content": "history: messages=[{'question': 'Who wrote Hamlet?', 'answer': 'Shakespeare'}, {'question': 'When?', 'answer': 'Around 1600.'}]\n\nquestion: Where was he born?",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `history` (History): \n2. `question` (str):\nYour outputs must contain:\n1. `answer` (str):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Continue the conversation.",
+              "role": "system"
+            },
+            {
+              "content": "history: messages=[]\n\nquestion: Hi?",
+              "role": "user"
+            },
+            {
+              "content": "answer: Hello!",
+              "role": "assistant"
+            },
+            {
+              "content": "history: messages=[{'question': 'Who wrote Hamlet?', 'answer': 'Shakespeare'}, {'question': 'When?', 'answer': 'Around 1600.'}]\n\nquestion: Where was he born?",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:types"
+  ]
+}

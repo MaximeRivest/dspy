@@ -1,0 +1,126 @@
+{
+  "adapter": "two_step",
+  "adapter_kwargs": {},
+  "case_id": "multicall--two_step--main-then-extraction",
+  "expected": {
+    "async": {
+      "call_count": 2,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `question` (str):\nYour outputs must contain:\n1. `answer` (str):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "question: What is the capital of France?",
+              "role": "user"
+            },
+            {
+              "content": "answer: Paris",
+              "role": "assistant"
+            },
+            {
+              "content": "question: What is 2 + 2?",
+              "role": "user"
+            },
+            {
+              "content": "answer: 4",
+              "role": "assistant"
+            },
+            {
+              "content": "question: What is the capital of Germany?",
+              "role": "user"
+            }
+          ]
+        },
+        {
+          "kwargs": {},
+          "lm": "extraction",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## text ## ]]\n{text}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        The input is a text that should contain all the necessary information to produce the fields `answer`.             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## text ## ]]\nThe capital of Germany is Berlin, of course.\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 2,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `question` (str):\nYour outputs must contain:\n1. `answer` (str):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "question: What is the capital of France?",
+              "role": "user"
+            },
+            {
+              "content": "answer: Paris",
+              "role": "assistant"
+            },
+            {
+              "content": "question: What is 2 + 2?",
+              "role": "user"
+            },
+            {
+              "content": "answer: 4",
+              "role": "assistant"
+            },
+            {
+              "content": "question: What is the capital of Germany?",
+              "role": "user"
+            }
+          ]
+        },
+        {
+          "kwargs": {},
+          "lm": "extraction",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## text ## ]]\n{text}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        The input is a text that should contain all the necessary information to produce the fields `answer`.             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## text ## ]]\nThe capital of Germany is Berlin, of course.\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [
+    [
+      "The capital of Germany is Berlin, of course."
+    ]
+  ],
+  "stop_after": 2,
+  "surfaces": [],
+  "tags": [
+    "family:multicall",
+    "two-step",
+    "legacy-async-quirk"
+  ]
+}

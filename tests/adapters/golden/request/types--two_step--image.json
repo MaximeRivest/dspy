@@ -1,0 +1,106 @@
+{
+  "adapter": "two_step",
+  "adapter_kwargs": {},
+  "case_id": "types--two_step--image",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `image` (Image): \n2. `question` (str):\nYour outputs must contain:\n1. `answer` (str):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Inspect the image.",
+              "role": "system"
+            },
+            {
+              "content": "image: <<CUSTOM-TYPE-START-IDENTIFIER>>[{\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/golden/photo.png\"}}]<<CUSTOM-TYPE-END-IDENTIFIER>>\n\nquestion: What is shown?",
+              "role": "user"
+            },
+            {
+              "content": "answer: A mug.",
+              "role": "assistant"
+            },
+            {
+              "content": "image: <<CUSTOM-TYPE-START-IDENTIFIER>>[{\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/golden/photo.png\"}}]<<CUSTOM-TYPE-END-IDENTIFIER>>\n\nquestion: What color is it?",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `image` (Image): \n2. `question` (str):\nYour outputs must contain:\n1. `answer` (str):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Inspect the image.",
+              "role": "system"
+            },
+            {
+              "content": [
+                {
+                  "text": "image: ",
+                  "type": "text"
+                },
+                {
+                  "image_url": {
+                    "url": "https://example.com/golden/photo.png"
+                  },
+                  "type": "image_url"
+                },
+                {
+                  "text": "\n\nquestion: What is shown?",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            },
+            {
+              "content": "answer: A mug.",
+              "role": "assistant"
+            },
+            {
+              "content": [
+                {
+                  "text": "image: ",
+                  "type": "text"
+                },
+                {
+                  "image_url": {
+                    "url": "https://example.com/golden/photo.png"
+                  },
+                  "type": "image_url"
+                },
+                {
+                  "text": "\n\nquestion: What color is it?",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:types"
+  ]
+}

@@ -1,0 +1,287 @@
+{
+  "adapter": "json",
+  "adapter_kwargs": {},
+  "case_id": "sink--json--kitchen-sink",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `history` (History): \n2. `image` (Image): \n3. `audio` (Audio): \n4. `file` (File): \n5. `document` (Document): \n    Type description of Document: A document containing text content that can be referenced and cited. Include the full text content and optionally a title for proper referencing.\n6. `event` (GoldenEvent): \n    Type description of GoldenEvent: An event block.\n7. `tools` (list[Tool]): \n8. `profile` (GoldenProfile): \n9. `context` (str): \n10. `question` (str):\nYour output fields are:\n1. `answer` (GoldenAnswerCard): \n2. `verdict` (Literal['yes', 'no']): \n3. `confidence` (float):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## history ## ]]\n{history}\n\n[[ ## image ## ]]\n{image}\n\n[[ ## audio ## ]]\n{audio}\n\n[[ ## file ## ]]\n{file}\n\n[[ ## document ## ]]\n{document}\n\n[[ ## event ## ]]\n{event}\n\n[[ ## tools ## ]]\n{tools}\n\n[[ ## profile ## ]]\n{profile}\n\n[[ ## context ## ]]\n{context}\n\n[[ ## question ## ]]\n{question}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"answer\": \"{answer}        # note: the value you produce must adhere to the JSON schema: {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"answer\\\": {\\\"type\\\": \\\"string\\\", \\\"title\\\": \\\"Answer\\\"}, \\\"sources\\\": {\\\"type\\\": \\\"array\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Sources\\\"}}, \\\"required\\\": [\\\"answer\\\", \\\"sources\\\"], \\\"title\\\": \\\"GoldenAnswerCard\\\"}\",\n  \"verdict\": \"{verdict}        # note: the value you produce must exactly match (no extra characters) one of: yes; no\",\n  \"confidence\": \"{confidence}        # note: the value you produce must be a single float value\"\n}\nIn adhering to this structure, your objective is: \n        Answer carefully using every available signal.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## profile ## ]]\n{\"name\": \"Ada\", \"location\": {\"city\": \"London\", \"country\": \"UK\"}, \"interests\": [\"math\"]}\n\n[[ ## context ## ]]\nold note\n\n[[ ## question ## ]]\nWho is Ada?",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"answer\": {\n    \"answer\": \"A mathematician.\",\n    \"sources\": [\n      \"memory\"\n    ]\n  },\n  \"verdict\": \"yes\",\n  \"confidence\": 0.8\n}",
+              "role": "assistant"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## image ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "image_url": {
+                    "url": "https://example.com/golden/photo.png"
+                  },
+                  "type": "image_url"
+                },
+                {
+                  "text": "\n\n[[ ## audio ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "input_audio": {
+                    "data": "c2lsZW5jZQ==",
+                    "format": "wav"
+                  },
+                  "type": "input_audio"
+                },
+                {
+                  "text": "\n\n[[ ## file ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "file": {
+                    "file_data": "data:text/plain;base64,aGVsbG8gZmlsZQ==",
+                    "filename": "notes.txt"
+                  },
+                  "type": "file"
+                },
+                {
+                  "text": "\n\n[[ ## document ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "citations": {
+                    "enabled": true
+                  },
+                  "source": {
+                    "data": "The Earth orbits the Sun.",
+                    "media_type": "text/plain",
+                    "type": "text"
+                  },
+                  "title": "Astronomy",
+                  "type": "document"
+                },
+                {
+                  "text": "\n\n[[ ## event ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "event": {
+                    "label": "launch"
+                  },
+                  "type": "event"
+                },
+                {
+                  "text": "\n\n[[ ## tools ## ]]\n[\"search_web, whose description is <desc>Search the web for documents.</desc>. It takes arguments {'query': {'type': 'string'}, 'k': {'type': 'integer', 'default': 3}}.\"]\n\n[[ ## profile ## ]]\n{\"name\": \"Grace\", \"location\": {\"city\": \"Arlington\", \"country\": \"USA\"}, \"interests\": [\"compilers\"]}\n\n[[ ## context ## ]]\nGrace joined in 2020.\n\n[[ ## question ## ]]\nWho is Grace?\n\nRespond with a JSON object in the following order of fields: `answer` (must be formatted as a valid Python GoldenAnswerCard), then `verdict` (must be formatted as a valid Python Literal['yes', 'no']), then `confidence` (must be formatted as a valid Python float).",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "surfaces": {
+      "format": [
+        {
+          "content": "Your input fields are:\n1. `history` (History): \n2. `image` (Image): \n3. `audio` (Audio): \n4. `file` (File): \n5. `document` (Document): \n    Type description of Document: A document containing text content that can be referenced and cited. Include the full text content and optionally a title for proper referencing.\n6. `event` (GoldenEvent): \n    Type description of GoldenEvent: An event block.\n7. `tools` (list[Tool]): \n8. `profile` (GoldenProfile): \n9. `context` (str): \n10. `question` (str):\nYour output fields are:\n1. `answer` (GoldenAnswerCard): \n2. `verdict` (Literal['yes', 'no']): \n3. `confidence` (float):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## history ## ]]\n{history}\n\n[[ ## image ## ]]\n{image}\n\n[[ ## audio ## ]]\n{audio}\n\n[[ ## file ## ]]\n{file}\n\n[[ ## document ## ]]\n{document}\n\n[[ ## event ## ]]\n{event}\n\n[[ ## tools ## ]]\n{tools}\n\n[[ ## profile ## ]]\n{profile}\n\n[[ ## context ## ]]\n{context}\n\n[[ ## question ## ]]\n{question}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"answer\": \"{answer}        # note: the value you produce must adhere to the JSON schema: {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"answer\\\": {\\\"type\\\": \\\"string\\\", \\\"title\\\": \\\"Answer\\\"}, \\\"sources\\\": {\\\"type\\\": \\\"array\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Sources\\\"}}, \\\"required\\\": [\\\"answer\\\", \\\"sources\\\"], \\\"title\\\": \\\"GoldenAnswerCard\\\"}\",\n  \"verdict\": \"{verdict}        # note: the value you produce must exactly match (no extra characters) one of: yes; no\",\n  \"confidence\": \"{confidence}        # note: the value you produce must be a single float value\"\n}\nIn adhering to this structure, your objective is: \n        Answer carefully using every available signal.",
+          "role": "system"
+        },
+        {
+          "content": "[[ ## profile ## ]]\n{\"name\": \"Ada\", \"location\": {\"city\": \"London\", \"country\": \"UK\"}, \"interests\": [\"math\"]}\n\n[[ ## context ## ]]\nold note\n\n[[ ## question ## ]]\nWho is Ada?",
+          "role": "user"
+        },
+        {
+          "content": "{\n  \"answer\": {\n    \"answer\": \"A mathematician.\",\n    \"sources\": [\n      \"memory\"\n    ]\n  },\n  \"verdict\": \"yes\",\n  \"confidence\": 0.8\n}",
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "[[ ## image ## ]]\n",
+              "type": "text"
+            },
+            {
+              "image_url": {
+                "url": "https://example.com/golden/photo.png"
+              },
+              "type": "image_url"
+            },
+            {
+              "text": "\n\n[[ ## audio ## ]]\n",
+              "type": "text"
+            },
+            {
+              "input_audio": {
+                "data": "c2lsZW5jZQ==",
+                "format": "wav"
+              },
+              "type": "input_audio"
+            },
+            {
+              "text": "\n\n[[ ## file ## ]]\n",
+              "type": "text"
+            },
+            {
+              "file": {
+                "file_data": "data:text/plain;base64,aGVsbG8gZmlsZQ==",
+                "filename": "notes.txt"
+              },
+              "type": "file"
+            },
+            {
+              "text": "\n\n[[ ## document ## ]]\n",
+              "type": "text"
+            },
+            {
+              "citations": {
+                "enabled": true
+              },
+              "source": {
+                "data": "The Earth orbits the Sun.",
+                "media_type": "text/plain",
+                "type": "text"
+              },
+              "title": "Astronomy",
+              "type": "document"
+            },
+            {
+              "text": "\n\n[[ ## event ## ]]\n",
+              "type": "text"
+            },
+            {
+              "event": {
+                "label": "launch"
+              },
+              "type": "event"
+            },
+            {
+              "text": "\n\n[[ ## tools ## ]]\n[\"search_web, whose description is <desc>Search the web for documents.</desc>. It takes arguments {'query': {'type': 'string'}, 'k': {'type': 'integer', 'default': 3}}.\"]\n\n[[ ## profile ## ]]\n{\"name\": \"Grace\", \"location\": {\"city\": \"Arlington\", \"country\": \"USA\"}, \"interests\": [\"compilers\"]}\n\n[[ ## context ## ]]\nGrace joined in 2020.\n\n[[ ## question ## ]]\nWho is Grace?\n\nRespond with a JSON object in the following order of fields: `answer` (must be formatted as a valid Python GoldenAnswerCard), then `verdict` (must be formatted as a valid Python Literal['yes', 'no']), then `confidence` (must be formatted as a valid Python float).",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ]
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `history` (History): \n2. `image` (Image): \n3. `audio` (Audio): \n4. `file` (File): \n5. `document` (Document): \n    Type description of Document: A document containing text content that can be referenced and cited. Include the full text content and optionally a title for proper referencing.\n6. `event` (GoldenEvent): \n    Type description of GoldenEvent: An event block.\n7. `tools` (list[Tool]): \n8. `profile` (GoldenProfile): \n9. `context` (str): \n10. `question` (str):\nYour output fields are:\n1. `answer` (GoldenAnswerCard): \n2. `verdict` (Literal['yes', 'no']): \n3. `confidence` (float):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## history ## ]]\n{history}\n\n[[ ## image ## ]]\n{image}\n\n[[ ## audio ## ]]\n{audio}\n\n[[ ## file ## ]]\n{file}\n\n[[ ## document ## ]]\n{document}\n\n[[ ## event ## ]]\n{event}\n\n[[ ## tools ## ]]\n{tools}\n\n[[ ## profile ## ]]\n{profile}\n\n[[ ## context ## ]]\n{context}\n\n[[ ## question ## ]]\n{question}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"answer\": \"{answer}        # note: the value you produce must adhere to the JSON schema: {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"answer\\\": {\\\"type\\\": \\\"string\\\", \\\"title\\\": \\\"Answer\\\"}, \\\"sources\\\": {\\\"type\\\": \\\"array\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Sources\\\"}}, \\\"required\\\": [\\\"answer\\\", \\\"sources\\\"], \\\"title\\\": \\\"GoldenAnswerCard\\\"}\",\n  \"verdict\": \"{verdict}        # note: the value you produce must exactly match (no extra characters) one of: yes; no\",\n  \"confidence\": \"{confidence}        # note: the value you produce must be a single float value\"\n}\nIn adhering to this structure, your objective is: \n        Answer carefully using every available signal.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## profile ## ]]\n{\"name\": \"Ada\", \"location\": {\"city\": \"London\", \"country\": \"UK\"}, \"interests\": [\"math\"]}\n\n[[ ## context ## ]]\nold note\n\n[[ ## question ## ]]\nWho is Ada?",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"answer\": {\n    \"answer\": \"A mathematician.\",\n    \"sources\": [\n      \"memory\"\n    ]\n  },\n  \"verdict\": \"yes\",\n  \"confidence\": 0.8\n}",
+              "role": "assistant"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## image ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "image_url": {
+                    "url": "https://example.com/golden/photo.png"
+                  },
+                  "type": "image_url"
+                },
+                {
+                  "text": "\n\n[[ ## audio ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "input_audio": {
+                    "data": "c2lsZW5jZQ==",
+                    "format": "wav"
+                  },
+                  "type": "input_audio"
+                },
+                {
+                  "text": "\n\n[[ ## file ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "file": {
+                    "file_data": "data:text/plain;base64,aGVsbG8gZmlsZQ==",
+                    "filename": "notes.txt"
+                  },
+                  "type": "file"
+                },
+                {
+                  "text": "\n\n[[ ## document ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "citations": {
+                    "enabled": true
+                  },
+                  "source": {
+                    "data": "The Earth orbits the Sun.",
+                    "media_type": "text/plain",
+                    "type": "text"
+                  },
+                  "title": "Astronomy",
+                  "type": "document"
+                },
+                {
+                  "text": "\n\n[[ ## event ## ]]\n",
+                  "type": "text"
+                },
+                {
+                  "event": {
+                    "label": "launch"
+                  },
+                  "type": "event"
+                },
+                {
+                  "text": "\n\n[[ ## tools ## ]]\n[\"search_web, whose description is <desc>Search the web for documents.</desc>. It takes arguments {'query': {'type': 'string'}, 'k': {'type': 'integer', 'default': 3}}.\"]\n\n[[ ## profile ## ]]\n{\"name\": \"Grace\", \"location\": {\"city\": \"Arlington\", \"country\": \"USA\"}, \"interests\": [\"compilers\"]}\n\n[[ ## context ## ]]\nGrace joined in 2020.\n\n[[ ## question ## ]]\nWho is Grace?\n\nRespond with a JSON object in the following order of fields: `answer` (must be formatted as a valid Python GoldenAnswerCard), then `verdict` (must be formatted as a valid Python Literal['yes', 'no']), then `confidence` (must be formatted as a valid Python float).",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [
+    "format"
+  ],
+  "tags": [
+    "family:sink"
+  ]
+}

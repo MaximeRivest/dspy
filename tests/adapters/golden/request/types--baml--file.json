@@ -1,0 +1,92 @@
+{
+  "adapter": "baml",
+  "adapter_kwargs": {},
+  "case_id": "types--baml--file",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `file` (File): \n2. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## file ## ]]\n{file}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\nOutput field `answer` should be of type: string\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer from the file.",
+              "role": "system"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## file ## ]]\n\"",
+                  "type": "text"
+                },
+                {
+                  "file": {
+                    "file_data": "data:text/plain;base64,aGVsbG8gZmlsZQ==",
+                    "filename": "notes.txt"
+                  },
+                  "type": "file"
+                },
+                {
+                  "text": "\"\n\n[[ ## question ## ]]\nWhat does the file say?\n\nRespond with a JSON object in the following order of fields: `answer`.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `file` (File): \n2. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## file ## ]]\n{file}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\nOutput field `answer` should be of type: string\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer from the file.",
+              "role": "system"
+            },
+            {
+              "content": [
+                {
+                  "text": "[[ ## file ## ]]\n\"",
+                  "type": "text"
+                },
+                {
+                  "file": {
+                    "file_data": "data:text/plain;base64,aGVsbG8gZmlsZQ==",
+                    "filename": "notes.txt"
+                  },
+                  "type": "file"
+                },
+                {
+                  "text": "\"\n\n[[ ## question ## ]]\nWhat does the file say?\n\nRespond with a JSON object in the following order of fields: `answer`.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:types"
+  ]
+}
