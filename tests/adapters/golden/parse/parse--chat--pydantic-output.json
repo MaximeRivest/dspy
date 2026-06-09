@@ -1,0 +1,82 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {
+    "use_json_adapter_fallback": false
+  },
+  "case_id": "parse--chat--pydantic-output",
+  "expected": {
+    "call": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `profile` (GoldenProfile): \n2. `question` (str):\nYour output fields are:\n1. `card` (GoldenAnswerCard):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## profile ## ]]\n{profile}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## card ## ]]\n{card}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"object\", \"properties\": {\"answer\": {\"type\": \"string\", \"title\": \"Answer\"}, \"sources\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}, \"title\": \"Sources\"}}, \"required\": [\"answer\", \"sources\"], \"title\": \"GoldenAnswerCard\"}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer about the profile.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## profile ## ]]\n{\"name\": \"Ada\", \"location\": {\"city\": \"London\", \"country\": \"UK\"}, \"interests\": [\"math\"]}\n\n[[ ## question ## ]]\nWho is Ada?",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## card ## ]]\n{\"answer\": \"A mathematician.\", \"sources\": [\"memory\"]}\n\n[[ ## completed ## ]]\n",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## profile ## ]]\n{\"name\": \"Grace\", \"location\": {\"city\": \"Arlington\", \"country\": \"USA\"}, \"interests\": [\"compilers\", \"navy\"]}\n\n[[ ## question ## ]]\nWho is Grace?\n\nRespond with the corresponding output fields, starting with the field `[[ ## card ## ]]` (must be formatted as a valid Python GoldenAnswerCard), and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "card": {
+            "__pydantic_instance__": "GoldenAnswerCard",
+            "value": {
+              "answer": "Grace is a programmer.",
+              "sources": [
+                "bio"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "parse": {
+      "outcome": "completed",
+      "values": {
+        "card": {
+          "__pydantic_instance__": "GoldenAnswerCard",
+          "value": {
+            "answer": "Grace is a programmer.",
+            "sources": [
+              "bio"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "parse_text": "[[ ## card ## ]]\n{\"answer\": \"Grace is a programmer.\", \"sources\": [\"bio\"]}\n\n[[ ## completed ## ]]",
+  "postprocess_output": null,
+  "responses": [
+    [
+      "[[ ## card ## ]]\n{\"answer\": \"Grace is a programmer.\", \"sources\": [\"bio\"]}\n\n[[ ## completed ## ]]"
+    ]
+  ],
+  "runners": [
+    "call",
+    "parse"
+  ],
+  "tags": [
+    "family:parse",
+    "coercion"
+  ]
+}

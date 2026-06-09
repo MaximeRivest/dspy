@@ -1,0 +1,81 @@
+{
+  "adapter": "json",
+  "adapter_kwargs": {},
+  "case_id": "parse--json--prose-wrapped",
+  "expected": {
+    "acall": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## question ## ]]\n{question}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"answer\": \"{answer}\"\n}\nIn adhering to this structure, your objective is: \n        Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nWhat is the capital of Germany?\n\nRespond with a JSON object in the following order of fields: `answer`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "answer": "Berlin"
+        }
+      ]
+    },
+    "call": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## question ## ]]\n{question}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"answer\": \"{answer}\"\n}\nIn adhering to this structure, your objective is: \n        Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nWhat is the capital of Germany?\n\nRespond with a JSON object in the following order of fields: `answer`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "answer": "Berlin"
+        }
+      ]
+    },
+    "parse": {
+      "outcome": "completed",
+      "values": {
+        "answer": "Berlin"
+      }
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "parse_text": "Sure! Here is the JSON you asked for: {\"answer\": \"Berlin\"} Hope this helps.",
+  "postprocess_output": null,
+  "responses": [
+    [
+      "Sure! Here is the JSON you asked for: {\"answer\": \"Berlin\"} Hope this helps."
+    ]
+  ],
+  "runners": [
+    "call",
+    "acall",
+    "parse"
+  ],
+  "tags": [
+    "family:parse"
+  ]
+}

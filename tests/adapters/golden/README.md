@@ -1,11 +1,21 @@
 # Adapter golden parity corpus
 
-This directory freezes the behavior of DSPy's adapters as data. Every case in
-`cases.py` runs each adapter against a stub LM that records the exact
-messages and kwargs crossing the adapter-to-LM boundary (plus call counts,
-outcomes, and selected intermediate render surfaces). The recordings live in
-`request/*.json` and are enforced byte-for-byte by
-`tests/adapters/test_golden_parity.py`.
+This directory freezes the behavior of DSPy's adapters as data, in three
+corpora enforced byte-for-byte by `tests/adapters/test_golden_parity.py`:
+
+- `request/` — what adapters SEND: the exact messages and kwargs crossing
+  the adapter-to-LM boundary (with call counts and outcomes), plus selected
+  intermediate render surfaces. Cases in `cases.py`.
+- `parse/` — what adapters RETURN: parsed value dicts with typed objects,
+  exception semantics (`AdapterParseError` message/attributes pinned exactly;
+  third-party exception types pinned by name only), and fallback chains with
+  every LM payload. Cases in `parse_cases.py`, replayed to completion via
+  canned responses, with explicit replay boundaries (full pipeline vs direct
+  `adapter.parse` vs direct `_call_postprocess`).
+- `callbacks/` — the ordered adapter callback event streams (sync AND
+  async), pinning the JSONAdapter/XMLAdapter double-fire from depth-2
+  `with_callbacks` wrapping, TwoStep's nested inner-adapter events, and the
+  async path's current absence of parse events.
 
 The corpus is the primary merge gate for the adapter engine migration
 (`scratch/newadapter/epic-quiet-compiler.md`): a refactor is correct exactly
@@ -16,9 +26,10 @@ when the corpus cannot tell it apart from the code it replaced.
 - `harness.py` — recording stub LM (`StubLM`), shared ordered `Recorder`,
   `canonicalize` (deterministic JSON-able rendering; pydantic model classes
   compared structurally via `model_json_schema()`), surface capture.
-- `cases.py` — the case registry (~145 cases × sync+async). Case ids follow
-  `<family>--<adapter>--<slug>`; families are documented in the module
-  docstring.
+- `cases.py` — the request-side case registry (~145 cases × sync+async).
+  Case ids follow `<family>--<adapter>--<slug>`; families are documented in
+  the module docstring.
+- `parse_cases.py` — the parse-side and callback-sequence registries.
 - `generate_fixtures.py` — writes/checks `request/*.json`; every run
   generates twice in-process and fails on any nondeterminism.
 - `request/` — generated fixtures plus `_metadata.json` (recorded library

@@ -1,0 +1,26 @@
+{
+  "adapter": "two_step",
+  "case_id": "parse--two_step--qa-happy",
+  "expected": {
+    "acall": {
+      "events": [
+        "format_start:TwoStepAdapter",
+        "format_end"
+      ],
+      "outcome": "completed"
+    },
+    "call": {
+      "events": [
+        "format_start:TwoStepAdapter",
+        "format_end",
+        "parse_start:TwoStepAdapter",
+        "parse_end"
+      ],
+      "outcome": "completed"
+    }
+  },
+  "tags": [
+    "family:parse",
+    "two-step"
+  ]
+}
