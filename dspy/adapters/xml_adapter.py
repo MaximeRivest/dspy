@@ -48,12 +48,15 @@ class XMLAdapter(ChatAdapter):
     ) -> str:
         messages = [prefix]
 
-        messages.append(self.format_field_with_value(
-            {
-                FieldInfoWithName(name=k, info=v): inputs.get(k)
-                for k, v in signature.input_fields.items() if k in inputs
-            },
-        ))
+        messages.append(
+            self.format_field_with_value(
+                {
+                    FieldInfoWithName(name=k, info=v): inputs.get(k)
+                    for k, v in signature.input_fields.items()
+                    if k in inputs
+                },
+            )
+        )
 
         if main_request:
             output_requirements = self.user_message_output_requirements(signature)
@@ -83,6 +86,17 @@ class XMLAdapter(ChatAdapter):
         return message
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+        from dspy.adapters._engine.overrides import resolve_override_verdict
+
+        # Engine-backed instances parse via the resolved Format; subclasses
+        # overriding render/parse hooks keep the legacy body.
+        if resolve_override_verdict(self).engine_eligible:
+            from dspy.adapters._engine.formats import resolve_format
+
+            fmt = resolve_format(self)
+            if fmt is not None:
+                return fmt.parse(signature, completion)
+
         fields = {}
         for match in self.field_pattern.finditer(completion):
             name = match.group("name")

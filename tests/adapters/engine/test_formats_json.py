@@ -45,8 +45,13 @@ def test_json_adapter_is_engine_backed_with_json_format():
     assert type(resolve_format(ChatAdapter())) is ChatFormat
 
 
-def test_baml_adapter_routes_legacy_and_stays_unexported():
-    assert not resolve_override_verdict(BAMLAdapter()).engine_eligible
+def test_baml_adapter_migration_state_and_stays_unexported():
+    """Updated per migration PR: BAMLAdapter became engine-backed in QC-08.
+    It must never be exported regardless of migration state."""
+    from dspy.adapters._engine.formats.baml import BAMLFormat
+
+    assert resolve_override_verdict(BAMLAdapter()).engine_eligible
+    assert isinstance(resolve_format(BAMLAdapter()), BAMLFormat)
     import dspy.adapters
 
     assert not hasattr(dspy.adapters, "BAMLAdapter")
@@ -76,8 +81,8 @@ def test_json_parse_dual_run_engine_matches_fixture(case_id):
 
 @pytest.mark.parametrize("case_id", BAML_REQUEST_CASE_IDS)
 def test_baml_request_corpus_unchanged(case_id):
-    """BAML (unmigrated, overriding subclass) must reproduce its fixtures
-    through the legacy path it automatically keeps."""
+    """BAML must reproduce its pre-engine fixtures exactly (it routed legacy
+    until QC-08, and via BAMLFormat since)."""
     actual = json.loads(render_fixture(case_fixture(CASES[case_id])))
     expected = json.loads((REQUEST_DIR / f"{case_id}.json").read_text(encoding="utf-8"))
     assert actual == expected
