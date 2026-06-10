@@ -10,11 +10,18 @@ Byte-parity traps preserved on purpose: the ``\\n\\n``-join-then-``strip()``
 shape of section rendering, the trailing-space demo messages (defined on the
 Format base), the 8-space task-description indentation, and the trailing
 newline after the assistant completed marker.
+
+The format also owns parsing: the header regex, the parse mechanics (via
+the shared engine core), and even the historical ``adapter_name`` string in
+parse errors — error identity is wire-format behavior, pinned by the parse
+corpus.
 """
 
+import re
 from typing import Any
 
 from dspy.adapters._engine.formats import Format
+from dspy.adapters._engine.parse import parse_fields, parse_labeled_sections
 from dspy.adapters.types.tool import ToolCalls
 from dspy.adapters.utils import (
     format_field_value,
@@ -25,6 +32,16 @@ from dspy.adapters.utils import (
 
 
 class ChatFormat(Format):
+    field_header_pattern = re.compile(r"\[\[ ## (\w+) ## \]\]")
+
+    #: Legacy parse errors hardcode this name regardless of subclass; it is
+    #: pinned wire behavior, not a reflection of the calling class.
+    parse_error_adapter_name = "ChatAdapter"
+
+    def parse(self, signature, completion: str) -> dict[str, Any]:
+        sections = parse_labeled_sections(completion, self.field_header_pattern)
+        return parse_fields(sections, signature, completion, self.parse_error_adapter_name)
+
     def render_field_description(self, signature) -> str:
         return (
             f"Your input fields are:\n{get_field_description_string(signature.input_fields)}\n"

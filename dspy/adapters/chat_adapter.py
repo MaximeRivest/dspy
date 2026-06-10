@@ -216,6 +216,19 @@ class ChatAdapter(Adapter):
         return assistant_message_content
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+        from dspy.adapters._engine.overrides import resolve_override_verdict
+
+        # Engine-backed classes parse via the resolved Format — the SAME
+        # object that rendered the request, so format and parse share one
+        # source of truth. Override-routed instances keep the legacy body.
+        # The branch lives inside parse() so callback dispatch is identical.
+        if resolve_override_verdict(self).engine_eligible:
+            from dspy.adapters._engine.formats import resolve_format
+
+            fmt = resolve_format(self)
+            if fmt is not None:
+                return fmt.parse(signature, completion)
+
         sections = [(None, [])]
 
         for line in completion.splitlines():
