@@ -1037,18 +1037,23 @@ def _build_adapter(case, recorder):
     return ADAPTER_CLASSES[case.adapter](**case.adapter_kwargs)
 
 
-def execute_case(case) -> dict:
+def execute_case(case, adapter_factory=None) -> dict:
     """Run one case in every declared mode and return its expected payload.
 
     A fresh recorder, stub LM, adapter, and payload are built per mode so
     adapter-side mutation (e.g. the fallback retry mutating ``lm_kwargs``,
     history deletion mutating ``inputs``) can never leak across runs.
+
+    ``adapter_factory(case, recorder)`` lets dual-run harnesses substitute
+    the adapter construction (e.g. a forced-legacy subclass) while keeping
+    every other execution detail identical.
     """
+    build = adapter_factory or _build_adapter
     expected = {}
     for mode in case.modes:
         recorder = Recorder(case.responses, case.stop_after)
         lm = StubLM(recorder, name="main", **case.lm)
-        adapter = _build_adapter(case, recorder)
+        adapter = build(case, recorder)
         payload = case.payload()
         expected[mode] = run_adapter_capture(
             adapter,
@@ -1062,7 +1067,7 @@ def execute_case(case) -> dict:
         )
     if case.surfaces:
         recorder = Recorder()
-        adapter = _build_adapter(case, recorder)
+        adapter = build(case, recorder)
         payload = case.payload()
         expected["surfaces"] = capture_surfaces(
             adapter,

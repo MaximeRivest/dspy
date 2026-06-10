@@ -32,6 +32,11 @@ def _clean_registry():
     overrides._reset_registry_for_tests()
     yield
     overrides._reset_registry_for_tests()
+    # Resume lazy core migrations so tests running after this module see the
+    # real engine state, regardless of test order.
+    from dspy.adapters._engine import migrated
+
+    migrated._reset_for_tests()
 
 
 def test_empty_registry_routes_everything_legacy():
