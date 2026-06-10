@@ -23,6 +23,20 @@ class ResponseView:
     def __init__(self, legacy_output: Any):
         self._output = legacy_output
 
+    @classmethod
+    def from_lm_response(cls, response) -> list["ResponseView"]:
+        """Views over a typed LMResponse — the facade swap that closes
+        TODO #3 for the engine path.
+
+        Backing payloads are derived by the SAME canonical rules the legacy
+        path uses (``legacy_outputs_from_lm_response``: provider_output
+        verbatim, text-only as str, else the output dict), so str-vs-dict
+        provider fidelity is shared code, not a reimplementation.
+        """
+        from dspy.clients.openai_format import legacy_outputs_from_lm_response
+
+        return [cls(output) for output in legacy_outputs_from_lm_response(response)]
+
     @property
     def text(self) -> str | None:
         if isinstance(self._output, dict):
@@ -80,3 +94,22 @@ class ParserHook(Protocol):
     name: str
 
     def parse(self, response_view: ResponseView, ctx: ParseContext) -> dict[str, Any]: ...
+
+
+class ThirdPartyNativeParserHook:
+    """Silent compatibility hook: a third-party Type in
+    ``native_response_types`` keeps its documented ``parse_lm_response``
+    contract on the engine path (receiving the legacy-shaped payload via the
+    view's raw backing)."""
+
+    name = "type_hook.parse_lm_response"
+
+    def __init__(self, annotation, destination: str):
+        self.annotation = annotation
+        self.destination = destination
+
+    def parse(self, response_view: ResponseView, ctx: ParseContext) -> dict[str, Any]:
+        parsed_value = self.annotation.parse_lm_response(response_view.raw)
+        if parsed_value is not None:
+            return {self.destination: parsed_value}
+        return {}
