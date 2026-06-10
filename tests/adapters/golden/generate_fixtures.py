@@ -5,6 +5,11 @@ Usage, from the repository root:
     python tests/adapters/golden/generate_fixtures.py            # write fixtures
     python tests/adapters/golden/generate_fixtures.py --check    # verify zero drift
 
+Three corpora are generated: ``request/`` (adapter-to-LM payloads and
+intermediate render surfaces), ``parse/`` (parsed values, exception
+semantics, fallback chains), and ``callbacks/`` (ordered adapter callback
+event streams).
+
 Fixture regeneration is governed by the rebase protocol in README.md:
 regeneration is only allowed in dedicated corpus-update commits containing
 zero ``dspy/`` source changes, so any fixture diff in a feature PR is, by
@@ -25,6 +30,12 @@ REQUEST_DIR = GOLDEN_DIR / "request"
 sys.path.insert(0, str(GOLDEN_DIR.parent))
 
 from golden.cases import CASES, case_fixture  # noqa: E402
+from golden.parse_cases import (  # noqa: E402
+    CALLBACK_CASE_IDS,
+    PARSE_CASES,
+    callback_case_fixture,
+    parse_case_fixture,
+)
 
 
 def _versions() -> dict:
@@ -50,14 +61,21 @@ def render_fixture(document: dict) -> str:
 
 
 def generate() -> dict[str, str]:
-    """Render every fixture document to its serialized form, keyed by filename."""
+    """Render every fixture document to its serialized form, keyed by relative path."""
     rendered = {}
     for case_id in sorted(CASES):
-        rendered[f"{case_id}.json"] = render_fixture(case_fixture(CASES[case_id]))
-    rendered["_metadata.json"] = render_fixture(
+        rendered[f"request/{case_id}.json"] = render_fixture(case_fixture(CASES[case_id]))
+    for case_id in sorted(PARSE_CASES):
+        rendered[f"parse/{case_id}.json"] = render_fixture(parse_case_fixture(PARSE_CASES[case_id]))
+    for case_id in sorted(CALLBACK_CASE_IDS):
+        rendered[f"callbacks/{case_id}.json"] = render_fixture(callback_case_fixture(PARSE_CASES[case_id]))
+    rendered["request/_metadata.json"] = render_fixture(
         {
-            "corpus": "request",
-            "case_count": len(CASES),
+            "corpora": {
+                "request": len(CASES),
+                "parse": len(PARSE_CASES),
+                "callbacks": len(CALLBACK_CASE_IDS),
+            },
             "versions": _versions(),
         }
     )
@@ -65,18 +83,27 @@ def generate() -> dict[str, str]:
 
 
 def write(rendered: dict[str, str]) -> None:
-    REQUEST_DIR.mkdir(exist_ok=True)
-    stale = {path.name for path in REQUEST_DIR.glob("*.json")} - set(rendered)
-    for name in sorted(stale):
-        (REQUEST_DIR / name).unlink()
+    for corpus in ("request", "parse", "callbacks"):
+        (GOLDEN_DIR / corpus).mkdir(exist_ok=True)
+    on_disk = {
+        str(path.relative_to(GOLDEN_DIR))
+        for corpus in ("request", "parse", "callbacks")
+        for path in (GOLDEN_DIR / corpus).glob("*.json")
+    }
+    for name in sorted(on_disk - set(rendered)):
+        (GOLDEN_DIR / name).unlink()
         print(f"removed stale fixture: {name}")
     for name, content in sorted(rendered.items()):
-        (REQUEST_DIR / name).write_text(content, encoding="utf-8")
-    print(f"wrote {len(rendered)} fixture files to {REQUEST_DIR}")
+        (GOLDEN_DIR / name).write_text(content, encoding="utf-8")
+    print(f"wrote {len(rendered)} fixture files under {GOLDEN_DIR}")
 
 
 def check(rendered: dict[str, str]) -> int:
-    on_disk = {path.name: path.read_text(encoding="utf-8") for path in REQUEST_DIR.glob("*.json")}
+    on_disk = {
+        str(path.relative_to(GOLDEN_DIR)): path.read_text(encoding="utf-8")
+        for corpus in ("request", "parse", "callbacks")
+        for path in (GOLDEN_DIR / corpus).glob("*.json")
+    }
     drifted = sorted(
         set(on_disk) ^ set(rendered)
         | {name for name in set(on_disk) & set(rendered) if on_disk[name] != rendered[name]}

@@ -1,0 +1,181 @@
+{
+  "adapter": "two_step",
+  "adapter_kwargs": {},
+  "case_id": "parse--two_step--extraction-fallback-result",
+  "expected": {
+    "acall": {
+      "call_count": 3,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `question` (str):\nYour outputs must contain:\n1. `answer` (str):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "question: What is the capital of Germany?",
+              "role": "user"
+            }
+          ]
+        },
+        {
+          "kwargs": {},
+          "lm": "extraction",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## text ## ]]\n{text}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        The input is a text that should contain all the necessary information to produce the fields `answer`.             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## text ## ]]\nBerlin is the answer, clearly.\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        },
+        {
+          "kwargs": {
+            "response_format": {
+              "__pydantic_model__": "DSPyProgramOutputs",
+              "json_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "title": "Answer",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "answer"
+                ],
+                "title": "DSPyProgramOutputs",
+                "type": "object"
+              }
+            }
+          },
+          "lm": "extraction",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## text ## ]]\n{text}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"answer\": \"{answer}\"\n}\nIn adhering to this structure, your objective is: \n        The input is a text that should contain all the necessary information to produce the fields `answer`.             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## text ## ]]\nBerlin is the answer, clearly.\n\nRespond with a JSON object in the following order of fields: `answer`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "answer": "Berlin"
+        }
+      ]
+    },
+    "call": {
+      "call_count": 3,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `question` (str):\nYour outputs must contain:\n1. `answer` (str):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Answer the question briefly.",
+              "role": "system"
+            },
+            {
+              "content": "question: What is the capital of Germany?",
+              "role": "user"
+            }
+          ]
+        },
+        {
+          "kwargs": {},
+          "lm": "extraction",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## text ## ]]\n{text}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        The input is a text that should contain all the necessary information to produce the fields `answer`.             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## text ## ]]\nBerlin is the answer, clearly.\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        },
+        {
+          "kwargs": {
+            "response_format": {
+              "__pydantic_model__": "DSPyProgramOutputs",
+              "json_schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "title": "Answer",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "answer"
+                ],
+                "title": "DSPyProgramOutputs",
+                "type": "object"
+              }
+            }
+          },
+          "lm": "extraction",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## text ## ]]\n{text}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"answer\": \"{answer}\"\n}\nIn adhering to this structure, your objective is: \n        The input is a text that should contain all the necessary information to produce the fields `answer`.             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## text ## ]]\nBerlin is the answer, clearly.\n\nRespond with a JSON object in the following order of fields: `answer`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "answer": "Berlin"
+        }
+      ]
+    }
+  },
+  "extraction_lm": {
+    "supported_params": [
+      "response_format",
+      "tools",
+      "temperature"
+    ],
+    "supports_response_schema": true
+  },
+  "lm": {},
+  "lm_kwargs": {},
+  "parse_text": null,
+  "postprocess_output": null,
+  "responses": [
+    [
+      "Berlin is the answer, clearly."
+    ],
+    [
+      "complete garbage with no field markers"
+    ],
+    [
+      "{\"answer\": \"Berlin\"}"
+    ]
+  ],
+  "runners": [
+    "call",
+    "acall"
+  ],
+  "tags": [
+    "family:parse",
+    "two-step",
+    "fallback"
+  ]
+}
