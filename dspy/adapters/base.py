@@ -113,10 +113,15 @@ class Adapter:
         lm_kwargs: dict[str, Any],
         *,
         plan=None,
+        response=None,
     ) -> list[dict[str, Any]]:
-        # TODO(adapters-plan): This still parses legacy adapter output objects.
-        # A later PR should parse `LMResponse` directly and merge text-parsed
-        # fields with explicit native fields from the plan.
+        if response is not None and plan is not None:
+            # Engine path: typed LMResponse in, plan parsers out — see
+            # dspy/adapters/_engine/postprocess.py.
+            from dspy.adapters._engine.postprocess import run_engine_postprocess
+
+            return run_engine_postprocess(self, processed_signature, original_signature, response, lm, plan)
+
         #
         # When a plan is provided (the engine call path), the semantic output
         # keys and the ToolCalls destination are read from the plan's render
@@ -339,10 +344,12 @@ class Adapter:
         messages = self.format(processed_signature, demos, inputs)
         request = self._render_request(lm, lm_kwargs, messages, plan=built.plan)
         response = self._call_lm(lm, request)
-        # TODO(adapters-response): We normalize at the LM boundary, but still
-        # convert back to legacy postprocess dictionaries here to keep this PR
-        # behavior-preserving. Replace with direct `LMResponse` parsing once the
-        # explicit adapter plan exists.
+        if resolve_override_verdict(self).engine_eligible:
+            # Engine path: parse the typed LMResponse directly via the plan's
+            # parsers (the facade swap that closes the old TODO #3).
+            return self._call_postprocess(
+                processed_signature, signature, [], lm, lm_kwargs, plan=built.plan, response=response
+            )
         outputs = legacy_outputs_from_lm_response(response)
         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs, plan=built.plan)
 
@@ -364,8 +371,10 @@ class Adapter:
         messages = self.format(processed_signature, demos, inputs)
         request = self._render_request(lm, lm_kwargs, messages, plan=built.plan)
         response = await self._acall_lm(lm, request)
-        # TODO(adapters-response): Keep in sync with `__call__()` until both use
-        # direct `LMResponse` parsing.
+        if resolve_override_verdict(self).engine_eligible:
+            return self._call_postprocess(
+                processed_signature, signature, [], lm, lm_kwargs, plan=built.plan, response=response
+            )
         outputs = legacy_outputs_from_lm_response(response)
         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs, plan=built.plan)
 
