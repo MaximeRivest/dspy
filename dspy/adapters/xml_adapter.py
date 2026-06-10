@@ -8,6 +8,12 @@ from dspy.adapters.utils import format_field_value, translate_field_type
 from dspy.signatures.signature import Signature
 
 
+def _xml_format():
+    from dspy.adapters._engine.formats.xml import XMLFormat
+
+    return XMLFormat()
+
+
 class XMLAdapter(ChatAdapter):
     field_pattern = re.compile(r"<(?P<name>\w+)>((?P<content>.*?))</\1>", re.DOTALL)
 
@@ -80,10 +86,7 @@ class XMLAdapter(ChatAdapter):
         )
 
     def user_message_output_requirements(self, signature: type[Signature]) -> str:
-        message = "Respond with the corresponding output fields wrapped in XML tags "
-        message += ", then ".join(f"`<{f}>`" for f in signature.output_fields)
-        message += "."
-        return message
+        return _xml_format().output_requirements(signature)
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
         from dspy.adapters._engine.overrides import resolve_override_verdict
@@ -118,16 +121,4 @@ class XMLAdapter(ChatAdapter):
         return fields
 
     def _parse_field_value(self, field_info, raw, completion, signature):
-        from dspy.adapters.utils import parse_value
-
-        try:
-            return parse_value(raw, field_info.annotation)
-        except Exception as e:
-            from dspy.utils.exceptions import AdapterParseError
-
-            raise AdapterParseError(
-                adapter_name="XMLAdapter",
-                signature=signature,
-                lm_response=completion,
-                message=f"Failed to parse field {field_info} with value {raw}: {e}",
-            )
+        return _xml_format()._parse_field_value(field_info, raw, completion, signature)

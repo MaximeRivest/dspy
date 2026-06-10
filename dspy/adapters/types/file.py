@@ -79,7 +79,9 @@ class File(Type):
             if self.file_data.startswith("data:"):
                 # file data has "data:text/plain;base64,..." format
                 mime_type = self.file_data.split(";")[0].split(":")[1]
-                len_data = len(self.file_data.split("base64,")[1]) if "base64," in self.file_data else len(self.file_data)
+                len_data = (
+                    len(self.file_data.split("base64,")[1]) if "base64," in self.file_data else len(self.file_data)
+                )
                 parts.append(f"file_data=<DATA_URI({mime_type}, {len_data} chars)>")
             else:
                 len_data = len(self.file_data)

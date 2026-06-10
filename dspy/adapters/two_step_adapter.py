@@ -5,7 +5,6 @@ import json_repair
 from dspy.adapters.base import Adapter
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.adapters.types import ToolCalls
-from dspy.adapters.utils import get_field_description_string
 from dspy.clients.base_lm import BaseLM
 from dspy.signatures.field import InputField
 from dspy.signatures.signature import Signature, make_signature
@@ -17,6 +16,12 @@ NOTE/TODO/FIXME:
 The main issue below is that the second step's signature is entirely created on the fly and is invoked with a chat
 adapter explicitly constructed with no demonstrations. This means that it cannot "learn" or get optimized.
 """
+
+
+def _two_step_format():
+    from dspy.adapters._engine.formats.twostep import TwoStepFormat
+
+    return TwoStepFormat()
 
 
 class TwoStepAdapter(Adapter):
@@ -215,17 +220,7 @@ class TwoStepAdapter(Adapter):
 
     def format_task_description(self, signature: Signature) -> str:
         """Create a description of the task based on the signature"""
-        parts = []
-
-        parts.append("You are a helpful assistant that can solve tasks based on user input.")
-        parts.append("As input, you will be provided with:\n" + get_field_description_string(signature.input_fields))
-        parts.append("Your outputs must contain:\n" + get_field_description_string(signature.output_fields))
-        parts.append("You should lay out your outputs in detail so that your answer can be understood by another agent")
-
-        if signature.instructions:
-            parts.append(f"Specific instructions: {signature.instructions}")
-
-        return "\n".join(parts)
+        return _two_step_format().render_task_description(signature)
 
     def format_user_message_content(
         self,
@@ -234,14 +229,7 @@ class TwoStepAdapter(Adapter):
         prefix: str = "",
         suffix: str = "",
     ) -> str:
-        parts = [prefix]
-
-        for name in signature.input_fields.keys():
-            if name in inputs:
-                parts.append(f"{name}: {inputs.get(name, '')}")
-
-        parts.append(suffix)
-        return "\n\n".join(parts).strip()
+        return _two_step_format().render_user_content(signature, inputs, prefix=prefix, suffix=suffix)
 
     def format_assistant_message_content(
         self,
@@ -249,13 +237,7 @@ class TwoStepAdapter(Adapter):
         outputs: dict[str, Any],
         missing_field_message: str | None = None,
     ) -> str:
-        parts = []
-
-        for name in signature.output_fields.keys():
-            if name in outputs:
-                parts.append(f"{name}: {outputs.get(name, missing_field_message)}")
-
-        return "\n\n".join(parts).strip()
+        return _two_step_format().render_assistant_content(signature, outputs, missing_field_message)
 
     def _create_extractor_signature(
         self,

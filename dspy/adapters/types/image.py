@@ -125,7 +125,9 @@ def is_url(string: str) -> bool:
         return False
 
 
-def encode_image(image: Union[str, bytes, "PILImage.Image", dict], download_images: bool = False, verify: bool = True) -> str:
+def encode_image(
+    image: Union[str, bytes, "PILImage.Image", dict], download_images: bool = False, verify: bool = True
+) -> str:
     """
     Encode an image or file to a base64 data URI.
 
@@ -159,7 +161,9 @@ def encode_image(image: Union[str, bytes, "PILImage.Image", dict], download_imag
                 return image
         else:
             # Unsupported string format
-            raise ValueError(f"Unrecognized file string: {image}; If this file type should be supported, please open an issue.")
+            raise ValueError(
+                f"Unrecognized file string: {image}; If this file type should be supported, please open an issue."
+            )
     elif PIL_AVAILABLE and isinstance(image, PILImage.Image):
         # PIL Image
         return _encode_pil_image(image)
@@ -192,7 +196,7 @@ def _encode_image_from_file(file_path: str) -> str:
 
 def _encode_image_from_url(image_url: str, verify: bool = True) -> str:
     """Encode a file from a URL to a base64 data URI.
-    
+
     Args:
         image_url: The URL of the image to download.
         verify: Whether to verify SSL certificates. Set to False for self-signed certs.

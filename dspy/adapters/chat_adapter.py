@@ -1,24 +1,25 @@
 import re
-import textwrap
 from typing import Any, NamedTuple
 
 from pydantic.fields import FieldInfo
 
 from dspy.adapters.base import Adapter
-from dspy.adapters.types.tool import ToolCalls
 from dspy.adapters.utils import (
     format_field_value,
-    get_annotation_name,
-    get_field_description_string,
-    parse_value,
     translate_field_type,
 )
 from dspy.clients.base_lm import BaseLM
 from dspy.signatures.signature import Signature
 from dspy.utils.callback import BaseCallback
-from dspy.utils.exceptions import AdapterParseError, LMError
+from dspy.utils.exceptions import LMError
 
 field_header_pattern = re.compile(r"\[\[ ## (\w+) ## \]\]")
+
+
+def _chat_format():
+    from dspy.adapters._engine.formats.chat import ChatFormat
+
+    return ChatFormat()
 
 
 class FieldInfoWithName(NamedTuple):
@@ -115,16 +116,17 @@ class ChatAdapter(Adapter):
             return await self._make_json_adapter_fallback().acall(lm, lm_kwargs, signature, demos, inputs)
 
     def format_field_description(self, signature: type[Signature]) -> str:
-        return (
-            f"Your input fields are:\n{get_field_description_string(signature.input_fields)}\n"
-            f"Your output fields are:\n{get_field_description_string(signature.output_fields)}"
-        )
+        return _chat_format().render_field_description(signature)
 
     def format_field_structure(self, signature: type[Signature]) -> str:
         """
         `ChatAdapter` requires input and output fields to be in their own sections, with section header using markers
         `[[ ## field_name ## ]]`. An arbitrary field `completed` ([[ ## completed ## ]]) is added to the end of the
         output fields section to indicate the end of the output fields.
+
+        Body kept (not delegated to ChatFormat): it dispatches through the
+        overridable `format_field_with_value` hook, which override-routed
+        subclasses customize.
         """
         parts = []
         parts.append("All interactions will be structured in the following way, with the appropriate values filled in.")
@@ -143,9 +145,7 @@ class ChatAdapter(Adapter):
         return "\n\n".join(parts).strip()
 
     def format_task_description(self, signature: type[Signature]) -> str:
-        instructions = textwrap.dedent(signature.instructions)
-        objective = ("\n" + " " * 8).join([""] + instructions.splitlines())
-        return f"In adhering to this structure, your objective is: {objective}"
+        return _chat_format().render_task_description(signature)
 
     def format_user_message_content(
         self,
@@ -155,6 +155,9 @@ class ChatAdapter(Adapter):
         suffix: str = "",
         main_request: bool = False,
     ) -> str:
+        # Body kept (not delegated): per-block join semantics and the
+        # overridable user_message_output_requirements hook must stay
+        # byte-exact for override-routed subclasses.
         messages = [prefix]
         for k, v in signature.input_fields.items():
             if k in inputs:
@@ -188,18 +191,7 @@ class ChatAdapter(Adapter):
             for inline reminders within chat messages.
         """
 
-        def type_info(v):
-            if v.annotation == ToolCalls:
-                return ' (must be a JSON object like {"tool_calls": [{"name": "...", "args": {...}}]})'
-            if v.annotation is not str:
-                return f" (must be formatted as a valid Python {get_annotation_name(v.annotation)})"
-            else:
-                return ""
-
-        message = "Respond with the corresponding output fields, starting with the field "
-        message += ", then ".join(f"`[[ ## {f} ## ]]`{type_info(v)}" for f, v in signature.output_fields.items())
-        message += ", and then ending with the marker for `[[ ## completed ## ]]`."
-        return message
+        return _chat_format().output_requirements(signature)
 
     def format_assistant_message_content(
         self,
@@ -230,41 +222,10 @@ class ChatAdapter(Adapter):
             if fmt is not None:
                 return fmt.parse(signature, completion)
 
-        sections = [(None, [])]
-
-        for line in completion.splitlines():
-            match = field_header_pattern.match(line.strip())
-            if match:
-                # If the header pattern is found, split the rest of the line as content
-                header = match.group(1)
-                remaining_content = line[match.end() :].strip()
-                sections.append((header, [remaining_content] if remaining_content else []))
-            else:
-                sections[-1][1].append(line)
-
-        sections = [(k, "\n".join(v).strip()) for k, v in sections]
-
-        fields = {}
-        for k, v in sections:
-            if (k not in fields) and (k in signature.output_fields):
-                try:
-                    fields[k] = parse_value(v, signature.output_fields[k].annotation)
-                except Exception as e:
-                    raise AdapterParseError(
-                        adapter_name="ChatAdapter",
-                        signature=signature,
-                        lm_response=completion,
-                        message=f"Failed to parse field {k} with value {v} from the LM response. Error message: {e}",
-                    )
-        if fields.keys() != signature.output_fields.keys():
-            raise AdapterParseError(
-                adapter_name="ChatAdapter",
-                signature=signature,
-                lm_response=completion,
-                parsed_result=fields,
-            )
-
-        return fields
+        # Single source of truth: the legacy body is the same ChatFormat
+        # parse the engine path resolves (a true leaf — no overridable hook
+        # dispatch — so delegation cannot bypass subclass customizations).
+        return _chat_format().parse(signature, completion)
 
     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any]) -> str:
         """
