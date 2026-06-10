@@ -130,6 +130,10 @@ def registered_classes() -> tuple:
 
 def resolve_override_verdict(adapter) -> OverrideVerdict:
     """Decide engine-vs-legacy routing for one adapter instance."""
+    from dspy.adapters._engine.migrated import ensure_core_migrations
+
+    ensure_core_migrations()
+
     adapter_cls = type(adapter)
     cached = _VERDICT_CACHE.get(adapter_cls)
     if cached is not None:
@@ -170,6 +174,13 @@ def clear_verdict_cache() -> None:
 
 
 def _reset_registry_for_tests() -> None:
+    """Empty the registries AND suppress lazy core migrations, so tests
+    control registration explicitly."""
+    from dspy.adapters._engine.formats import _reset_formats_for_tests
+    from dspy.adapters._engine.migrated import _suppress_for_tests
+
+    _suppress_for_tests()
+    _reset_formats_for_tests()
     _REGISTRY.clear()
     _VERDICT_CACHE.clear()
 
