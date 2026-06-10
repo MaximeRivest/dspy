@@ -75,11 +75,14 @@ def test_dual_run_legacy_path_matches_fixture(case_id):
 
 
 def test_unmigrated_core_adapters_still_route_legacy():
+    """Updated per migration PR: JSONAdapter became engine-backed in QC-07;
+    the remaining unmigrated cores must keep routing legacy."""
     from dspy.adapters.baml_adapter import BAMLAdapter
     from dspy.adapters.json_adapter import JSONAdapter
     from dspy.adapters.xml_adapter import XMLAdapter
 
-    for cls in (JSONAdapter, XMLAdapter, BAMLAdapter):
+    assert resolve_override_verdict(JSONAdapter()).engine_eligible
+    for cls in (XMLAdapter, BAMLAdapter):
         assert not resolve_override_verdict(cls()).engine_eligible, cls.__name__
     assert not resolve_override_verdict(TwoStepAdapter(StubLM(Recorder()))).engine_eligible
 

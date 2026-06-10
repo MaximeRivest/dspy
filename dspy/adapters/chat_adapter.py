@@ -73,6 +73,17 @@ class ChatAdapter(Adapter):
             parallel_tool_calls=self.parallel_tool_calls,
         )
 
+    def _should_reraise_instead_of_fallback(self, error: Exception) -> bool:
+        """The fallback guard, implemented once for the sync and async paths.
+
+        On LM errors, when already a JSONAdapter, or when the fallback is
+        disabled, the ORIGINAL error propagates instead of retrying with a
+        different adapter.
+        """
+        from dspy.adapters.json_adapter import JSONAdapter
+
+        return isinstance(error, LMError) or isinstance(self, JSONAdapter) or not self.use_json_adapter_fallback
+
     def __call__(
         self,
         lm: BaseLM,
@@ -84,12 +95,7 @@ class ChatAdapter(Adapter):
         try:
             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
         except Exception as e:
-            # fallback to JSONAdapter
-            from dspy.adapters.json_adapter import JSONAdapter
-
-            if isinstance(e, LMError) or isinstance(self, JSONAdapter) or not self.use_json_adapter_fallback:
-                # On LM errors, already using JSONAdapter, or use_json_adapter_fallback is False, we don't want to
-                # retry with a different adapter. Raise the original error instead of the fallback error.
+            if self._should_reraise_instead_of_fallback(e):
                 raise
             return self._make_json_adapter_fallback()(lm, lm_kwargs, signature, demos, inputs)
 
@@ -104,12 +110,7 @@ class ChatAdapter(Adapter):
         try:
             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
         except Exception as e:
-            # fallback to JSONAdapter
-            from dspy.adapters.json_adapter import JSONAdapter
-
-            if isinstance(e, LMError) or isinstance(self, JSONAdapter) or not self.use_json_adapter_fallback:
-                # On LM errors, already using JSONAdapter, or use_json_adapter_fallback is False, we don't want to
-                # retry with a different adapter. Raise the original error instead of the fallback error.
+            if self._should_reraise_instead_of_fallback(e):
                 raise
             return await self._make_json_adapter_fallback().acall(lm, lm_kwargs, signature, demos, inputs)
 

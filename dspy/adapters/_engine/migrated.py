@@ -17,12 +17,19 @@ def ensure_core_migrations() -> None:
 
     from dspy.adapters._engine.formats import register_format
     from dspy.adapters._engine.formats.chat import ChatFormat
+    from dspy.adapters._engine.formats.json import JSONFormat
     from dspy.adapters._engine.overrides import register_engine_backed
     from dspy.adapters.chat_adapter import ChatAdapter
+    from dspy.adapters.json_adapter import JSONAdapter
 
-    # QC-05: ChatAdapter request-side rendering.
+    # QC-05: ChatAdapter rendering + parsing.
     register_engine_backed(ChatAdapter)
     register_format(ChatAdapter, ChatFormat())
+
+    # QC-07: JSONAdapter (BAMLAdapter, its overriding subclass, stays legacy
+    # automatically until its own migration).
+    register_engine_backed(JSONAdapter)
+    register_format(JSONAdapter, JSONFormat())
 
 
 def _suppress_for_tests() -> None:
