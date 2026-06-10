@@ -414,6 +414,22 @@ class Adapter:
         Returns:
             A list of multiturn messages as expected by the LM.
         """
+        from dspy.adapters._engine.overrides import resolve_override_verdict
+
+        # Engine-backed classes render via the engine (plan -> renderer ->
+        # Format). The branch lives INSIDE format() so with_callbacks
+        # wrapping and callback dispatch fire identically on both paths.
+        # Instances that override any render/parse hook — and core adapter
+        # classes not yet migrated — fall through to the byte-untouched
+        # legacy body below.
+        if resolve_override_verdict(self).engine_eligible:
+            from dspy.adapters._engine.formats import resolve_format
+            from dspy.adapters._engine.render import render_messages
+
+            fmt = resolve_format(self)
+            if fmt is not None:
+                return render_messages(self, fmt, signature, demos, inputs)
+
         inputs_copy = dict(inputs)
 
         # If the signature and inputs have conversation history, we need to format the conversation history and
