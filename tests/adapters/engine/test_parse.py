@@ -86,13 +86,17 @@ def test_legacy_routed_plan_records_no_format_parser():
     assert not any(isinstance(parser, FormatParserHook) for parser in built.plan.parsers)
 
 
-def test_fallback_json_adapter_still_routes_legacy():
-    """The fresh JSONAdapter constructed inside ChatAdapter's fallback is an
-    unmigrated class: it must keep using the legacy pipeline end-to-end."""
+def test_fallback_json_adapter_routing_tracks_migration_state():
+    """Updated per migration PR: since QC-07 the fallback-constructed
+    JSONAdapter is engine-backed and must resolve JSONFormat — the corpus
+    fallback fixtures (asserting both LM payloads) pin that its behavior is
+    byte-identical either way."""
+    from dspy.adapters._engine.formats.json import JSONFormat
     from dspy.adapters._engine.overrides import resolve_override_verdict
 
     adapter = ChatAdapter()._make_json_adapter_fallback()
-    assert not resolve_override_verdict(adapter).engine_eligible
+    assert resolve_override_verdict(adapter).engine_eligible
+    assert isinstance(resolve_format(adapter), JSONFormat)
 
 
 def test_parse_error_identity_preserved_for_subclasses():
