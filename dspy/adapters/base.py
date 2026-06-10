@@ -94,11 +94,9 @@ class Adapter:
         ``lm_kwargs`` mutations and signature derivation while also recording
         the decisions onto an ``AdapterPlan``. This wrapper preserves the
         legacy contract (mutate kwargs, return the render signature) for
-        direct callers.
-
-        TODO(adapters-plan): Built-in/native response planning still flows
-        through ``Type.adapt_to_native_lm_feature()`` inside the builder; a
-        later PR moves it into adapter-owned planning strategies.
+        direct callers. Built-in native response planning runs as engine
+        strategies; third-party types keep their documented
+        ``Type.adapt_to_native_lm_feature()`` hook inside the builder.
         """
         from dspy.adapters._engine.builder import build_plan
 

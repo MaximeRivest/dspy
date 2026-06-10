@@ -2,26 +2,28 @@ import json
 import logging
 from typing import Any, get_origin
 
-import json_repair
 import pydantic
-import regex
 from pydantic.fields import FieldInfo
 
 from dspy.adapters.chat_adapter import ChatAdapter, FieldInfoWithName
 from dspy.adapters.types.tool import ToolCalls
 from dspy.adapters.utils import (
     format_field_value,
-    get_annotation_name,
-    parse_value,
     serialize_for_json,
     translate_field_type,
 )
 from dspy.clients.base_lm import BaseLM
 from dspy.signatures.signature import Signature, SignatureMeta
 from dspy.utils.callback import BaseCallback
-from dspy.utils.exceptions import AdapterParseError, LMError
+from dspy.utils.exceptions import LMError
 
 logger = logging.getLogger(__name__)
+
+
+def _json_format():
+    from dspy.adapters._engine.formats.json import JSONFormat
+
+    return JSONFormat()
 
 
 def _has_open_ended_mapping(signature: SignatureMeta) -> bool:
@@ -142,19 +144,7 @@ class JSONAdapter(ChatAdapter):
         return "\n\n".join(parts).strip()
 
     def user_message_output_requirements(self, signature: type[Signature]) -> str:
-        def type_info(v):
-            if v.annotation == ToolCalls:
-                return ' (must be a JSON object like {"tool_calls": [{"name": "...", "args": {...}}]})'
-            return (
-                f" (must be formatted as a valid Python {get_annotation_name(v.annotation)})"
-                if v.annotation is not str
-                else ""
-            )
-
-        message = "Respond with a JSON object in the following order of fields: "
-        message += ", then ".join(f"`{f}`{type_info(v)}" for f, v in signature.output_fields.items())
-        message += "."
-        return message
+        return _json_format().output_requirements(signature)
 
     def format_assistant_message_content(
         self,
@@ -181,39 +171,9 @@ class JSONAdapter(ChatAdapter):
             if fmt is not None:
                 return fmt.parse(signature, completion)
 
-        fields = json_repair.loads(completion)
-
-        if not isinstance(fields, dict):
-            pattern = r"\{(?:[^{}]|(?R))*\}"
-            match = regex.search(pattern, completion, regex.DOTALL)
-            if match:
-                completion = match.group(0)
-                fields = json_repair.loads(completion)
-
-        if not isinstance(fields, dict):
-            raise AdapterParseError(
-                adapter_name="JSONAdapter",
-                signature=signature,
-                lm_response=completion,
-                message="LM response cannot be serialized to a JSON object.",
-            )
-
-        fields = {k: v for k, v in fields.items() if k in signature.output_fields}
-
-        # Attempt to cast each value to type signature.output_fields[k].annotation.
-        for k, v in fields.items():
-            if k in signature.output_fields:
-                fields[k] = parse_value(v, signature.output_fields[k].annotation)
-
-        if fields.keys() != signature.output_fields.keys():
-            raise AdapterParseError(
-                adapter_name="JSONAdapter",
-                signature=signature,
-                lm_response=completion,
-                parsed_result=fields,
-            )
-
-        return fields
+        # Single source of truth: the legacy body is the same JSONFormat
+        # parse the engine path resolves (true leaf, no hook dispatch).
+        return _json_format().parse(signature, completion)
 
     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any], role: str = "user") -> str:
         """
