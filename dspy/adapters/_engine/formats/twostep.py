@@ -94,13 +94,27 @@ class TwoStepExtractionParserHook:
         self._create_extractor_signature = create_extractor_signature
 
     def parse(self, response_view, ctx) -> dict[str, Any]:
+        # Error identity mirrors legacy TwoStepAdapter.parse exactly: LM
+        # errors propagate; anything else wraps as TwoStepAdapter's
+        # AdapterParseError.
         from dspy.adapters.chat_adapter import ChatAdapter
+        from dspy.utils.exceptions import AdapterParseError, LMError
 
         extractor_signature = self._create_extractor_signature(ctx.signature)
-        return ChatAdapter()(
-            lm=self.extraction_model,
-            lm_kwargs={},
-            signature=extractor_signature,
-            demos=[],
-            inputs={"text": response_view.text},
-        )[0]
+        try:
+            return ChatAdapter()(
+                lm=self.extraction_model,
+                lm_kwargs={},
+                signature=extractor_signature,
+                demos=[],
+                inputs={"text": response_view.text},
+            )[0]
+        except LMError:
+            raise
+        except Exception as e:
+            raise AdapterParseError(
+                adapter_name="TwoStepAdapter",
+                signature=ctx.signature,
+                lm_response=response_view.text,
+                message=f"Failed to parse response from the original completion: {e}",
+            ) from e

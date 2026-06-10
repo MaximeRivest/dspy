@@ -108,12 +108,14 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
         fields_before = set(render_signature.output_fields)
         render_signature = field.annotation.adapt_to_native_lm_feature(render_signature, name, lm, lm_kwargs)
 
+        from dspy.adapters._engine.parser_hook import ThirdPartyNativeParserHook
         from dspy.adapters._engine.transforms import HideOutputField
 
         deleted = sorted(fields_before - set(render_signature.output_fields))
         plan.field_transforms.extend(
             HideOutputField(deleted_name, reason=f"native:{field.annotation.__name__}") for deleted_name in deleted
         )
+        plan.parsers.append(ThirdPartyNativeParserHook(field.annotation, name))
         _record_kwargs_delta(plan, field.annotation.__name__, kwargs_before, lm_kwargs)
         plan.strategy_trace.append(
             StrategyTrace(
