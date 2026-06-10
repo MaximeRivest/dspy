@@ -1,26 +1,26 @@
 """Plan builder: the engine-side replacement for ``Adapter._call_preprocess``.
 
-This closes TODO #1 (base.py:90-95): instead of mutating ``lm_kwargs`` and
-returning only a render signature — losing what was decided — the builder
-performs the IDENTICAL mutations in the IDENTICAL order while recording
-every decision onto an :class:`AdapterPlan`: native tool specs, hidden
-fields (as Hide transforms with backfill metadata), and the lm_kwargs deltas
-produced by native-response-type hooks.
+This closes TODO #1 (the explicit plan) and TODO #2 (provider-specific
+planning out of semantic types): native function calling runs as a
+call-level :class:`PlanStep`, and built-in native response types
+(Reasoning, Citations) run as per-field :class:`TypeStrategy` objects whose
+gates live in shared predicates inside the type modules — the legacy hooks
+import the SAME predicates, so the two paths cannot drift. Third-party
+types in ``native_response_types`` keep flowing through their documented
+``Type.adapt_to_native_lm_feature`` hook, silently honored (deprecation is
+a future registry epic's decision).
 
-Behavior parity is structural, not aspirational: the legacy logic was moved
-here line-for-line (tool stripping order, the snapshot semantics of the
-native-response-types loop, ``Type.adapt_to_native_lm_feature`` still being
-the planning hook — TODO #2 stays open until the strategies PR). The golden
-corpus adjudicates byte-identity.
+Behavior parity is structural: identical ``lm_kwargs`` mutations in
+identical order (step first, then the snapshot loop over output fields),
+identical signature derivation, adjudicated by the golden corpus.
 """
 
 from dataclasses import dataclass
 from typing import Any
 
 from dspy.adapters._engine.ir import AdapterPlan
-from dspy.adapters._engine.transforms import HideInputField, HideOutputField, apply_field_transforms
-
-_TOOL_PROVIDER_KEYS = ("tools", "tool_choice", "parallel_tool_calls")
+from dspy.adapters._engine.patch import StrategyTrace
+from dspy.adapters._engine.transforms import apply_field_transforms
 
 
 @dataclass
@@ -45,76 +45,87 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     # level (importing dspy must not load the engine), so the dependency
     # points this way only.
     from dspy.adapters import base as adapter_base
+    from dspy.adapters._engine.strategies import NativeFunctionCallingStep, builtin_field_strategy_for
+    from dspy.adapters._engine.strategy import CallContext, FieldContext
     from dspy.adapters.types import Type
 
     plan = AdapterPlan.from_signature(signature, inputs)
-    transforms = []
     render_signature = signature
 
-    # --- Native function-calling planning (verbatim from base.py:96-121) ---
-    if not adapter.use_native_function_calling:
-        for key in _TOOL_PROVIDER_KEYS:
-            lm_kwargs.pop(key, None)
-    else:
-        tool_call_input_field_name = adapter._get_tool_call_input_field_name(signature)
-        tool_call_output_field_name = adapter._get_tool_call_output_field_name(signature)
+    # --- Native function-calling planning (call-level step) ----------------
+    step = NativeFunctionCallingStep()
+    step_ctx = CallContext(
+        adapter=adapter, plan=plan, signature=render_signature, inputs=inputs, lm=lm, lm_kwargs=lm_kwargs
+    )
+    patch = step.contribute(step_ctx)
+    render_signature = _apply_patch(plan, patch, render_signature, step.name)
 
-        if tool_call_output_field_name and tool_call_input_field_name is None:
-            raise ValueError(
-                f"You provided an output field {tool_call_output_field_name} to receive the tool calls information, "
-                "but did not provide any tools as the input. Please provide a list of tools as the input by adding an "
-                "input field with type `list[dspy.Tool]`."
-            )
-
-        if tool_call_output_field_name and lm.supports_function_calling:
-            tools = inputs[tool_call_input_field_name]
-            tools = tools if isinstance(tools, list) else [tools]
-
-            lm_tools = [tool.format_as_litellm_function_call() for tool in tools]
-
-            lm_kwargs["tools"] = lm_tools
-            if adapter.parallel_tool_calls is not None and lm_kwargs.get("parallel_tool_calls") is None:
-                lm_kwargs["parallel_tool_calls"] = adapter.parallel_tool_calls
-
-            render_signature = render_signature.delete(tool_call_output_field_name)
-            render_signature = render_signature.delete(tool_call_input_field_name)
-
-            plan.tools.extend(lm_tools)
-            transforms.append(HideInputField(tool_call_input_field_name, reason="native_function_calling"))
-            transforms.append(HideOutputField(tool_call_output_field_name, reason="native_function_calling"))
-
-    # --- Native response-type planning (verbatim from base.py:127-133) -----
-    # TODO #2 compatibility: Type.adapt_to_native_lm_feature remains the
-    # planning hook until the strategies PR; the builder records its effects.
-    # Loop semantics preserved exactly: iterate the snapshot of output fields
-    # as of loop start, reassigning render_signature inside.
+    # --- Native response-type planning (per-field strategies + fallback) ---
+    # Loop semantics preserved exactly from the legacy hook chain: iterate
+    # the snapshot of output fields as of loop start, deriving the render
+    # signature inside.
     #
     # `issubclass` deliberately resolves through the adapters.base module
     # namespace: tests/predict/test_react.py shadows it there to prove the
     # `isinstance(..., type)` guard keeps generic aliases away from it.
     for name, field in render_signature.output_fields.items():
-        if (
+        if not (
             isinstance(field.annotation, type)
             and field.annotation in adapter.native_response_types
             and getattr(adapter_base, "issubclass", issubclass)(field.annotation, Type)
         ):
-            fields_before = set(render_signature.output_fields)
-            kwargs_before = dict(lm_kwargs)
-            render_signature = field.annotation.adapt_to_native_lm_feature(render_signature, name, lm, lm_kwargs)
+            continue
 
-            for deleted in sorted(fields_before - set(render_signature.output_fields)):
-                transforms.append(HideOutputField(deleted, reason=f"native:{field.annotation.__name__}"))
-            delta = {
-                key: lm_kwargs[key]
-                for key in lm_kwargs
-                if key not in kwargs_before or kwargs_before[key] is not lm_kwargs[key]
-            }
-            if delta:
-                plan.metadata.setdefault("native_feature_kwargs", {})[field.annotation.__name__] = delta
+        strategy = builtin_field_strategy_for(field.annotation)
+        if strategy is not None:
+            render_field = plan.find_field("output", name)
+            ctx = FieldContext(
+                adapter=adapter,
+                plan=plan,
+                field=render_field,
+                role="output",
+                lm=lm,
+                lm_kwargs=lm_kwargs,
+                signature=render_signature,
+            )
+            if strategy.applies(ctx):
+                kwargs_before = dict(lm_kwargs)
+                patch = strategy.contribute(ctx)
+                render_signature = _apply_patch(plan, patch, render_signature, strategy.name)
+                _record_kwargs_delta(plan, field.annotation.__name__, kwargs_before, lm_kwargs)
+                plan.strategy_trace.append(
+                    StrategyTrace(strategy=strategy.name, field=name, decision="selected", reason="applies")
+                )
+            else:
+                plan.strategy_trace.append(
+                    StrategyTrace(strategy=strategy.name, field=name, decision="skipped", reason="applies=False")
+                )
+            continue
 
-    plan.field_transforms.extend(transforms)
+        # Third-party compatibility step: the documented Type hook, silently
+        # honored, with its effects captured onto the plan.
+        kwargs_before = dict(lm_kwargs)
+        fields_before = set(render_signature.output_fields)
+        render_signature = field.annotation.adapt_to_native_lm_feature(render_signature, name, lm, lm_kwargs)
+
+        from dspy.adapters._engine.transforms import HideOutputField
+
+        deleted = sorted(fields_before - set(render_signature.output_fields))
+        plan.field_transforms.extend(
+            HideOutputField(deleted_name, reason=f"native:{field.annotation.__name__}") for deleted_name in deleted
+        )
+        _record_kwargs_delta(plan, field.annotation.__name__, kwargs_before, lm_kwargs)
+        plan.strategy_trace.append(
+            StrategyTrace(
+                strategy=f"type_hook:{field.annotation.__name__}",
+                field=name,
+                decision="selected" if deleted or kwargs_before != lm_kwargs else "skipped",
+                reason="third-party adapt_to_native_lm_feature",
+            )
+        )
+
     plan.input_fields, plan.output_fields, transform_warnings = apply_field_transforms(
-        plan.input_fields, plan.output_fields, transforms
+        plan.input_fields, plan.output_fields, plan.field_transforms
     )
     plan.warnings.extend(transform_warnings)
 
@@ -123,11 +134,31 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     return BuiltCall(plan=plan, render_signature=render_signature)
 
 
+def _apply_patch(plan: AdapterPlan, patch, render_signature, source_name: str):
+    """Merge a strategy/step patch into the plan AND derive the legacy
+    render-signature deletions from its hide/delete channels: a field hidden
+    by the engine is a field deleted from the signature format() receives."""
+    from dspy.adapters._engine.transforms import HideInputField, HideOutputField
+
+    for transform in patch.field_transforms:
+        if isinstance(transform, (HideInputField, HideOutputField)):
+            render_signature = render_signature.delete(transform.name)
+    for name in (*patch.request.delete_output_fields, *patch.request.delete_input_fields):
+        render_signature = render_signature.delete(name)
+    patch.merge_into(plan)
+    return render_signature
+
+
+def _record_kwargs_delta(plan: AdapterPlan, type_name: str, before: dict, after: dict) -> None:
+    delta = {key: after[key] for key in after if key not in before or before[key] is not after[key]}
+    if delta:
+        plan.metadata.setdefault("native_feature_kwargs", {})[type_name] = delta
+
+
 def _record_format_parser(adapter, plan: AdapterPlan) -> None:
-    """Record the resolved Format's text parser on the plan, so the IR is
+    """Record the resolved Format's parser on the plan, so the IR is
     complete and rendering/parsing demonstrably share one Format instance
-    (the coupling invariant). Consumed directly once engine postprocess
-    parses LMResponse objects."""
+    (the coupling invariant)."""
     from dspy.adapters._engine.formats import resolve_format
     from dspy.adapters._engine.overrides import resolve_override_verdict
 

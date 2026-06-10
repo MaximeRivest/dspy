@@ -169,7 +169,7 @@ class Citations(Type):
 
     @classmethod
     def adapt_to_native_lm_feature(cls, signature, field_name, lm, lm_kwargs) -> bool:
-        if lm.model.startswith("anthropic/"):
+        if native_citations_supported(lm):
             return signature.delete(field_name)
         return signature
 
@@ -219,3 +219,13 @@ class Citations(Type):
                     return cls.from_dict_list(citations_data)
 
         return None
+
+
+def native_citations_supported(lm) -> bool:
+    """Whether the LM's provider supports native citations.
+
+    The single source of this predicate: both the legacy
+    ``adapt_to_native_lm_feature`` hook and the engine's citations strategy
+    import it, so the gate can never drift between the two paths.
+    """
+    return lm.model.startswith("anthropic/")
