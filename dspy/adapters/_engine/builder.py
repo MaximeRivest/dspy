@@ -118,7 +118,24 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     )
     plan.warnings.extend(transform_warnings)
 
+    _record_format_parser(adapter, plan)
+
     return BuiltCall(plan=plan, render_signature=render_signature)
+
+
+def _record_format_parser(adapter, plan: AdapterPlan) -> None:
+    """Record the resolved Format's text parser on the plan, so the IR is
+    complete and rendering/parsing demonstrably share one Format instance
+    (the coupling invariant). Consumed directly once engine postprocess
+    parses LMResponse objects."""
+    from dspy.adapters._engine.formats import resolve_format
+    from dspy.adapters._engine.overrides import resolve_override_verdict
+    from dspy.adapters._engine.parse import FormatParserHook
+
+    if resolve_override_verdict(adapter).engine_eligible:
+        fmt = resolve_format(adapter)
+        if fmt is not None:
+            plan.parsers.append(FormatParserHook(fmt))
 
 
 def assert_unrendered(plan: AdapterPlan) -> None:
