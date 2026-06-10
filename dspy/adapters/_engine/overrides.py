@@ -64,6 +64,7 @@ DETECTION_SURFACE = frozenset(
         "_make_json_adapter_fallback",
         "_create_extractor_signature",
         "_parse_field_value",
+        "_legacy_async_quirks_postprocess",
     }
 )
 

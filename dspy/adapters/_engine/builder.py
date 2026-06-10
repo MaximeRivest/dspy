@@ -130,12 +130,11 @@ def _record_format_parser(adapter, plan: AdapterPlan) -> None:
     parses LMResponse objects."""
     from dspy.adapters._engine.formats import resolve_format
     from dspy.adapters._engine.overrides import resolve_override_verdict
-    from dspy.adapters._engine.parse import FormatParserHook
 
     if resolve_override_verdict(adapter).engine_eligible:
         fmt = resolve_format(adapter)
         if fmt is not None:
-            plan.parsers.append(FormatParserHook(fmt))
+            plan.parsers.append(fmt.make_parser_hook(adapter))
 
 
 def assert_unrendered(plan: AdapterPlan) -> None:

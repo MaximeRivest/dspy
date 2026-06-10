@@ -62,6 +62,20 @@ class TwoStepAdapter(Adapter):
         Returns:
             A list of messages to be passed to the main LM.
         """
+        from dspy.adapters._engine.overrides import resolve_override_verdict
+
+        # Engine-backed instances render via TwoStepFormat's dedicated
+        # assembly (TwoStep's pipeline is structurally unlike the base
+        # adapters', so it lives in formats/twostep.py — never render.py);
+        # subclasses overriding render/parse hooks keep the legacy body.
+        if resolve_override_verdict(self).engine_eligible:
+            from dspy.adapters._engine.formats import resolve_format
+            from dspy.adapters._engine.formats.twostep import render_two_step_messages
+
+            fmt = resolve_format(self)
+            if fmt is not None:
+                return render_two_step_messages(fmt, signature, demos, inputs)
+
         messages = []
 
         # Create a task description for the main LM
@@ -122,6 +136,30 @@ class TwoStepAdapter(Adapter):
         inputs = self.format(signature, demos, inputs)
 
         outputs = await lm.acall(messages=inputs, **lm_kwargs)
+        return await self._legacy_async_quirks_postprocess(signature, outputs)
+
+    async def _legacy_async_quirks_postprocess(
+        self,
+        signature: type[Signature],
+        outputs: list[dict[str, Any] | str],
+    ) -> list[dict[str, Any]]:
+        """TwoStep's async postprocess, preserved bug-for-bug behind one
+        named method (the kill list for the legacy-retirement epic).
+
+        Verified divergences from the sync pipeline, pinned by the tagged
+        ``legacy-async-quirk`` corpus fixtures:
+          (a) extraction is invoked even on empty/None main text (sync raises
+              AdapterParseError after one call);
+          (b) provider tool calls are converted WITHOUT their ids;
+          (c) AdapterParseError carries lm_response=str(output) rather than
+              the completion text;
+          (d) tool_calls presence does not relax parse failures as the sync
+              tolerance path does.
+        A fifth, corpus-invisible property also anchors this method: the
+        extraction model is awaited (ChatAdapter().acall) — routing through
+        the sync base pipeline would silently turn it into a blocking call
+        inside the event loop.
+        """
         # The signature is supposed to be "text -> {original output fields}"
         extractor_signature = self._create_extractor_signature(signature)
 
