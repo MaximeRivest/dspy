@@ -64,6 +64,13 @@ class Format:
     def output_requirements(self, signature) -> str | None:
         raise NotImplementedError
 
+    def make_parser_hook(self, adapter):
+        """The plan-carried parser for this format. Formats whose parsing
+        needs per-adapter state (TwoStep's extraction model) override this."""
+        from dspy.adapters._engine.parse import FormatParserHook
+
+        return FormatParserHook(self)
+
 
 _FORMATS: dict[type, Format] = {}
 
