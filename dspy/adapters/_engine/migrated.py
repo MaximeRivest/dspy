@@ -26,10 +26,21 @@ def ensure_core_migrations() -> None:
     register_engine_backed(ChatAdapter)
     register_format(ChatAdapter, ChatFormat())
 
-    # QC-07: JSONAdapter (BAMLAdapter, its overriding subclass, stays legacy
-    # automatically until its own migration).
+    # QC-07: JSONAdapter.
     register_engine_backed(JSONAdapter)
     register_format(JSONAdapter, JSONFormat())
+
+    # QC-08: XMLAdapter and BAMLAdapter — the proof that new wire formats
+    # land as Format objects with zero renderer changes.
+    from dspy.adapters._engine.formats.baml import BAMLFormat
+    from dspy.adapters._engine.formats.xml import XMLFormat
+    from dspy.adapters.baml_adapter import BAMLAdapter
+    from dspy.adapters.xml_adapter import XMLAdapter
+
+    register_engine_backed(XMLAdapter)
+    register_format(XMLAdapter, XMLFormat())
+    register_engine_backed(BAMLAdapter)
+    register_format(BAMLAdapter, BAMLFormat())
 
 
 def _suppress_for_tests() -> None:
