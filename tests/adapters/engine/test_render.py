@@ -74,16 +74,18 @@ def test_dual_run_legacy_path_matches_fixture(case_id):
     assert legacy_expected == fixture["expected"]
 
 
-def test_unmigrated_core_adapters_still_route_legacy():
-    """Updated per migration PR: JSON (QC-07), XML and BAML (QC-08) are
-    engine-backed; TwoStepAdapter is the last unmigrated core."""
+def test_all_core_adapters_engine_backed_and_overrides_still_route_legacy():
+    """Updated per migration PR: as of QC-09 every core adapter is
+    engine-backed; the override registry's remaining job is routing USER
+    subclasses with render/parse overrides through the legacy pipeline."""
     from dspy.adapters.baml_adapter import BAMLAdapter
     from dspy.adapters.json_adapter import JSONAdapter
     from dspy.adapters.xml_adapter import XMLAdapter
 
-    for cls in (JSONAdapter, XMLAdapter, BAMLAdapter):
+    for cls in (ChatAdapter, JSONAdapter, XMLAdapter, BAMLAdapter):
         assert resolve_override_verdict(cls()).engine_eligible, cls.__name__
-    assert not resolve_override_verdict(TwoStepAdapter(StubLM(Recorder()))).engine_eligible
+    assert resolve_override_verdict(TwoStepAdapter(StubLM(Recorder()))).engine_eligible
+    assert not resolve_override_verdict(_ForcedLegacyChat()).engine_eligible
 
 
 def test_call_only_wrapper_uses_engine_path(monkeypatch):

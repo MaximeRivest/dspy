@@ -42,6 +42,14 @@ def ensure_core_migrations() -> None:
     register_engine_backed(BAMLAdapter)
     register_format(BAMLAdapter, BAMLFormat())
 
+    # QC-09: TwoStepAdapter — the last core adapter. Its structurally
+    # different pipeline assembles in formats/twostep.py, never in render.py.
+    from dspy.adapters._engine.formats.twostep import TwoStepFormat
+    from dspy.adapters.two_step_adapter import TwoStepAdapter
+
+    register_engine_backed(TwoStepAdapter)
+    register_format(TwoStepAdapter, TwoStepFormat())
+
 
 def _suppress_for_tests() -> None:
     """Mark migrations applied without applying them, so tests control
