@@ -8,6 +8,7 @@ from dspy.clients.base_lm import BaseLM, inspect_history
 from dspy.clients.cache import Cache
 from dspy.clients.embedding import Embedder
 from dspy.clients.lm import LM
+from dspy.clients.openai_compat_lm import OpenAICompatLM
 from dspy.clients.provider import Provider, TrainingJob
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,6 @@ def configure_cache(
 
     # Update the reference to point to the new cache
     dspy.cache = DSPY_CACHE
-
 
 
 def _get_dspy_cache():
@@ -110,9 +110,11 @@ def disable_litellm_logging():
     litellm._dspy_logging_configured = True
     configure_litellm_logging("ERROR")
 
+
 __all__ = [
     "BaseLM",
     "LM",
+    "OpenAICompatLM",
     "Provider",
     "TrainingJob",
     "inspect_history",
