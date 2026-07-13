@@ -145,6 +145,28 @@ dspy.configure(lm=lm)
         ```
 If you run into errors, please refer to the [LiteLLM Docs](https://docs.litellm.ai/docs/providers) to verify if you are using the same variable names/following the right procedure.
 
+### Direct OpenAI-compatible endpoints without LiteLLM
+
+For an endpoint that implements the OpenAI Chat Completions JSON format, use
+`OpenAICompatLM` to connect with direct HTTP transport and no LiteLLM or OpenAI
+SDK dependency:
+
+```python linenums="1"
+import dspy
+
+lm = dspy.OpenAICompatLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    base_url="http://localhost:8000/v1",
+    api_key="local",  # Omit this for local endpoints that require no key.
+)
+dspy.configure(lm=lm)
+```
+
+Capability detection is not possible for a generic endpoint. Opt into features
+such as `supports_function_calling=True` or `supports_response_schema=True`
+when the server supports them. This client supports Chat Completions but not
+streaming or the OpenAI Responses API.
+
 ## Calling the LM directly.
 
 It's easy to call the `lm` you configured above directly. This gives you a unified API and lets you benefit from utilities like automatic caching.

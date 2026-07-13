@@ -190,6 +190,26 @@ class EchoLM(dspy.BaseLM):
         return dspy.LMResponse.from_text("hello", model=request.model)
 ```
 
+### Reference typed LM: `OpenAICompatLM`
+
+`dspy.OpenAICompatLM` is the first non-toy typed LM shipped with DSPy. It
+connects directly to an OpenAI Chat Completions-compatible HTTP endpoint
+without LiteLLM or the OpenAI SDK:
+
+```python
+lm = dspy.OpenAICompatLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    base_url="http://localhost:8000/v1",
+    api_key="local",  # Optional for endpoints that do not require authentication.
+)
+```
+
+Its implementation in `dspy/clients/openai_compat_lm.py` is the reference for
+translating `LMRequest` into a provider request, translating the provider
+response into `LMResponse`, and normalizing transport/provider failures into
+DSPy's `LMError` hierarchy. It supports Chat Completions only; streaming and
+the OpenAI Responses API are not part of its initial surface.
+
 ## Guide for custom adapter authors
 
 Adapters should call the LM object, not `forward()` directly.
