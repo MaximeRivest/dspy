@@ -22,7 +22,12 @@ from dspy.utils.inspect_history import pretty_print_history
 MAX_HISTORY_SIZE = 10_000
 GLOBAL_HISTORY = []
 LM_CLASS_STATE_KEY = "_dspy_lm_class"
-_BUILTIN_LM_CLASS_PATH = "dspy.clients.lm.LM"
+_BUILTIN_LM_CLASS_PATHS = frozenset(
+    {
+        "dspy.clients.lm.LM",
+        "dspy.clients.openai_compat_lm.OpenAICompatLM",
+    }
+)
 ForwardContract = Literal["legacy", "typed_lm"]
 
 
@@ -717,7 +722,7 @@ class BaseLM:
 
                 return LM(**state)
 
-            if class_path != _BUILTIN_LM_CLASS_PATH and not allow_custom_lm_class:
+            if class_path not in _BUILTIN_LM_CLASS_PATHS and not allow_custom_lm_class:
                 raise ValueError(
                     f"Refusing to import custom serialized LM class `{class_path}`. "
                     "Pass allow_unsafe_lm_state=True when loading trusted files to enable custom LM classes."
