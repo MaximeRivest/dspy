@@ -7,6 +7,7 @@ import pytest
 import requests
 
 import dspy
+from dspy.clients.base_lm import BaseLM
 from dspy.clients.cache import Cache
 from dspy.clients.openai_compat_lm import OpenAICompatLM, _normalize_error, _RawResponse
 from dspy.utils.exceptions import (
@@ -364,7 +365,7 @@ class TestSerializationAndExports:
 
         state = lm.dump_state()
         serialized = json.dumps(state)
-        loaded = OpenAICompatLM.load_state(state)
+        loaded = BaseLM.load_state(state)
 
         assert "explicit-secret" not in serialized
         assert "other-secret" not in serialized
@@ -376,3 +377,6 @@ class TestSerializationAndExports:
         assert loaded.kwargs["max_tokens"] == 256
         assert loaded._resolved_api_key() is None
         assert loaded.use_openai_api_key_env is False
+
+    def test_openai_compat_lm_is_exported_at_top_level(self):
+        assert dspy.OpenAICompatLM is OpenAICompatLM
