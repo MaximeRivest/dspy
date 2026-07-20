@@ -181,6 +181,22 @@ def _error_class_from_status(status: int) -> type[LMError]:
 class OpenAICompatLM(BaseLM):
     """A typed LM for an OpenAI Chat Completions-compatible endpoint.
 
+    Use this when you run or point at an OpenAI-compatible server — vLLM,
+    SGLang, Ollama, llama.cpp, or a gateway — and want direct HTTP transport
+    with no LiteLLM or OpenAI SDK dependency. For hosted providers, `dspy.LM`
+    is usually the right choice.
+
+    Example:
+        ```python
+        import dspy
+
+        lm = dspy.OpenAICompatLM(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            base_url="http://localhost:8000/v1",
+        )
+        dspy.configure(lm=lm)
+        ```
+
     Args:
         model: Model identifier accepted by the endpoint.
         base_url: API base URL, such as `http://localhost:8000/v1`.
@@ -188,7 +204,7 @@ class OpenAICompatLM(BaseLM):
             returning one. A callable is invoked on every request, so vaults,
             OAuth refreshers, and rotating credentials plug in without the LM
             knowing which; the resolved token is only ever placed in the
-            `Authorization` header.
+            `Authorization` header. Omit for local endpoints that need no key.
         api_key_env: Optional environment variable checked when `api_key` is absent.
         use_openai_api_key_env: Whether to fall back to `OPENAI_API_KEY`. Off by
             default so a key meant for OpenAI is never sent to another endpoint
@@ -202,7 +218,21 @@ class OpenAICompatLM(BaseLM):
         supports_function_calling: Opt into native tool calls.
         supports_reasoning: Opt into native reasoning.
         supports_response_schema: Opt into structured response schemas.
-        **kwargs: Default LM request parameters.
+        model_type: Must be `"chat"`; this client speaks Chat Completions only.
+        temperature: Default sampling temperature for every request.
+        max_tokens: Default response token limit for every request.
+        cache: Whether to cache responses (on by default). Repeating an
+            identical request returns the cached response without an HTTP call.
+        callbacks: Callback handlers observing each LM call.
+        num_retries: How many times to retry a failed request when the error
+            is retryable, such as a rate limit or a server error.
+        **kwargs: Default request parameters, such as `top_p` or `stop`,
+            applied to every request unless overridden at call time.
+
+    When the capability flags are False, DSPy's adapters express tools,
+    reasoning, and structured output through prompting instead of the native
+    API. When a flag is True but the server does not actually support the
+    feature, requests fail with a provider error.
 
     API keys are never serialized. If an explicit key was used, serialized state
     disables ambient `OPENAI_API_KEY` fallback so loading cannot silently
@@ -290,14 +320,14 @@ class OpenAICompatLM(BaseLM):
         headers = {"Content-Type": "application/json", "User-Agent": f"DSPy/{dspy.__version__}"}
         api_key = self._resolved_api_key()
         if api_key is None and self.require_auth:
-            exits = [
+            fixes = [
                 "pass api_key= to OpenAICompatLM",
                 f"set {self.api_key_env}" if self.api_key_env else None,
                 "set OPENAI_API_KEY with use_openai_api_key_env=True" if self.use_openai_api_key_env else None,
             ]
             raise LMNotConfiguredError(
                 "OpenAICompatLM requires a credential (require_auth=True) but none resolved. "
-                f"To fix: {'; or '.join(exit for exit in exits if exit)}.",
+                f"To fix: {'; or '.join(fix for fix in fixes if fix)}.",
                 model=self.model,
                 provider="openai_compat",
             )
@@ -420,7 +450,7 @@ class OpenAICompatLM(BaseLM):
         return response
 
     async def aforward(self, request: LMRequest) -> LMResponse:
-        """Run the synchronous non-streaming transport in an AnyIO worker."""
+        """Async version of `forward`; runs the same request in a background thread."""
         return await anyio.to_thread.run_sync(self.forward, request)
 
     @property

@@ -157,15 +157,18 @@ import dspy
 lm = dspy.OpenAICompatLM(
     model="meta-llama/Llama-3.1-8B-Instruct",
     base_url="http://localhost:8000/v1",
-    api_key="local",  # Omit this for local endpoints that require no key.
+    api_key="local",  # Some servers require any non-empty token; omit if yours doesn't.
 )
 dspy.configure(lm=lm)
 ```
 
-Capability detection is not possible for a generic endpoint. Opt into features
-such as `supports_function_calling=True` or `supports_response_schema=True`
-when the server supports them. This client supports Chat Completions but not
-streaming or the OpenAI Responses API.
+DSPy cannot ask a generic endpoint what it supports, so you declare
+capabilities yourself: pass `supports_function_calling=True` or
+`supports_response_schema=True` when your server supports those features. When
+left off, DSPy's adapters express tools and structured output through
+prompting instead of the native API; when turned on for a server that does not
+actually support the feature, requests fail with a provider error. This client
+supports Chat Completions but not streaming or the OpenAI Responses API.
 
 ## Calling the LM directly.
 

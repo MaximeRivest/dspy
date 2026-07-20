@@ -37,6 +37,7 @@ class OpenAICompatServerState:
 
 @pytest.fixture
 def openai_compat_server():
+    """Yield `(base_url, state)`: a live local endpoint and its scriptable state."""
     state = OpenAICompatServerState()
 
     class Handler(BaseHTTPRequestHandler):
