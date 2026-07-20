@@ -288,6 +288,26 @@ signing is intentionally out of scope for a token-shaped seam: the signature
 covers the request body, so supporting it requires a separate request-signing
 hook.
 
+### Constructor conventions for typed LMs
+
+Typed LMs deliberately do not continue DSPy's historical reliance on
+`**kwargs` for behavior. The conventions, set by `OpenAICompatLM`:
+
+- **Behavioral parameters are explicit and keyword-only.** Endpoint identity,
+  credentials, transport, and capability flags are named parameters after
+  `(model, base_url)`. New behavioral parameters are added conservatively —
+  each must prove its weight against a real provider need before entering the
+  signature — and are never absorbed through `**kwargs`.
+- **Request parameters keep the familiar user path, then become typed.**
+  `temperature=`, `max_tokens=`, and provider extras still work at
+  construction and call time, but they normalize immediately into `LMConfig`
+  (with provider-specific extras in `config.extensions`, named and
+  inspectable). `**kwargs` exists only at the public rim for ergonomics; it
+  never travels through internals.
+- **No typed LM assigns a new meaning to `**kwargs`.** Anything that would
+  have been a kwarg convention becomes either an explicit parameter (if
+  behavioral) or an `LMConfig` field or extension (if a request parameter).
+
 ### Planned typed LM family and routing
 
 The patterns above were designed to survive the next implementations without
