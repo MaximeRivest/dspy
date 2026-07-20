@@ -168,7 +168,8 @@ capabilities yourself: pass `supports_function_calling=True` or
 left off, DSPy's adapters express tools and structured output through
 prompting instead of the native API; when turned on for a server that does not
 actually support the feature, requests fail with a provider error. This client
-supports Chat Completions but not streaming or the OpenAI Responses API.
+supports Chat Completions (including streaming via `lm.stream()`) but not the
+OpenAI Responses API.
 
 ## Calling the LM directly.
 
