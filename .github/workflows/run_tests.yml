@@ -109,7 +109,45 @@ jobs:
         run: uv sync -p .venv --extra dev --extra test_extras
       - name: Run extra and deno tests
         run: uv run -p .venv pytest tests/ -m 'extra or deno' --extra --deno
-  
+
+  adapter_golden_parity:
+    # Byte-level authority for the adapter golden corpus: schema-derived
+    # strings (pydantic JSON schemas) can drift across library versions, so
+    # this job pins the versions recorded in the corpus metadata while the
+    # floating matrix above only warns on drift.
+    # See tests/adapters/golden/README.md.
+    name: Adapter Golden Parity (pinned)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install uv with caching
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+      - name: Create and activate virtual environment
+        run: |
+          uv venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - name: Install dependencies with pinned parity constraints
+        run: |
+          uv sync --dev -p .venv --extra dev
+          uv pip install -p .venv -r tests/adapters/golden/parity-constraints.txt
+          uv pip list
+      - name: Check fixture regeneration is byte-identical
+        run: uv run -p .venv python tests/adapters/golden/generate_fixtures.py --check
+      - name: Run golden parity tests
+        run: uv run -p .venv pytest -vv tests/adapters/test_golden_parity.py
+
   llm_call_test:
     name: Run Tests with Real LM
     runs-on: ubuntu-latest

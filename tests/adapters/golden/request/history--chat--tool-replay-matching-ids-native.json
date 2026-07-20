@@ -1,0 +1,165 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {
+    "use_native_function_calling": true
+  },
+  "case_id": "history--chat--tool-replay-matching-ids-native",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {
+            "tools": [
+              {
+                "function": {
+                  "description": "Search the web for documents.",
+                  "name": "search_web",
+                  "parameters": {
+                    "properties": {
+                      "k": {
+                        "default": 3,
+                        "type": "integer"
+                      },
+                      "query": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "query",
+                      "k"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "type": "function"
+              }
+            ]
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str): \n2. `history` (History):\nYour output fields are:\n1. `next_thought` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## history ## ]]\n{history}\n\n[[ ## next_thought ## ]]\n{next_thought}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Given the fields `question`, `history`, `tools`, produce the fields `next_thought`, `tool_calls`.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nQ1",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## next_thought ## ]]\nI should search.\n\n[[ ## completed ## ]]\n",
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "function": {
+                    "arguments": "{\"query\": \"cats\"}",
+                    "name": "search_web"
+                  },
+                  "id": "call_1",
+                  "type": "function"
+                }
+              ]
+            },
+            {
+              "content": "{\"items\": [\"cat\"]}",
+              "name": "search_web",
+              "role": "tool",
+              "tool_call_id": "call_1"
+            },
+            {
+              "content": "[[ ## question ## ]]\nQ2\n\nRespond with the corresponding output fields, starting with the field `[[ ## next_thought ## ]]` (must be formatted as a valid Python str), and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {
+            "tools": [
+              {
+                "function": {
+                  "description": "Search the web for documents.",
+                  "name": "search_web",
+                  "parameters": {
+                    "properties": {
+                      "k": {
+                        "default": 3,
+                        "type": "integer"
+                      },
+                      "query": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "query",
+                      "k"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "type": "function"
+              }
+            ]
+          },
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str): \n2. `history` (History):\nYour output fields are:\n1. `next_thought` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## history ## ]]\n{history}\n\n[[ ## next_thought ## ]]\n{next_thought}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Given the fields `question`, `history`, `tools`, produce the fields `next_thought`, `tool_calls`.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nQ1",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## next_thought ## ]]\nI should search.\n\n[[ ## completed ## ]]\n",
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "function": {
+                    "arguments": "{\"query\": \"cats\"}",
+                    "name": "search_web"
+                  },
+                  "id": "call_1",
+                  "type": "function"
+                }
+              ]
+            },
+            {
+              "content": "{\"items\": [\"cat\"]}",
+              "name": "search_web",
+              "role": "tool",
+              "tool_call_id": "call_1"
+            },
+            {
+              "content": "[[ ## question ## ]]\nQ2\n\nRespond with the corresponding output fields, starting with the field `[[ ## next_thought ## ]]` (must be formatted as a valid Python str), and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {
+    "supports_function_calling": true
+  },
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:history",
+    "tool-replay"
+  ]
+}

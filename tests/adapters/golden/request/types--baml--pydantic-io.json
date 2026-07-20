@@ -1,0 +1,76 @@
+{
+  "adapter": "baml",
+  "adapter_kwargs": {},
+  "case_id": "types--baml--pydantic-io",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `profile` (GoldenProfile): \n2. `question` (str):\nYour output fields are:\n1. `card` (GoldenAnswerCard):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## profile ## ]]\n{profile}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## card ## ]]\nOutput field `card` should be of type: {\n  answer: string,\n  sources: string[],\n}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer about the profile.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## profile ## ]]\n{\n  \"name\": \"Ada\",\n  \"location\": {\n    \"city\": \"London\",\n    \"country\": \"UK\"\n  },\n  \"interests\": [\n    \"math\"\n  ]\n}\n\n[[ ## question ## ]]\nWho is Ada?",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"card\": {\n    \"answer\": \"A mathematician.\",\n    \"sources\": [\n      \"memory\"\n    ]\n  }\n}",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## profile ## ]]\n{\n  \"name\": \"Grace\",\n  \"location\": {\n    \"city\": \"Arlington\",\n    \"country\": \"USA\"\n  },\n  \"interests\": [\n    \"compilers\",\n    \"navy\"\n  ]\n}\n\n[[ ## question ## ]]\nWho is Grace?\n\nRespond with a JSON object in the following order of fields: `card` (must be formatted as a valid Python GoldenAnswerCard).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `profile` (GoldenProfile): \n2. `question` (str):\nYour output fields are:\n1. `card` (GoldenAnswerCard):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## profile ## ]]\n{profile}\n\n[[ ## question ## ]]\n{question}\n\n[[ ## card ## ]]\nOutput field `card` should be of type: {\n  answer: string,\n  sources: string[],\n}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer about the profile.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## profile ## ]]\n{\n  \"name\": \"Ada\",\n  \"location\": {\n    \"city\": \"London\",\n    \"country\": \"UK\"\n  },\n  \"interests\": [\n    \"math\"\n  ]\n}\n\n[[ ## question ## ]]\nWho is Ada?",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"card\": {\n    \"answer\": \"A mathematician.\",\n    \"sources\": [\n      \"memory\"\n    ]\n  }\n}",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## profile ## ]]\n{\n  \"name\": \"Grace\",\n  \"location\": {\n    \"city\": \"Arlington\",\n    \"country\": \"USA\"\n  },\n  \"interests\": [\n    \"compilers\",\n    \"navy\"\n  ]\n}\n\n[[ ## question ## ]]\nWho is Grace?\n\nRespond with a JSON object in the following order of fields: `card` (must be formatted as a valid Python GoldenAnswerCard).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:types"
+  ]
+}

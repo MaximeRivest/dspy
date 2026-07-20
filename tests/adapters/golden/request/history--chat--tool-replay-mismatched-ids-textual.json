@@ -1,0 +1,87 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {
+    "use_native_function_calling": false
+  },
+  "case_id": "history--chat--tool-replay-mismatched-ids-textual",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str): \n2. `history` (History): \n3. `tools` (list[Tool]):\nYour output fields are:\n1. `next_thought` (str): \n2. `tool_calls` (ToolCalls): \n    Type description of ToolCalls: Tool calls must be a JSON object with `tool_calls`, a list of calls. Each call must include `name` and `args`. Example: {\"tool_calls\": [{\"name\": \"search\", \"args\": {\"query\": \"cats\"}}]}\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## history ## ]]\n{history}\n\n[[ ## tools ## ]]\n{tools}\n\n[[ ## next_thought ## ]]\n{next_thought}\n\n[[ ## tool_calls ## ]]\n{tool_calls}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"object\", \"$defs\": {\"ToolCall\": {\"type\": \"object\", \"properties\": {\"args\": {\"type\": \"object\", \"additionalProperties\": true, \"title\": \"Args\"}, \"name\": {\"type\": \"string\", \"title\": \"Name\"}}, \"required\": [\"name\", \"args\"], \"title\": \"ToolCall\"}}, \"properties\": {\"tool_calls\": {\"type\": \"array\", \"items\": {\"$ref\": \"#/$defs/ToolCall\"}, \"title\": \"Tool Calls\"}}, \"required\": [\"tool_calls\"], \"title\": \"ToolCalls\"}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Given the fields `question`, `history`, `tools`, produce the fields `next_thought`, `tool_calls`.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nQ1",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## next_thought ## ]]\nI should search.\n\n[[ ## tool_calls ## ]]\n{\"tool_calls\": [{\"name\": \"search_web\", \"args\": {\"query\": \"cats\"}}]}\n\n[[ ## completed ## ]]\n",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## tool_call_results ## ]]\n{\"tool_call_results\": [{\"call_id\": \"call_other\", \"name\": \"search_web\", \"value\": {\"items\": [\"cat\"]}, \"is_error\": false}]}",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## question ## ]]\nQ2\n\n[[ ## tools ## ]]\n[\"search_web, whose description is <desc>Search the web for documents.</desc>. It takes arguments {'query': {'type': 'string'}, 'k': {'type': 'integer', 'default': 3}}.\"]\n\nRespond with the corresponding output fields, starting with the field `[[ ## next_thought ## ]]` (must be formatted as a valid Python str), then `[[ ## tool_calls ## ]]` (must be a JSON object like {\"tool_calls\": [{\"name\": \"...\", \"args\": {...}}]}), and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str): \n2. `history` (History): \n3. `tools` (list[Tool]):\nYour output fields are:\n1. `next_thought` (str): \n2. `tool_calls` (ToolCalls): \n    Type description of ToolCalls: Tool calls must be a JSON object with `tool_calls`, a list of calls. Each call must include `name` and `args`. Example: {\"tool_calls\": [{\"name\": \"search\", \"args\": {\"query\": \"cats\"}}]}\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## history ## ]]\n{history}\n\n[[ ## tools ## ]]\n{tools}\n\n[[ ## next_thought ## ]]\n{next_thought}\n\n[[ ## tool_calls ## ]]\n{tool_calls}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"object\", \"$defs\": {\"ToolCall\": {\"type\": \"object\", \"properties\": {\"args\": {\"type\": \"object\", \"additionalProperties\": true, \"title\": \"Args\"}, \"name\": {\"type\": \"string\", \"title\": \"Name\"}}, \"required\": [\"name\", \"args\"], \"title\": \"ToolCall\"}}, \"properties\": {\"tool_calls\": {\"type\": \"array\", \"items\": {\"$ref\": \"#/$defs/ToolCall\"}, \"title\": \"Tool Calls\"}}, \"required\": [\"tool_calls\"], \"title\": \"ToolCalls\"}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Given the fields `question`, `history`, `tools`, produce the fields `next_thought`, `tool_calls`.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## question ## ]]\nQ1",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## next_thought ## ]]\nI should search.\n\n[[ ## tool_calls ## ]]\n{\"tool_calls\": [{\"name\": \"search_web\", \"args\": {\"query\": \"cats\"}}]}\n\n[[ ## completed ## ]]\n",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## tool_call_results ## ]]\n{\"tool_call_results\": [{\"call_id\": \"call_other\", \"name\": \"search_web\", \"value\": {\"items\": [\"cat\"]}, \"is_error\": false}]}",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## question ## ]]\nQ2\n\n[[ ## tools ## ]]\n[\"search_web, whose description is <desc>Search the web for documents.</desc>. It takes arguments {'query': {'type': 'string'}, 'k': {'type': 'integer', 'default': 3}}.\"]\n\nRespond with the corresponding output fields, starting with the field `[[ ## next_thought ## ]]` (must be formatted as a valid Python str), then `[[ ## tool_calls ## ]]` (must be a JSON object like {\"tool_calls\": [{\"name\": \"...\", \"args\": {...}}]}), and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:history",
+    "tool-replay"
+  ]
+}
