@@ -1,4 +1,4 @@
-"""Local HTTP integration tests for ``OpenAICompatLM``."""
+"""Local HTTP integration tests for `OpenAICompatLM`."""
 
 import pytest
 

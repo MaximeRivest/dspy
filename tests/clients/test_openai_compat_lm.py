@@ -1,4 +1,4 @@
-"""Offline unit tests for ``dspy.OpenAICompatLM``."""
+"""Offline unit tests for `dspy.OpenAICompatLM`."""
 
 import json
 import logging

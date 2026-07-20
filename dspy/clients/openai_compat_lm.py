@@ -1,7 +1,7 @@
 """Typed LM for OpenAI Chat Completions-compatible HTTP endpoints.
 
-``OpenAICompatLM`` uses direct ``requests`` transport and DSPy's typed
-``LMRequest`` / ``LMResponse`` boundary. Async calls run the same synchronous
+`OpenAICompatLM` uses direct `requests` transport and DSPy's typed
+`LMRequest` / `LMResponse` boundary. Async calls run the same synchronous
 transport in an AnyIO worker thread. Streaming is intentionally out of scope.
 """
 
@@ -183,17 +183,17 @@ class OpenAICompatLM(BaseLM):
 
     Args:
         model: Model identifier accepted by the endpoint.
-        base_url: API base URL, such as ``http://localhost:8000/v1``.
+        base_url: API base URL, such as `http://localhost:8000/v1`.
         api_key: Optional explicit bearer token, or a zero-argument callable
             returning one. A callable is invoked on every request, so vaults,
             OAuth refreshers, and rotating credentials plug in without the LM
             knowing which; the resolved token is only ever placed in the
-            ``Authorization`` header.
-        api_key_env: Optional environment variable checked when ``api_key`` is absent.
-        use_openai_api_key_env: Whether to fall back to ``OPENAI_API_KEY``. Off by
+            `Authorization` header.
+        api_key_env: Optional environment variable checked when `api_key` is absent.
+        use_openai_api_key_env: Whether to fall back to `OPENAI_API_KEY`. Off by
             default so a key meant for OpenAI is never sent to another endpoint
             without an explicit opt-in.
-        require_auth: When True, raise ``dspy.LMNotConfiguredError`` locally if
+        require_auth: When True, raise `dspy.LMNotConfiguredError` locally if
             no credential resolves, instead of sending an unauthenticated
             request and waiting for the endpoint to reject it. Leave False for
             local endpoints that need no key.
@@ -205,7 +205,7 @@ class OpenAICompatLM(BaseLM):
         **kwargs: Default LM request parameters.
 
     API keys are never serialized. If an explicit key was used, serialized state
-    disables ambient ``OPENAI_API_KEY`` fallback so loading cannot silently
+    disables ambient `OPENAI_API_KEY` fallback so loading cannot silently
     switch to another account.
     """
 
