@@ -288,6 +288,41 @@ signing is intentionally out of scope for a token-shaped seam: the signature
 covers the request body, so supporting it requires a separate request-signing
 hook.
 
+### Planned typed LM family and routing
+
+The patterns above were designed to survive the next implementations without
+redesign. The intended sequence and the decisions already made:
+
+1. **`AnthropicLM`, then `OpenAIResponsesLM`, then `GoogleLM`** — one typed LM
+   per PR. The credential rules are placement-agnostic: what varies per
+   provider is only *where* the resolved credential goes (`Authorization:
+   Bearer` for OpenAI-shaped APIs, `x-api-key` plus `anthropic-version` for
+   Anthropic, `x-goog-api-key` for Google API keys, with OAuth tokens using
+   the Bearer slot everywhere). Each typed LM owns its placement; the
+   resolution ladder, callable handles, serialization hygiene, and typed
+   errors are identical.
+2. **Extract the shared credential resolver when the second typed LM lands**
+   (not before): a small helper implementing `explicit key (str or callable)
+   -> named api_key_env -> opt-in ambient env -> None or LMNotConfiguredError`,
+   parameterized only by the provider's ambient env name. One implementation
+   is a pattern; shared code is extracted at two.
+3. **Providers whose API keys live in a non-Bearer header** select placement
+   by credential kind, not by widening the handle: the handle stays a string
+   or zero-argument callable.
+4. **Routing with LiteLLM fallback** (the 3.4/3.5 rows below): a pure-lookup
+   registry mapping model-string prefixes to typed LM classes, consulted by a
+   factory; a miss falls back to the LiteLLM-backed `dspy.LM`. This composes
+   without adapter changes because `BaseLM.__call__` already normalizes both
+   forward contracts, and without serialization changes because saved states
+   record the concrete LM class. Requirements carried forward from the design
+   work: the resolution must be able to name which rung fired (typed class vs
+   LiteLLM fallback) — no silent magic; routing must not strand
+   LiteLLM-only capabilities such as fine-tuning (route those back to
+   LiteLLM or raise `LMUnsupportedFeatureError` naming the fallback); and any
+   registry/catalog metadata used to populate the routing table is advisory
+   only — it may suggest capability flags but never inject credentials or
+   change what is sent on the wire.
+
 ## Guide for custom adapter authors
 
 Adapters should call the LM object, not `forward()` directly.
