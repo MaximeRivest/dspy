@@ -30,6 +30,7 @@ from dspy.utils.exceptions import (
     LMConfigurationError,
     LMError,
     LMInvalidRequestError,
+    LMNotConfiguredError,
     LMProviderError,
     LMRateLimitError,
     LMServerError,
@@ -192,6 +193,10 @@ class OpenAICompatLM(BaseLM):
         use_openai_api_key_env: Whether to fall back to ``OPENAI_API_KEY``. Off by
             default so a key meant for OpenAI is never sent to another endpoint
             without an explicit opt-in.
+        require_auth: When True, raise ``dspy.LMNotConfiguredError`` locally if
+            no credential resolves, instead of sending an unauthenticated
+            request and waiting for the endpoint to reject it. Leave False for
+            local endpoints that need no key.
         timeout: Request timeout in seconds.
         extra_headers: Additional HTTP headers. Explicit values override defaults.
         supports_function_calling: Opt into native tool calls.
@@ -214,6 +219,7 @@ class OpenAICompatLM(BaseLM):
         api_key: str | Callable[[], str] | None = None,
         api_key_env: str | None = None,
         use_openai_api_key_env: bool = False,
+        require_auth: bool = False,
         timeout: float = 60.0,
         extra_headers: dict[str, str] | None = None,
         supports_function_calling: bool = False,
@@ -260,6 +266,7 @@ class OpenAICompatLM(BaseLM):
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
         self.use_openai_api_key_env = bool(use_openai_api_key_env)
+        self.require_auth = bool(require_auth)
         self.timeout = float(timeout)
         self.extra_headers = {str(key): str(value) for key, value in (extra_headers or {}).items()}
         self._supports_function_calling = bool(supports_function_calling)
@@ -282,6 +289,18 @@ class OpenAICompatLM(BaseLM):
     def _request_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "User-Agent": f"DSPy/{dspy.__version__}"}
         api_key = self._resolved_api_key()
+        if api_key is None and self.require_auth:
+            exits = [
+                "pass api_key= to OpenAICompatLM",
+                f"set {self.api_key_env}" if self.api_key_env else None,
+                "set OPENAI_API_KEY with use_openai_api_key_env=True" if self.use_openai_api_key_env else None,
+            ]
+            raise LMNotConfiguredError(
+                "OpenAICompatLM requires a credential (require_auth=True) but none resolved. "
+                f"To fix: {'; or '.join(exit for exit in exits if exit)}.",
+                model=self.model,
+                provider="openai_compat",
+            )
         if api_key is not None:
             headers["Authorization"] = f"Bearer {api_key}"
         headers.update(self.extra_headers)
@@ -437,6 +456,7 @@ class OpenAICompatLM(BaseLM):
                 "base_url": self.base_url,
                 "api_key_env": self.api_key_env,
                 "use_openai_api_key_env": self.use_openai_api_key_env if self._api_key is None else False,
+                "require_auth": self.require_auth,
                 "timeout": self.timeout,
                 "extra_headers": safe_headers,
                 "supports_function_calling": self._supports_function_calling,

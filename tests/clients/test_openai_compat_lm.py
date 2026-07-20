@@ -419,6 +419,24 @@ class TestConfigurationAndCapabilities:
 
         assert _make_lm(**kwargs)._resolved_api_key() == expected
 
+    def test_require_auth_fails_locally_without_credential(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        post = _FakePost()
+        lm = _make_lm(post=post, require_auth=True, api_key_env="GATEWAY_KEY")
+
+        with pytest.raises(dspy.LMNotConfiguredError, match="GATEWAY_KEY"):
+            lm.forward(dspy.LMRequest.from_call(model=MODEL, prompt="hi"))
+        assert post.calls == []
+
+        monkeypatch.setenv("GATEWAY_KEY", "now-set")
+        assert lm.forward(dspy.LMRequest.from_call(model=MODEL, prompt="hi")).text == "hello"
+
+    def test_require_auth_round_trips_through_state(self):
+        state = _make_lm(require_auth=True, api_key="k").dump_state()
+
+        assert state["require_auth"] is True
+        assert BaseLM.load_state(state).require_auth is True
+
     def test_callable_api_key_is_resolved_per_request(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         tokens = iter(["token-1", "token-2"])
