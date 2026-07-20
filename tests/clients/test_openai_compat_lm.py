@@ -233,6 +233,35 @@ class TestRequestResponseTranslation:
         call = response.tool_calls[0]
         assert (call.id, call.name, call.args) == ("call_1", "get_weather", {"city": "Paris"})
 
+    def test_vllm_reasoning_key_maps_to_thinking_part(self):
+        completion = _completion(None)
+        completion["choices"][0]["message"]["content"] = None
+        completion["choices"][0]["message"]["reasoning"] = "thinking hard"
+        lm = _make_lm(post=_FakePost(_raw(completion)))
+
+        response = lm.forward(dspy.LMRequest.from_call(model=MODEL, prompt="hi"))
+
+        assert response.reasoning_content == "thinking hard"
+
+    def test_reasoning_only_truncated_output_keeps_legacy_contract(self):
+        # vLLM reasoning models can burn the whole token budget thinking:
+        # content=None with only reasoning. Legacy outputs must stay
+        # `str | dict | None` so adapter re-normalization does not crash.
+        completion = _completion(None)
+        completion["choices"][0]["message"]["content"] = None
+        completion["choices"][0]["message"]["reasoning"] = "partial thought"
+        completion["choices"][0]["finish_reason"] = "length"
+        lm = _make_lm(post=_FakePost(_raw(completion)))
+
+        outputs = lm("hi")
+
+        assert outputs == [{"text": None, "reasoning_content": "partial thought"}]
+
+    def test_empty_output_to_value_is_none(self):
+        from dspy.core.types import LMOutput
+
+        assert LMOutput(parts=[]).to_value() is None
+
     def test_truncated_response_logs_warning(self, caplog, monkeypatch):
         completion = _completion("cut off")
         completion["choices"][0]["finish_reason"] = "length"
