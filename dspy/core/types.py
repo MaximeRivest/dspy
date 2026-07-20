@@ -789,6 +789,10 @@ class LMOutput(BaseModel):
     def to_value(self) -> Any:
         values = [_part_to_value(part) for part in self.parts]
         values = [value for value in values if value is not None]
+        if not values:
+            # Keep the legacy `str | dict | None` output contract: an output
+            # with no parts (e.g. truncated before any content) is None, not [].
+            return None
         if len(values) == 1 and isinstance(values[0], str) and self.logprobs is None:
             return values[0]
         return values

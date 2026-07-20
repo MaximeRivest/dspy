@@ -640,7 +640,9 @@ def choice_to_lm_output(choice: Any) -> LMOutput:
     message = get_value(choice, "message")
     parts = []
     if message is not None:
-        reasoning = get_value(message, "reasoning_content")
+        # vLLM >= 0.19 and some providers use "reasoning"; LiteLLM and older
+        # servers use "reasoning_content".
+        reasoning = get_value(message, "reasoning_content") or get_value(message, "reasoning")
         if reasoning:
             parts.append(LMThinkingPart(text=str(reasoning)))
         content = get_value(message, "content")
