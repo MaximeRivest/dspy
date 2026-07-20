@@ -215,6 +215,64 @@ explicit key, then `api_key_env`, then an opt-in `OPENAI_API_KEY` fallback
 cache keys in the clear. It supports Chat Completions only; streaming and
 the OpenAI Responses API are not part of its initial surface.
 
+### Credential patterns for typed LMs
+
+Typed LMs are data-plane objects: they perform inference, never setup. A missing
+credential is a typed, actionable error — not a prompt, a browser window, or a
+silent fallback to a different account. `OpenAICompatLM` sets the pattern that
+other typed LMs should follow.
+
+**1. Accept a handle, not only a string.** `api_key` takes a string or a
+zero-argument callable returning one:
+
+```python
+lm = dspy.OpenAICompatLM(
+    model="my-model",
+    base_url="https://gateway.example.com/v1",
+    api_key=lambda: my_vault.read("gateway-token"),
+)
+```
+
+The callable is invoked on every request, so vaults, OAuth refreshers, SSO
+resolvers, and rotating tokens all plug in without the LM knowing which. The
+resolved token travels only in the request header.
+
+**2. Keep the resolution ladder short, fixed, and documented.** Resolution
+order is:
+
+1. Explicit `api_key` (string or callable) — always wins.
+2. `api_key_env` — a named environment variable the user chose.
+3. `OPENAI_API_KEY` — only when `use_openai_api_key_env=True`. Ambient fallback
+   is opt-in so a key meant for one provider is never sent to another endpoint
+   by accident.
+4. No credential — by default the request is sent unauthenticated, which is
+   correct for local endpoints. Pass `require_auth=True` to instead fail
+   locally with a typed `LMNotConfiguredError` whose message names the exits;
+   endpoints that reject an unauthenticated request return a typed
+   `LMAuthError` either way.
+
+Every rung is inspectable; nothing is discovered behind the user's back.
+
+**3. Secrets stay out of everything.** API keys must never appear in serialized
+state, logs, history, or cache keys:
+
+- `dump_state()` never writes a key. When an explicit key was used, the saved
+  state also disables the ambient env fallback so loading a program cannot
+  silently switch accounts.
+- Sensitive headers (`Authorization`, `X-API-Key`, cookies) are stripped from
+  serialized `extra_headers`.
+- Cache identity uses a SHA-256 fingerprint of the resolved credential, so
+  responses from different accounts never collide while the key itself is
+  never stored.
+
+**4. Fail with typed errors.** Map provider auth failures onto DSPy's error
+hierarchy (`LMAuthError`, `LMBillingError`, `LMRateLimitError`, ...) with
+status, provider code, request ID, and `retry_after` populated. The error
+message is the onboarding: it should name what to set and where.
+
+New typed LM implementations should treat these four rules as the contract,
+even when the underlying provider SDK offers its own credential discovery.
+
 ## Guide for custom adapter authors
 
 Adapters should call the LM object, not `forward()` directly.
