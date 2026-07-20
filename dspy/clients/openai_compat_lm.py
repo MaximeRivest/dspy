@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ import requests
 
 import dspy
 from dspy.clients.base_lm import LM_CLASS_STATE_KEY, BaseLM
-from dspy.clients.openai_format import completion_to_lm_response, cost_from_response, to_openai_chat_request
+from dspy.clients.openai_format import completion_to_lm_response, to_openai_chat_request
 from dspy.core.types import LMRequest, LMResponse
 from dspy.utils.callback import BaseCallback
 from dspy.utils.exceptions import (
@@ -39,6 +40,8 @@ from dspy.utils.exceptions import (
 )
 
 __all__ = ["OpenAICompatLM"]
+
+logger = logging.getLogger(__name__)
 
 _PROVIDER_CODE_MAP: dict[str, type[LMError]] = {
     "context_length_exceeded": ContextWindowExceededError,
@@ -180,9 +183,15 @@ class OpenAICompatLM(BaseLM):
     Args:
         model: Model identifier accepted by the endpoint.
         base_url: API base URL, such as ``http://localhost:8000/v1``.
-        api_key: Optional explicit bearer token.
+        api_key: Optional explicit bearer token, or a zero-argument callable
+            returning one. A callable is invoked on every request, so vaults,
+            OAuth refreshers, and rotating credentials plug in without the LM
+            knowing which; the resolved token is only ever placed in the
+            ``Authorization`` header.
         api_key_env: Optional environment variable checked when ``api_key`` is absent.
-        use_openai_api_key_env: Whether to fall back to ``OPENAI_API_KEY``.
+        use_openai_api_key_env: Whether to fall back to ``OPENAI_API_KEY``. Off by
+            default so a key meant for OpenAI is never sent to another endpoint
+            without an explicit opt-in.
         timeout: Request timeout in seconds.
         extra_headers: Additional HTTP headers. Explicit values override defaults.
         supports_function_calling: Opt into native tool calls.
@@ -202,9 +211,9 @@ class OpenAICompatLM(BaseLM):
         model: str,
         base_url: str,
         *,
-        api_key: str | None = None,
+        api_key: str | Callable[[], str] | None = None,
         api_key_env: str | None = None,
-        use_openai_api_key_env: bool = True,
+        use_openai_api_key_env: bool = False,
         timeout: float = 60.0,
         extra_headers: dict[str, str] | None = None,
         supports_function_calling: bool = False,
@@ -261,7 +270,7 @@ class OpenAICompatLM(BaseLM):
 
     def _resolved_api_key(self) -> str | None:
         if self._api_key is not None:
-            return self._api_key
+            return self._api_key() if callable(self._api_key) else self._api_key
         if self.api_key_env is not None:
             value = os.environ.get(self.api_key_env)
             if value:
@@ -279,15 +288,21 @@ class OpenAICompatLM(BaseLM):
         return headers
 
     def _cache_request(self, request: LMRequest) -> dict[str, Any]:
+        # Key on the OpenAI-shaped wire payload rather than the LMRequest model:
+        # config values such as a pydantic `response_format` class are only
+        # JSON-serializable after `to_openai_chat_request()` maps them, and the
+        # payload naturally excludes DSPy-only cache config.
         api_key = self._resolved_api_key()
         header_fingerprints = {
             name.lower(): hashlib.sha256(value.encode()).hexdigest()
             for name, value in sorted(self.extra_headers.items(), key=lambda item: item[0].lower())
         }
+        cache_config = request.config.cache
         return {
             "_fn_identifier": "dspy.clients.openai_compat_lm.OpenAICompatLM.forward",
             "base_url": self.base_url,
-            "request": request,
+            "request": to_openai_chat_request(request),
+            "rollout_id": cache_config.rollout_id if cache_config is not None else None,
             "credential_fingerprint": hashlib.sha256(api_key.encode()).hexdigest() if api_key else None,
             "header_fingerprints": header_fingerprints,
         }
@@ -350,8 +365,16 @@ class OpenAICompatLM(BaseLM):
                 status=raw.status,
                 request_id=_header(raw.headers, "x-request-id", "request-id"),
             ) from error
-        cost = cost_from_response(provider_response)
-        return response.model_copy(update={"cost": cost}) if cost is not None else response
+        self._warn_on_truncation(response, request)
+        return response
+
+    def _warn_on_truncation(self, response: LMResponse, request: LMRequest) -> None:
+        if any(output.truncated for output in response.outputs):
+            logger.warning(
+                "OpenAICompatLM response was truncated (finish_reason='length', max_tokens=%s). "
+                "Inspect recent LM calls with `dspy.inspect_history()`, or pass a larger max_tokens.",
+                request.config.max_tokens,
+            )
 
     def _request_with_retries(self, request: LMRequest) -> LMResponse:
         for attempt in range(self.num_retries + 1):

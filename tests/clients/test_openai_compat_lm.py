@@ -1,6 +1,7 @@
 """Offline unit tests for ``dspy.OpenAICompatLM``."""
 
 import json
+import logging
 from collections import deque
 
 import pytest
@@ -183,6 +184,68 @@ class TestRequestResponseTranslation:
             }
         ]
 
+    def test_multiple_choices_map_to_multiple_outputs(self):
+        completion = _completion("first")
+        completion["choices"].append(
+            {"index": 1, "message": {"role": "assistant", "content": "second"}, "finish_reason": "stop"}
+        )
+        lm = _make_lm(post=_FakePost(_raw(completion)))
+
+        response = lm.forward(dspy.LMRequest.from_call(model=MODEL, prompt="hi", n=2))
+
+        assert [output.text for output in response.outputs] == ["first", "second"]
+
+    def test_tool_call_round_trip(self):
+        completion = {
+            "id": "chatcmpl-test",
+            "model": MODEL,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+        post = _FakePost(_raw(completion))
+        lm = _make_lm(post=post, supports_function_calling=True)
+        tool = dspy.core.types.LMToolSpec(
+            name="get_weather",
+            description="Get weather",
+            parameters={"type": "object", "properties": {"city": {"type": "string"}}},
+        )
+        request = dspy.LMRequest.from_call(model=MODEL, prompt="Weather in Paris?", tools=[tool])
+
+        response = lm.forward(request)
+
+        sent = post.calls[0]["body"]
+        assert sent["tools"][0]["function"]["name"] == "get_weather"
+        call = response.tool_calls[0]
+        assert (call.id, call.name, call.args) == ("call_1", "get_weather", {"city": "Paris"})
+
+    def test_truncated_response_logs_warning(self, caplog, monkeypatch):
+        completion = _completion("cut off")
+        completion["choices"][0]["finish_reason"] = "length"
+        lm = _make_lm(post=_FakePost(_raw(completion)))
+
+        # The dspy logger does not propagate to the root logger by default.
+        monkeypatch.setattr(logging.getLogger("dspy"), "propagate", True)
+        with caplog.at_level("WARNING", logger="dspy.clients.openai_compat_lm"):
+            lm.forward(dspy.LMRequest.from_call(model=MODEL, prompt="hi", max_tokens=8))
+
+        assert "truncated" in caplog.text
+        assert "max_tokens=8" in caplog.text
+
     def test_extra_headers_explicitly_override_defaults(self):
         post = _FakePost()
         lm = _make_lm(post=post, api_key="secret", extra_headers={"Authorization": "Token custom", "X-Route": "blue"})
@@ -239,6 +302,19 @@ class TestRetries:
         assert len(post.calls) == 2
         assert sleeps == [0.25]
 
+    def test_retry_backoff_is_exponential_without_retry_after(self, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr("dspy.clients.openai_compat_lm.time.sleep", sleeps.append)
+        post = _FakePost(
+            _raw({"error": {"message": "slow"}}, status=429),
+            _raw({"error": {"message": "slow"}}, status=429),
+            _raw(_completion("ok")),
+        )
+        lm = _make_lm(post=post, num_retries=2)
+
+        assert lm.forward(dspy.LMRequest.from_call(model=MODEL, prompt="hi")).text == "ok"
+        assert sleeps == [1, 2]
+
     def test_non_retryable_error_is_not_retried(self):
         post = _FakePost(_raw({"error": {"message": "bad"}}, status=400), _raw(_completion()))
         lm = _make_lm(post=post, num_retries=2)
@@ -262,6 +338,29 @@ class TestCaching:
         assert uncached == ["fresh"]
         assert len(post.calls) == 2
         assert lm.history[-2].response.cache_hit is True
+
+    def test_cache_works_with_pydantic_response_format(self, isolated_cache):
+        import pydantic
+
+        class Answer(pydantic.BaseModel):
+            value: str
+
+        post = _FakePost(_raw(_completion("structured")), _raw(_completion("unexpected")))
+        lm = _make_lm(post=post, cache=True)
+        request = dspy.LMRequest.from_call(model=MODEL, prompt="same", response_format=Answer)
+
+        assert lm(request).text == "structured"
+        assert lm(request).text == "structured"
+        assert len(post.calls) == 1
+
+    def test_cache_key_varies_with_rollout_id(self, isolated_cache):
+        post = _FakePost(_raw(_completion("r0")), _raw(_completion("r1")))
+        lm = _make_lm(post=post, cache=True, temperature=1.0)
+
+        assert lm("same", rollout_id=0) == ["r0"]
+        assert lm("same", rollout_id=1) == ["r1"]
+        assert lm("same", rollout_id=0) == ["r0"]
+        assert len(post.calls) == 2
 
     def test_cache_identity_distinguishes_endpoint_and_credentials(self, isolated_cache):
         request = dspy.LMRequest.from_call(model=MODEL, prompt="same")
@@ -307,7 +406,8 @@ class TestConfigurationAndCapabilities:
                 "explicit",
             ),
             ({"api_key_env": "GATEWAY_KEY"}, {"GATEWAY_KEY": "gateway", "OPENAI_API_KEY": "openai"}, "gateway"),
-            ({}, {"OPENAI_API_KEY": "openai"}, "openai"),
+            ({"use_openai_api_key_env": True}, {"OPENAI_API_KEY": "openai"}, "openai"),
+            ({}, {"OPENAI_API_KEY": "openai"}, None),
             ({}, {}, None),
         ],
     )
@@ -318,6 +418,26 @@ class TestConfigurationAndCapabilities:
             monkeypatch.setenv(key, value)
 
         assert _make_lm(**kwargs)._resolved_api_key() == expected
+
+    def test_callable_api_key_is_resolved_per_request(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        tokens = iter(["token-1", "token-2"])
+        post = _FakePost(_raw(_completion()), _raw(_completion()))
+        lm = _make_lm(post=post, api_key=lambda: next(tokens))
+
+        lm.forward(dspy.LMRequest.from_call(model=MODEL, prompt="hi"))
+        lm.forward(dspy.LMRequest.from_call(model=MODEL, prompt="hi"))
+
+        sent = [call["headers"]["Authorization"] for call in post.calls]
+        assert sent == ["Bearer token-1", "Bearer token-2"]
+
+    def test_callable_api_key_is_never_serialized(self):
+        lm = _make_lm(api_key=lambda: "secret-token")
+
+        state = lm.dump_state()
+
+        assert "secret-token" not in json.dumps(state)
+        assert state["use_openai_api_key_env"] is False
 
     @pytest.mark.parametrize("flag", ["supports_function_calling", "supports_reasoning", "supports_response_schema"])
     def test_capabilities_default_false_and_honor_opt_in(self, flag):
