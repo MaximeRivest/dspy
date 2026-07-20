@@ -273,6 +273,21 @@ message is the onboarding: it should name what to set and where.
 New typed LM implementations should treat these four rules as the contract,
 even when the underlying provider SDK offers its own credential discovery.
 
+The callable-credential seam is validated against the major clouds'
+OpenAI-compatible surfaces: Azure OpenAI's v1 API (`azure_ad_token_provider`
+and openai-python's callable `api_key` have the same shape; use
+`azure.identity.get_bearer_token_provider`), Amazon Bedrock's Chat Completions
+endpoint with Bedrock API keys (short-term keys expire, so a refreshing
+callable is the natural fit), and Vertex AI's OpenAI-compatible endpoint (wrap
+`google-auth` credentials in a callable that refreshes on expiry and returns
+`credentials.token`). Credentials that live in provider-specific headers, such
+as Azure's `api-key` or Google's `x-goog-api-key`, are supported for static
+keys via `extra_headers`, which strips sensitive header names from serialized
+state and folds header fingerprints into the cache identity. AWS SigV4 request
+signing is intentionally out of scope for a token-shaped seam: the signature
+covers the request body, so supporting it requires a separate request-signing
+hook.
+
 ## Guide for custom adapter authors
 
 Adapters should call the LM object, not `forward()` directly.
