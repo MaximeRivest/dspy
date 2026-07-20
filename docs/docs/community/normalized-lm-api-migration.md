@@ -207,7 +207,12 @@ lm = dspy.OpenAICompatLM(
 Its implementation in `dspy/clients/openai_compat_lm.py` is the reference for
 translating `LMRequest` into a provider request, translating the provider
 response into `LMResponse`, and normalizing transport/provider failures into
-DSPy's `LMError` hierarchy. It supports Chat Completions only; streaming and
+DSPy's `LMError` hierarchy. It is also the reference for credential handling in
+typed LMs: `api_key` accepts a string or a zero-argument callable resolved per
+request (so vaults and OAuth refreshers plug in), the resolution ladder is
+explicit key, then `api_key_env`, then an opt-in `OPENAI_API_KEY` fallback
+(`use_openai_api_key_env=True`), and keys are never serialized or written into
+cache keys in the clear. It supports Chat Completions only; streaming and
 the OpenAI Responses API are not part of its initial surface.
 
 ## Guide for custom adapter authors
