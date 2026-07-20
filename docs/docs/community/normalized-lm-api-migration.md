@@ -212,8 +212,9 @@ typed LMs: `api_key` accepts a string or a zero-argument callable resolved per
 request (so vaults and OAuth refreshers plug in), the resolution ladder is
 explicit key, then `api_key_env`, then an opt-in `OPENAI_API_KEY` fallback
 (`use_openai_api_key_env=True`), and keys are never serialized or written into
-cache keys in the clear. It supports Chat Completions only; streaming and
-the OpenAI Responses API are not part of its initial surface.
+cache keys in the clear. It supports Chat Completions only; the OpenAI
+Responses API is not part of its surface. It is also the reference streaming
+implementation — see "Streaming contract for typed LMs" below.
 
 ### Credential patterns for typed LMs
 
@@ -312,6 +313,65 @@ Typed LMs deliberately do not continue DSPy's historical reliance on
 - **No typed LM assigns a new meaning to `**kwargs`.** Anything that would
   have been a kwarg convention becomes either an explicit parameter (if
   behavioral) or an `LMConfig` field or extension (if a request parameter).
+
+### Streaming contract for typed LMs
+
+Streaming is part of the typed LM contract, designed once so the whole typed
+LM family implements it the same way. The vocabulary is the stream types in
+`dspy/core/types.py`, now public: `LMStreamStartEvent`, `LMStreamDeltaEvent`
+(carrying `LMTextDelta`, `LMThinkingDelta`, `LMToolCallDelta`, and friends),
+`LMStreamOutputEndEvent`, `LMStreamEndEvent`, and `LMStreamErrorEvent`.
+
+**The user surface is a separate method, never a flag.** `lm.stream(...)` and
+`lm.astream(...)` accept the same inputs as `lm(...)` and return
+`dspy.LMStream` / `dspy.AsyncLMStream`: iterate for events, then call
+`.result()` for the final `LMResponse`. A `stream=True` kwarg that forks the
+return type of `__call__` is deliberately rejected.
+
+```python
+stream = lm.stream("Write a haiku about rivers.")
+for event in stream:
+    if event.type == "delta" and event.delta.type == "text_delta":
+        print(event.delta.text, end="", flush=True)
+response = stream.result()
+```
+
+**The provider seam is `forward_stream`.** A typed LM that streams natively
+implements `forward_stream(request) -> Iterator[LMStreamEvent]` and declares
+`supports_streaming = True`. Async callers get incremental events either from
+a native `aforward_stream` or, by default, from the base class bridging the
+synchronous stream through a worker thread. The rules, set by
+`OpenAICompatLM`:
+
+1. **Every LM streams; only some stream incrementally.** When
+   `supports_streaming` is False, `stream()` runs the buffered `forward()`
+   call and replays the finished response as events
+   (`dspy.core.response_to_stream_events`). Consumers program against one
+   event vocabulary and never branch on the backend.
+2. **Streamed and buffered calls are observationally identical afterward.**
+   History and usage are recorded once, when the stream completes, through
+   the same `_finalize_lm_response` path as a non-streaming call — and a
+   completed stream stores its final response under the same cache key as
+   the buffered call, so either form of the same request hits one cache
+   entry and a cache hit replays as events without an HTTP call.
+3. **Provider chunk translation is shape mapping, kept out of transport.**
+   `ChatCompletionChunkAssembler` in `openai_format.py` turns Chat
+   Completions chunks into normalized events; the concrete LM owns SSE
+   framing, retries, and errors. Retry only failures that occur before the
+   first event is yielded — a stream that already produced output is never
+   silently restarted.
+4. **Errors are typed, exactly as in `forward()`.** Pre-stream HTTP failures
+   normalize through the same `LMError` mapping; mid-stream failures raise
+   during iteration.
+
+**Explicitly out of scope, on purpose.** The existing `dspy.streamify` /
+`StreamListener` path — which parses adapter wire formats (`[[ ## ... ## ]]`,
+partial JSON, XML tags) out of raw provider bytes — is untouched and remains
+the way module-level streaming works today. Bridging it onto typed events
+(format-keyed listeners consuming `LMStreamDeltaEvent`s instead of raw bytes,
+so adapter grammars stop being duplicated inside the listener) is the
+intended future step; it is named here so nobody designs against it, but it
+is not part of this contract yet.
 
 ### Planned typed LM family and routing
 
