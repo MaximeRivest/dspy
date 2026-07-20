@@ -34,6 +34,11 @@ class _UnserializableModel(BaseModel):
 
 pytestmark = pytest.mark.deno
 
+# The large-variable tests exercise the filesystem-injection path, which behaves
+# identically at any threshold. A small monkeypatched threshold keeps the same
+# coverage without serializing 100 MB payloads per test.
+_SMALL_LARGE_VAR_THRESHOLD = 256 * 1024
+
 
 def test_execute_simple_code():
     with PythonInterpreter() as interpreter:
@@ -958,25 +963,25 @@ def test_extract_parameters_complex_types():
 # =============================================================================
 
 
-def test_large_variable_injection():
+def test_large_variable_injection(monkeypatch):
     """Test that large strings are injected via filesystem to avoid Pyodide's FFI size limit."""
-    from dspy.primitives.python_interpreter import LARGE_VAR_THRESHOLD
+    monkeypatch.setattr("dspy.primitives.python_interpreter.LARGE_VAR_THRESHOLD", _SMALL_LARGE_VAR_THRESHOLD)
 
     # Create a string just over the threshold
-    large_data = "x" * (LARGE_VAR_THRESHOLD + 1024)
+    large_data = "x" * (_SMALL_LARGE_VAR_THRESHOLD + 1024)
 
     with PythonInterpreter() as interpreter:
         result = interpreter.execute("len(data)", variables={"data": large_data})
         assert result == len(large_data), "Large variable should be correctly injected and accessible"
 
 
-def test_large_variable_content_integrity():
+def test_large_variable_content_integrity(monkeypatch):
     """Test that large variable content is preserved exactly through filesystem injection."""
-    from dspy.primitives.python_interpreter import LARGE_VAR_THRESHOLD
+    monkeypatch.setattr("dspy.primitives.python_interpreter.LARGE_VAR_THRESHOLD", _SMALL_LARGE_VAR_THRESHOLD)
 
     # Create a string with recognizable pattern just over threshold
     pattern = "ABCDEFGHIJ" * 100
-    large_data = pattern * ((LARGE_VAR_THRESHOLD // len(pattern)) + 1)
+    large_data = pattern * ((_SMALL_LARGE_VAR_THRESHOLD // len(pattern)) + 1)
 
     with PythonInterpreter() as interpreter:
         # Check first and last parts to verify content integrity
@@ -990,12 +995,12 @@ last_100 = data[-100:]
         assert result[1] == large_data[-100:], "Last 100 chars should match"
 
 
-def test_mixed_small_and_large_variables():
+def test_mixed_small_and_large_variables(monkeypatch):
     """Test that small and large variables can be used together."""
-    from dspy.primitives.python_interpreter import LARGE_VAR_THRESHOLD
+    monkeypatch.setattr("dspy.primitives.python_interpreter.LARGE_VAR_THRESHOLD", _SMALL_LARGE_VAR_THRESHOLD)
 
     small_var = "hello"
-    large_var = "x" * (LARGE_VAR_THRESHOLD + 1024)
+    large_var = "x" * (_SMALL_LARGE_VAR_THRESHOLD + 1024)
 
     with PythonInterpreter() as interpreter:
         code = "f'{small} has {len(small)} chars, large has {len(large)} chars'"
@@ -1004,12 +1009,12 @@ def test_mixed_small_and_large_variables():
         assert result == expected, "Both small and large variables should work together"
 
 
-def test_multiple_large_variables():
+def test_multiple_large_variables(monkeypatch):
     """Test that multiple large variables can be injected."""
-    from dspy.primitives.python_interpreter import LARGE_VAR_THRESHOLD
+    monkeypatch.setattr("dspy.primitives.python_interpreter.LARGE_VAR_THRESHOLD", _SMALL_LARGE_VAR_THRESHOLD)
 
-    large_a = "a" * (LARGE_VAR_THRESHOLD + 100)
-    large_b = "b" * (LARGE_VAR_THRESHOLD + 200)
+    large_a = "a" * (_SMALL_LARGE_VAR_THRESHOLD + 100)
+    large_b = "b" * (_SMALL_LARGE_VAR_THRESHOLD + 200)
 
     with PythonInterpreter() as interpreter:
         code = "(len(var_a), len(var_b), var_a[0], var_b[0])"
@@ -1017,12 +1022,12 @@ def test_multiple_large_variables():
         assert result == [len(large_a), len(large_b), "a", "b"], "Multiple large variables should work"
 
 
-def test_large_list_variable():
+def test_large_list_variable(monkeypatch):
     """Test that large list variables are injected via filesystem and JSON parsed."""
-    from dspy.primitives.python_interpreter import LARGE_VAR_THRESHOLD
+    monkeypatch.setattr("dspy.primitives.python_interpreter.LARGE_VAR_THRESHOLD", _SMALL_LARGE_VAR_THRESHOLD)
 
     # Each element "x" serializes to ~3 chars, so divide threshold by 3
-    num_elements = LARGE_VAR_THRESHOLD // 3
+    num_elements = _SMALL_LARGE_VAR_THRESHOLD // 3
     large_list = ["x"] * num_elements
 
     with PythonInterpreter() as interpreter:
