@@ -30,9 +30,16 @@ class OpenAICompatServerState:
         }
     )
 
+    stream_chunks: list[dict[str, Any]] | None = None
+
     def reply(self, status: int, response: dict[str, Any]) -> None:
         self.status = status
         self.response = response
+
+    def reply_stream(self, chunks: list[dict[str, Any]]) -> None:
+        """Serve requests with `stream: true` as SSE from these chunk dicts."""
+        self.status = 200
+        self.stream_chunks = chunks
 
 
 @pytest.fixture
@@ -45,6 +52,14 @@ def openai_compat_server():
             length = int(self.headers.get("content-length", "0"))
             body = json.loads(self.rfile.read(length))
             state.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
+            if body.get("stream") and state.stream_chunks is not None and state.status < 400:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for chunk in state.stream_chunks:
+                    self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
             encoded = json.dumps(state.response).encode()
             self.send_response(state.status)
             self.send_header("Content-Type", "application/json")

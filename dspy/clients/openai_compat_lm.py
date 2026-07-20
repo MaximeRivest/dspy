@@ -2,7 +2,9 @@
 
 `OpenAICompatLM` uses direct `requests` transport and DSPy's typed
 `LMRequest` / `LMResponse` boundary. Async calls run the same synchronous
-transport in an AnyIO worker thread. Streaming is intentionally out of scope.
+transport in an AnyIO worker thread. Streaming is supported through
+`forward_stream`, which parses the endpoint's SSE response into normalized
+`LMStreamEvent`s.
 """
 
 from __future__ import annotations
@@ -13,15 +15,26 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 import anyio
 import requests
 
 import dspy
 from dspy.clients.base_lm import LM_CLASS_STATE_KEY, BaseLM
-from dspy.clients.openai_format import completion_to_lm_response, to_openai_chat_request
-from dspy.core.types import LMRequest, LMResponse
+from dspy.clients.openai_format import (
+    ChatCompletionChunkAssembler,
+    completion_to_lm_response,
+    to_openai_chat_request,
+)
+from dspy.core.types import (
+    LMOutputBuilder,
+    LMRequest,
+    LMResponse,
+    LMStreamEvent,
+    LMStreamStartEvent,
+    response_to_stream_events,
+)
 from dspy.utils.callback import BaseCallback
 from dspy.utils.exceptions import (
     ContextWindowExceededError,
@@ -452,6 +465,113 @@ class OpenAICompatLM(BaseLM):
     async def aforward(self, request: LMRequest) -> LMResponse:
         """Async version of `forward`; runs the same request in a background thread."""
         return await anyio.to_thread.run_sync(self.forward, request)
+
+    def forward_stream(self, request: LMRequest) -> Iterator[LMStreamEvent]:
+        """Stream the endpoint's SSE response as normalized events.
+
+        Caching matches `forward`: a cache hit replays the stored response as
+        events without an HTTP call, and a completed live stream stores its
+        final response under the same cache key — so a streamed call and a
+        buffered call of the same request share one cache entry.
+        """
+        cache_request = self._cache_request(request) if self._cache_enabled(request) else None
+        if cache_request is not None:
+            cached = dspy.cache.get(cache_request)
+            if cached is not None:
+                yield from response_to_stream_events(cached)
+                return
+
+        builder = LMOutputBuilder()
+        response: LMResponse | None = None
+        for event in self._stream_with_retries(request):
+            response = builder.apply(event) or response
+            yield event
+
+        if response is not None:
+            self._warn_on_truncation(response, request)
+            if cache_request is not None:
+                dspy.cache.put(cache_request, response)
+
+    def _stream_with_retries(self, request: LMRequest) -> Iterator[LMStreamEvent]:
+        # Retry only failures that happen before the first event is yielded;
+        # a stream that already produced output cannot be transparently
+        # restarted without replaying partial content to the consumer.
+        for attempt in range(self.num_retries + 1):
+            started = False
+            try:
+                for event in self._stream_once(request):
+                    started = True
+                    yield event
+                return
+            except LMError as error:
+                if started or attempt >= self.num_retries or not is_retryable_lm_error(error):
+                    raise
+                delay = error.retry_after if error.retry_after is not None else min(2**attempt, 60)
+                time.sleep(max(delay, 0.0))
+        raise AssertionError("retry loop did not return or raise")
+
+    def _stream_once(self, request: LMRequest) -> Iterator[LMStreamEvent]:
+        payload = to_openai_chat_request(request)
+        payload["stream"] = True
+        payload.setdefault("stream_options", {"include_usage": True})
+        headers = self._request_headers()
+        try:
+            http_response = requests.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=self.timeout,
+                stream=True,
+            )
+        except requests.Timeout as error:
+            raise LMTimeoutError(
+                str(error) or "LM request timed out", model=self.model, provider="openai_compat"
+            ) from error
+        except requests.RequestException as error:
+            raise LMTransportError(
+                str(error) or "LM transport failed", model=self.model, provider="openai_compat"
+            ) from error
+
+        with http_response:
+            if http_response.status_code >= 400:
+                body = http_response.content.decode("utf-8", errors="replace")
+                raise _normalize_error(
+                    http_response.status_code, body, headers=http_response.headers, model=self.model
+                )
+
+            yield LMStreamStartEvent(model=request.model)
+            assembler = ChatCompletionChunkAssembler()
+            try:
+                for line in http_response.iter_lines(decode_unicode=True):
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:") :].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError as error:
+                        raise LMProviderError(
+                            "OpenAI-compatible endpoint sent a non-JSON stream chunk.",
+                            model=self.model,
+                            provider="openai_compat",
+                            status=http_response.status_code,
+                            request_id=_header(http_response.headers, "x-request-id", "request-id"),
+                        ) from error
+                    yield from assembler.events(chunk)
+            except requests.Timeout as error:
+                raise LMTimeoutError(
+                    str(error) or "LM stream timed out", model=self.model, provider="openai_compat"
+                ) from error
+            except requests.RequestException as error:
+                raise LMTransportError(
+                    str(error) or "LM stream transport failed", model=self.model, provider="openai_compat"
+                ) from error
+            yield from assembler.end_events()
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
 
     @property
     def supports_function_calling(self) -> bool:
