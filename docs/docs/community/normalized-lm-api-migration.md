@@ -192,7 +192,7 @@ class EchoLM(dspy.BaseLM):
 
 ### Reference typed LM: `OpenAICompatLM`
 
-`dspy.OpenAICompatLM` is the first non-toy typed LM shipped with DSPy. It
+`dspy.OpenAICompatLM` is the first full production typed LM shipped with DSPy. It
 connects directly to an OpenAI Chat Completions-compatible HTTP endpoint
 without LiteLLM or the OpenAI SDK:
 
@@ -200,7 +200,7 @@ without LiteLLM or the OpenAI SDK:
 lm = dspy.OpenAICompatLM(
     model="meta-llama/Llama-3.1-8B-Instruct",
     base_url="http://localhost:8000/v1",
-    api_key="local",  # Optional for endpoints that do not require authentication.
+    api_key="local",  # Some servers require any non-empty token; omit if yours doesn't.
 )
 ```
 
@@ -268,25 +268,30 @@ state, logs, history, or cache keys:
 **4. Fail with typed errors.** Map provider auth failures onto DSPy's error
 hierarchy (`LMAuthError`, `LMBillingError`, `LMRateLimitError`, ...) with
 status, provider code, request ID, and `retry_after` populated. The error
-message is the onboarding: it should name what to set and where.
+message should tell the user exactly what to set and where — for a missing
+credential, the error message is the onboarding.
 
 New typed LM implementations should treat these four rules as the contract,
 even when the underlying provider SDK offers its own credential discovery.
 
 The callable-credential seam is validated against the major clouds'
-OpenAI-compatible surfaces: Azure OpenAI's v1 API (`azure_ad_token_provider`
-and openai-python's callable `api_key` have the same shape; use
-`azure.identity.get_bearer_token_provider`), Amazon Bedrock's Chat Completions
-endpoint with Bedrock API keys (short-term keys expire, so a refreshing
-callable is the natural fit), and Vertex AI's OpenAI-compatible endpoint (wrap
-`google-auth` credentials in a callable that refreshes on expiry and returns
-`credentials.token`). Credentials that live in provider-specific headers, such
-as Azure's `api-key` or Google's `x-goog-api-key`, are supported for static
-keys via `extra_headers`, which strips sensitive header names from serialized
-state and folds header fingerprints into the cache identity. AWS SigV4 request
-signing is intentionally out of scope for a token-shaped seam: the signature
-covers the request body, so supporting it requires a separate request-signing
-hook.
+OpenAI-compatible surfaces:
+
+- **Azure OpenAI (v1 API):** `azure_ad_token_provider` and openai-python's
+  callable `api_key` have the same shape; use
+  `azure.identity.get_bearer_token_provider`.
+- **Amazon Bedrock (Chat Completions endpoint):** Bedrock API keys work as
+  bearer tokens; short-term keys expire, so a refreshing callable is the
+  natural fit.
+- **Vertex AI (OpenAI-compatible endpoint):** wrap `google-auth` credentials
+  in a callable that refreshes on expiry and returns `credentials.token`.
+
+Credentials that live in provider-specific headers, such as Azure's `api-key`
+or Google's `x-goog-api-key`, are supported for static keys via
+`extra_headers`, which strips sensitive header names from serialized state and
+folds header fingerprints into the cache identity. AWS SigV4 request signing
+is intentionally out of scope for a token-shaped seam: the signature covers
+the request body, so supporting it requires a separate request-signing hook.
 
 ### Constructor conventions for typed LMs
 
@@ -296,14 +301,14 @@ Typed LMs deliberately do not continue DSPy's historical reliance on
 - **Behavioral parameters are explicit and keyword-only.** Endpoint identity,
   credentials, transport, and capability flags are named parameters after
   `(model, base_url)`. New behavioral parameters are added conservatively —
-  each must prove its weight against a real provider need before entering the
+  each must be justified by a real provider need before entering the
   signature — and are never absorbed through `**kwargs`.
 - **Request parameters keep the familiar user path, then become typed.**
   `temperature=`, `max_tokens=`, and provider extras still work at
   construction and call time, but they normalize immediately into `LMConfig`
   (with provider-specific extras in `config.extensions`, named and
-  inspectable). `**kwargs` exists only at the public rim for ergonomics; it
-  never travels through internals.
+  inspectable). `**kwargs` exists only at the public constructor and call
+  surface for ergonomics; it never travels through internals.
 - **No typed LM assigns a new meaning to `**kwargs`.** Anything that would
   have been a kwarg convention becomes either an explicit parameter (if
   behavioral) or an `LMConfig` field or extension (if a request parameter).
@@ -324,19 +329,21 @@ redesign. The intended sequence and the decisions already made:
 2. **Extract the shared credential resolver when the second typed LM lands**
    (not before): a small helper implementing `explicit key (str or callable)
    -> named api_key_env -> opt-in ambient env -> None or LMNotConfiguredError`,
-   parameterized only by the provider's ambient env name. One implementation
-   is a pattern; shared code is extracted at two.
+   parameterized only by the provider's ambient env name. Shared helpers are
+   extracted once a second implementation exists, not before: one
+   implementation is a pattern, two are shared code.
 3. **Providers whose API keys live in a non-Bearer header** select placement
    by credential kind, not by widening the handle: the handle stays a string
    or zero-argument callable.
-4. **Routing with LiteLLM fallback** (the 3.4/3.5 rows below): a pure-lookup
+4. **Routing with LiteLLM fallback** (phases 3.4 and 3.5 in the migration
+   table below): a pure-lookup
    registry mapping model-string prefixes to typed LM classes, consulted by a
    factory; a miss falls back to the LiteLLM-backed `dspy.LM`. This composes
    without adapter changes because `BaseLM.__call__` already normalizes both
    forward contracts, and without serialization changes because saved states
    record the concrete LM class. Requirements carried forward from the design
    work: the resolution must be able to name which rung fired (typed class vs
-   LiteLLM fallback) — no silent magic; routing must not strand
+   LiteLLM fallback) — no silent magic; routing must not cut users off from
    LiteLLM-only capabilities such as fine-tuning (route those back to
    LiteLLM or raise `LMUnsupportedFeatureError` naming the fallback); and any
    registry/catalog metadata used to populate the routing table is advisory
