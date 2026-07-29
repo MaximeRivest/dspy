@@ -48,6 +48,7 @@ from dspy.utils.exceptions import (
     LMProviderError,
     LMRateLimitError,
     LMServerError,
+    LMStateError,
     LMTimeoutError,
     LMTransportError,
     LMUnexpectedError,

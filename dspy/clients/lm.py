@@ -433,6 +433,16 @@ class LM(BaseLM):
         state = dict(state)
         engine_state = state.pop("engine", None)
 
+        if isinstance(engine_state, dict):
+            # Route known engine state back onto the typed engine so a loaded
+            # program runs exactly what was saved: same transport, same
+            # credential resolution, same declared capabilities. Unknown
+            # engine names fall through to a plain `dspy.LM` that carries the
+            # block untouched, so newer states degrade losslessly.
+            engine_loader = _ENGINE_STATE_LOADERS.get(engine_state.get("engine"))
+            if engine_loader is not None:
+                return engine_loader(engine_state, state)
+
         model = state.get("model")
         if isinstance(model, str) and _is_openai_reasoning_model(model) and "max_completion_tokens" in state:
             if "max_tokens" not in state:
@@ -453,6 +463,18 @@ class LM(BaseLM):
                 f"You may also consider increasing the temperature (currently {self.kwargs['temperature']}) "
                 " if the reason for truncation is repetition."
             )
+
+
+def _load_openai_compat_engine(engine_state: dict[str, Any], router_state: dict[str, Any]):
+    from dspy.clients.openai_compat_lm import _OpenAICompatLM
+
+    return _OpenAICompatLM._from_router_state(engine_state, router_state)
+
+
+# Engine names recognized in serialized `engine` blocks (see `LM.load_state`).
+_ENGINE_STATE_LOADERS = {
+    "openai_compat": _load_openai_compat_engine,
+}
 
 
 def _get_stream_completion_fn(

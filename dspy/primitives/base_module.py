@@ -156,13 +156,13 @@ class BaseModule:
     def dump_state(self, json_mode=True):
         return {name: param.dump_state(json_mode=json_mode) for name, param in self.named_parameters()}
 
-    def load_state(self, state, *, allow_unsafe_lm_state=False):
-        from dspy import Module
+    def load_state(self, state, *, allow_unsafe_lm_state=False, lm=None):
+        from dspy.predict.predict import Predict
 
         def _apply(module):
             for name, param in module.named_parameters():
-                if isinstance(param, Module):
-                    param.load_state(state[name], allow_unsafe_lm_state=allow_unsafe_lm_state)
+                if isinstance(param, Predict):
+                    param.load_state(state[name], allow_unsafe_lm_state=allow_unsafe_lm_state, lm=lm)
                 else:
                     param.load_state(state[name])
 
@@ -251,7 +251,7 @@ class BaseModule:
         else:
             raise ValueError(f"`path` must end with `.json` or `.pkl` when `save_program=False`, but received: {path}")
 
-    def load(self, path, allow_pickle=False, allow_unsafe_lm_state=False):
+    def load(self, path, allow_pickle=False, allow_unsafe_lm_state=False, lm=None):
         """Load the saved module. You may also want to check out dspy.load, if you want to
         load an entire program, not just the state for an existing program.
 
@@ -260,8 +260,12 @@ class BaseModule:
             allow_pickle (bool): If True, allow loading .pkl files, which can run arbitrary code.
                 This is dangerous and should only be used if you are sure about the source of the file and in a trusted environment.
             allow_unsafe_lm_state (bool): If True, preserves unsafe LM endpoint keys (e.g.,
-                `api_base`, `base_url`, and `model_list`) from loaded state and allows importing custom LM classes.
-                Enable only for trusted files.
+                `api_base`, `base_url`, `model_list`, and the `engine` block) from loaded state and
+                allows importing custom LM classes. Enable only for trusted files. Without it, saved
+                LM state carrying endpoint configuration fails with a typed `dspy.LMStateError`.
+            lm (BaseLM): If provided, use this LM for every predictor instead of reconstructing LMs
+                from the saved state. This is the safe way to load a program whose saved LM pointed
+                at a custom endpoint: the route comes from your code, not from the file.
         """
         path = Path(path)
 
@@ -289,4 +293,4 @@ class BaseModule:
                     "on the loaded model, please consider loading the model in the same environment as the "
                     "saving environment."
                 )
-        self.load_state(state, allow_unsafe_lm_state=allow_unsafe_lm_state)
+        self.load_state(state, allow_unsafe_lm_state=allow_unsafe_lm_state, lm=lm)
