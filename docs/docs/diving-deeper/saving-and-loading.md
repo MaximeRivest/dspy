@@ -26,7 +26,29 @@ Loading any pickle — state-PKL or full-program — requires `allow_pickle=True
 
 ### 5. Endpoint configuration in saved state refuses to load by default
 
-When loading state, LM-config keys that carry endpoint routing — `api_base`, `base_url`, `model_list`, and the `engine` block — cause the load to fail with a typed `dspy.LMStateError` unless you opt in. The reasoning: a tampered file could reroute requests (and the prompts inside them) to an attacker's endpoint, and silently dropping the keys instead would reroute a local-server program to the provider's default endpoint — working, but differently. The error names both exits: pass `allow_unsafe_lm_state=True` for a file you trust, or pass `lm=<a configured LM>` to `load()` / `load_state()` to supply the route from your own code.
+When loading state, LM-config keys that carry endpoint routing — `api_base`, `base_url`, `model_list`, and the `engine` block — cause the load to fail with a typed `dspy.LMStateError` unless you opt in. The reasoning: a tampered file could reroute requests (and the prompts inside them) to an attacker's endpoint, and silently dropping the keys instead would reroute a local-server program to the provider's default endpoint — working, but differently. The error names both exits, and both are fully supported:
+
+**The trusted path — "just works", any number of LMs.** For a file you trust (you saved it, or it comes from a source you control), pass `allow_unsafe_lm_state=True`. Every saved LM — however many the program has — is reconstructed exactly as saved: same endpoints, same engine configuration, same declared capabilities. This is the right call for your own checkpoints and optimization artifacts.
+
+```python
+program = HaikuEnsemble(n=5)
+program.load("haiku_ensemble.json", allow_unsafe_lm_state=True)
+```
+
+**The safe path — routes come from your code.** For a file you don't fully trust, supply the LMs yourself with `lm=`. A single LM applies to every predictor; a dict keyed by predictor name (the names `program.named_predictors()` returns) covers multi-LM programs. Predictors you leave out of the dict load their saved LM state normally, so you only need to supply LMs for the ones that carried endpoint configuration.
+
+```python
+program = HaikuEnsemble(n=5)
+program.load(
+    "haiku_ensemble.json",
+    lm={
+        "draft.predict": dspy.LM("openai/gpt-4o-mini", api_base="http://localhost:8000/v1"),
+        "critique.predict": dspy.LM("anthropic/claude-sonnet-5"),
+    },
+)
+```
+
+This is deliberately manual: the safe path's whole point is that endpoint routes are typed into your code, where you can read them, not carried by a file you didn't write.
 
 ### 6. API keys are never serialized
 
@@ -77,7 +99,7 @@ Registers each entry with `cloudpickle.register_pickle_by_value` before pickling
 Two entry points, matching the two save modes.
 
 **`Module.load(path, allow_pickle=False, allow_unsafe_lm_state=False, lm=None)`**  
-Loads state into an existing module instance. You instantiate the program the same way you built it, then call `.load()` on it. JSON paths load freely; `.pkl` paths require `allow_pickle=True`. If the saved LM state carries endpoint configuration (`api_base`, `base_url`, `model_list`, `engine`), the load raises `dspy.LMStateError` unless you pass `allow_unsafe_lm_state=True` (trusted file) or `lm=` (use this LM for every predictor and ignore the saved LM state).
+Loads state into an existing module instance. You instantiate the program the same way you built it, then call `.load()` on it. JSON paths load freely; `.pkl` paths require `allow_pickle=True`. If the saved LM state carries endpoint configuration (`api_base`, `base_url`, `model_list`, `engine`), the load raises `dspy.LMStateError` unless you pass `allow_unsafe_lm_state=True` (trusted file) or `lm=` (a single LM for every predictor, or a dict of predictor names to LMs; matching predictors ignore their saved LM state).
 
 ```python
 program = HaikuEnsemble(n=5)        # same construction as when saved

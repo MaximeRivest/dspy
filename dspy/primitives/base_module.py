@@ -157,12 +157,32 @@ class BaseModule:
         return {name: param.dump_state(json_mode=json_mode) for name, param in self.named_parameters()}
 
     def load_state(self, state, *, allow_unsafe_lm_state=False, lm=None):
+        from dspy.clients.base_lm import BaseLM
         from dspy.predict.predict import Predict
+
+        if lm is None or isinstance(lm, BaseLM):
+            def resolve_lm(name):
+                return lm
+        elif isinstance(lm, dict):
+            predictor_names = [name for name, param in self.named_parameters() if isinstance(param, Predict)]
+            unknown = sorted(set(lm) - set(predictor_names))
+            if unknown:
+                raise ValueError(
+                    f"lm mapping contains unknown predictor name(s): {unknown}. "
+                    f"This module's predictors are: {sorted(predictor_names)}."
+                )
+
+            def resolve_lm(name):
+                return lm.get(name)
+        else:
+            raise ValueError(
+                f"lm must be a `dspy.BaseLM` or a dict mapping predictor names to LMs, not {type(lm)}."
+            )
 
         def _apply(module):
             for name, param in module.named_parameters():
                 if isinstance(param, Predict):
-                    param.load_state(state[name], allow_unsafe_lm_state=allow_unsafe_lm_state, lm=lm)
+                    param.load_state(state[name], allow_unsafe_lm_state=allow_unsafe_lm_state, lm=resolve_lm(name))
                 else:
                     param.load_state(state[name])
 
@@ -263,9 +283,12 @@ class BaseModule:
                 `api_base`, `base_url`, `model_list`, and the `engine` block) from loaded state and
                 allows importing custom LM classes. Enable only for trusted files. Without it, saved
                 LM state carrying endpoint configuration fails with a typed `dspy.LMStateError`.
-            lm (BaseLM): If provided, use this LM for every predictor instead of reconstructing LMs
-                from the saved state. This is the safe way to load a program whose saved LM pointed
-                at a custom endpoint: the route comes from your code, not from the file.
+            lm (BaseLM | dict): If provided, use this instead of reconstructing LMs from the saved
+                state. A single `dspy.BaseLM` applies to every predictor; a dict maps predictor
+                names (as returned by `named_predictors()`) to LMs for multi-LM programs, and
+                predictors absent from the dict load their saved LM state normally. This is the
+                safe way to load a program whose saved LMs pointed at custom endpoints: the routes
+                come from your code, not from the file.
         """
         path = Path(path)
 
