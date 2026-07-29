@@ -1,7 +1,8 @@
-from typing import Callable
+from typing import Any, Callable
 
 import dspy
 from dspy.predict.predict import Module, Prediction
+from dspy.predict.refine import interpret_reward
 
 
 class BestOfN(Module):
@@ -16,7 +17,10 @@ class BestOfN(Module):
         module: The DSPy module to run repeatedly.
         N: Maximum number of attempts.
         reward_fn: A callable that takes the input kwargs dict and a
-            ``Prediction``, and returns a scalar float reward score.
+            ``Prediction``, and returns a scalar float reward score or a
+            score-bearing object such as ``dspy.Prediction(score=...)``
+            (any ``feedback`` it carries is ignored here; use ``dspy.Refine``
+            to act on feedback between attempts).
         threshold: If an attempt's reward is at or above this value, that
             prediction is returned immediately without further attempts.
         fail_count: Number of allowed failures before raising an exception.
@@ -37,7 +41,7 @@ class BestOfN(Module):
         self,
         module: Module,
         N: int,  # noqa: N803
-        reward_fn: Callable[[dict, Prediction], float],
+        reward_fn: Callable[[dict, Prediction], float | Any],
         threshold: float,
         fail_count: int | None = None,
     ):
@@ -64,7 +68,7 @@ class BestOfN(Module):
                     trace = dspy.settings.trace.copy()
 
                     # NOTE: Not including the trace of reward_fn.
-                    reward = self.reward_fn(kwargs, pred)
+                    reward, _ = interpret_reward(self.reward_fn(kwargs, pred))
 
                 if reward > best_reward:
                     best_reward, best_pred, best_trace = reward, pred, trace

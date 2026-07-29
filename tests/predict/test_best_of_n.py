@@ -78,3 +78,20 @@ def test_refine_module_custom_fail_count():
     assert module_call_count[0] == 2, (
         "Module should have been called exactly 2 times, but was called %d times" % module_call_count[0]
     )
+
+
+def test_best_of_n_accepts_score_bearing_reward_results():
+    """`reward_fn` may return a score-bearing object (e.g. `dspy.Prediction(score=...)`, the GEPA
+    metric shape) instead of a bare float; any feedback it carries is ignored by BestOfN."""
+    lm = DummyLM([{"answer": "Brussels"}, {"answer": "City of Brussels"}])
+    dspy.configure(lm=lm)
+
+    def reward_fn(kwargs, pred: Prediction):
+        score = 1.0 if len(pred.answer.split()) == 1 else 0.0
+        return dspy.Prediction(score=score, feedback="Answer in one word.")
+
+    module = DummyModule("question -> answer", lambda self, **kwargs: self.predictor(**kwargs))
+    best_of_2 = BestOfN(module=module, N=2, reward_fn=reward_fn, threshold=1.0)
+    result = best_of_2(question="What is the capital of Belgium?")
+
+    assert result.answer == "Brussels"

@@ -46,7 +46,7 @@ best_of_3(question="What is the capital of Belgium?")
 
 ## Refine
 
-`Refine` extends the functionality of `BestOfN` by adding an automatic feedback loop. After each unsuccessful attempt (except the final one), it automatically generates detailed feedback about the module's performance and uses this feedback as hints for subsequent runs.
+`Refine` extends the functionality of `BestOfN` by adding a feedback loop. After each unsuccessful attempt (except the final one), feedback about the module's performance becomes a hint for subsequent runs. The feedback can come from your own reward function, or — as a fallback — from an automatic LM critique of the failed attempt.
 
 ### Basic Usage
 
@@ -67,6 +67,34 @@ result = refine(question="What is the capital of Belgium?")
 print(result.answer)  # Brussels
 ```
 
+### Feedback-Bearing Rewards
+
+A reward function often already knows *why* it scored an attempt low. Instead of a bare float, it can return `dspy.Prediction(score=..., feedback="...")` — the same score-plus-feedback shape GEPA metrics use. When feedback is provided, `Refine` uses it directly as the hint for the next attempt and skips the LM critic entirely:
+
+```python
+def one_word_answer(args, pred: dspy.Prediction):
+    if len(pred.answer.split()) == 1:
+        return dspy.Prediction(score=1.0, feedback="")
+    return dspy.Prediction(score=0.0, feedback="The answer must be exactly one word.")
+
+refine = dspy.Refine(
+    module=dspy.ChainOfThought("question -> answer"),
+    N=3,
+    reward_fn=one_word_answer,
+    threshold=1.0
+)
+```
+
+### Feedback Policy
+
+Whether the automatic LM critique runs is an explicit policy, not an inevitability. The `feedback_policy` parameter takes one of:
+
+- `"auto"` (default): use the reward function's feedback when it provides some; otherwise fall back to an LM critic that inspects the failed attempt. This matches the historical behavior for float-returning rewards.
+- `"eval"`: only use feedback the reward function itself provides; never invoke the LM critic.
+- `"none"`: never hint; `Refine` degrades to resampling and picking the best attempt.
+
+Hints are non-authoritative: they are delivered to the retry as an explicit `hint_` input field whose description names their source and tells the model it may ignore them. The winning attempt's trace is merged back without the hint, and the full per-attempt record (scores, feedback, and hints with provenance) is attached to the returned prediction as `prediction._refinement`.
+
 ### Error Handling
 
 Like `BestOfN`, `Refine` will try up to `N` times by default, even if errors occur. You can control this with the `fail_count` parameter:
@@ -82,12 +110,16 @@ refine = dspy.Refine(
 )
 ```
 
+If every attempt fails, `Refine` raises the last error instead of returning `None`.
+
 ## Comparison: BestOfN vs. Refine
 
 Both modules serve similar purposes but differ in their approach:
 
 - `BestOfN` simply tries different rollout IDs and selects the best resulting prediction as defined by the `reward_fn`.
-- `Refine` adds a feedback loop, using the lm to generate a detailed feedback about the module's own performance using the previous prediction and the code in the `reward_fn`. This feedback is then used as hints for subsequent runs.
+- `Refine` adds a feedback loop. When the `reward_fn` returns feedback alongside its score, that feedback becomes the hint for subsequent runs; when it returns only a score, `Refine` can fall back to using the LM to generate detailed feedback about the module's performance from the previous prediction and the code of the `reward_fn` (see `feedback_policy` above).
+
+Both accept reward functions that return either a plain float or a score-bearing `dspy.Prediction`.
 
 ## Practical Examples
 
