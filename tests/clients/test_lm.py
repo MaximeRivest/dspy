@@ -1795,3 +1795,39 @@ async def test_streaming_passes_headers_correctly():
             mock_acompletion.assert_called_once()
             call_kwargs = mock_acompletion.call_args.kwargs
             assert call_kwargs["headers"]["Authorization"] == "Bearer my-custom-token"
+
+
+def test_program_pickle_scrubs_lm_secrets_and_history(tmp_path):
+    lm = dspy.LM(
+        "openai/gpt-4o-mini",
+        api_key="sk-live-SECRET",
+        cache=False,
+        extra_headers={"Authorization": "Bearer header-SECRET", "X-Route": "blue"},
+    )
+    lm.history.append({"prompt": "PRIVATE-PROMPT"})
+    predict = dspy.Predict("q -> a")
+    predict.lm = lm
+    predict.save(tmp_path / "program", save_program=True)
+
+    raw = (tmp_path / "program" / "program.pkl").read_bytes()
+    assert b"SECRET" not in raw
+    assert b"PRIVATE-PROMPT" not in raw
+
+    loaded = dspy.load(str(tmp_path / "program"), allow_pickle=True)
+    assert "api_key" not in loaded.lm.kwargs
+    assert loaded.lm.kwargs["extra_headers"] == {"X-Route": "blue"}
+    assert loaded.lm.history == []
+
+
+def test_copy_and_deepcopy_keep_lm_credentials_and_history():
+    import copy
+
+    lm = dspy.LM("openai/gpt-4o-mini", api_key="sk-keep", cache=False)
+    lm.history.append("entry")
+
+    deep = copy.deepcopy(lm)
+    assert deep.kwargs["api_key"] == "sk-keep"
+    assert deep.history == ["entry"]
+
+    shallow = lm.copy()
+    assert shallow.kwargs["api_key"] == "sk-keep"

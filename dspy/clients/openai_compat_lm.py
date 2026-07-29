@@ -22,7 +22,12 @@ import anyio
 import requests
 
 import dspy
-from dspy.clients.base_lm import LM_CLASS_STATE_KEY, BaseLM
+from dspy.clients.base_lm import (
+    LM_CLASS_STATE_KEY,
+    SENSITIVE_HEADER_NAMES,
+    BaseLM,
+    _scrub_lm_state_on_pickle,
+)
 from dspy.clients.openai_format import (
     ChatCompletionChunkAssembler,
     completion_to_lm_response,
@@ -70,9 +75,7 @@ _PROVIDER_CODE_MAP: dict[str, type[LMError]] = {
     "rate_limit_error": LMRateLimitError,
 }
 _MODEL_ERROR_CODES = frozenset({"model_not_found", "model_not_available", "unsupported_model"})
-_SENSITIVE_HEADER_NAMES = frozenset(
-    {"authorization", "proxy-authorization", "api-key", "x-api-key", "cookie", "set-cookie"}
-)
+_SENSITIVE_HEADER_NAMES = SENSITIVE_HEADER_NAMES
 
 
 @dataclass(frozen=True)
@@ -318,6 +321,26 @@ class _OpenAICompatLM(BaseLM):
         self._supports_response_schema = bool(supports_response_schema)
         self._api_key = api_key
         self._post = _post or _requests_post
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        if not _scrub_lm_state_on_pickle.get():
+            return state
+
+        # Engine-specific hygiene on top of BaseLM's: the credential (string
+        # or callable), sensitive headers, and the transport callable stay out
+        # of program artifacts.
+        state["_api_key"] = None
+        state["extra_headers"] = {
+            key: value for key, value in self.extra_headers.items() if key.lower() not in _SENSITIVE_HEADER_NAMES
+        }
+        state["_post"] = None
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        if self.__dict__.get("_post") is None:
+            self._post = _requests_post
 
     def _resolved_api_key(self) -> str | None:
         if self._api_key is not None:
