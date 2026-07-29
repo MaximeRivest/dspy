@@ -346,7 +346,7 @@ Custom LM classes are reloaded from their module-qualified class path, so they m
 program.load("program.json", allow_unsafe_lm_state=True)
 ```
 
-Use this only for files you trust. The flag also preserves serialized LM endpoint configuration such as `api_base`, `base_url`, and `model_list`.
+Use this only for files you trust. The flag also honors serialized LM endpoint configuration such as `api_base`, `base_url`, `model_list`, and the internal `engine` block; without it, state carrying those keys fails with a typed `dspy.LMStateError`. If you don't trust the file's endpoint but still want the program, pass a configured LM instead: `program.load("program.json", lm=dspy.LM(...))`.
 
 ### Copying custom LMs
 

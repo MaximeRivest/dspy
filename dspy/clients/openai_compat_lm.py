@@ -642,3 +642,35 @@ class _OpenAICompatLM(BaseLM):
         if safe_headers:
             state["extra_headers"] = safe_headers
         return state
+
+    # Router-level state keys that duplicate or do not apply to this engine's
+    # constructor; everything else in the router state is a request default.
+    _ROUTER_ONLY_STATE_KEYS = frozenset(
+        {
+            LM_CLASS_STATE_KEY,
+            "model",
+            "model_type",
+            "api_base",
+            "timeout",
+            "extra_headers",
+            "finetuning_model",
+            "launch_kwargs",
+            "train_kwargs",
+            "use_developer_role",
+        }
+    )
+
+    @classmethod
+    def _from_router_state(cls, engine_state: dict[str, Any], router_state: dict[str, Any]) -> _OpenAICompatLM:
+        """Reconstruct the engine from a serialized `engine` block plus router state.
+
+        The inverse of `dump_state`: the `engine` block carries this engine's
+        constructor configuration, and the surrounding router state contributes
+        the shared request defaults (`cache`, `num_retries`, `temperature`,
+        `max_tokens`, extra request parameters).
+        """
+        engine_kwargs = {key: value for key, value in engine_state.items() if key != "engine"}
+        request_kwargs = {
+            key: value for key, value in router_state.items() if key not in cls._ROUTER_ONLY_STATE_KEYS
+        }
+        return cls(**engine_kwargs, **request_kwargs)
