@@ -29,7 +29,7 @@ print(result.answer)  # Brussels
 
 ### Error Handling
 
-By default, if the module encounters an error during an attempt, it will continue trying until it reaches `N` attempts. You can adjust this behavior with the `fail_count` parameter:
+By default, if the module encounters an error during an attempt, it will continue trying until it reaches `N` attempts; if every attempt fails, the last error is raised. You can tighten this with the `fail_count` parameter, which bounds how many failed attempts are tolerated per call:
 
 ```python
 best_of_3 = dspy.BestOfN(
@@ -41,7 +41,19 @@ best_of_3 = dspy.BestOfN(
 )
 
 best_of_3(question="What is the capital of Belgium?")
-# raises an error after the first failure
+# raises an error on the second failure
+```
+
+### Inspecting the Search
+
+Both modules attach a full search record to the returned prediction: every attempt with its rollout ID, reward, error (if any), and — for `Refine` — the hints it received. Only the winning attempt's execution is added to the trace.
+
+```python
+from dspy.predict.candidate_search import search_record
+
+result = best_of_3(question="What is the capital of Belgium?")
+record = search_record(result)
+print(record.best_index, [a.reward for a in record.attempts])
 ```
 
 ## Refine
@@ -87,7 +99,7 @@ refine = dspy.Refine(
 Both modules serve similar purposes but differ in their approach:
 
 - `BestOfN` simply tries different rollout IDs and selects the best resulting prediction as defined by the `reward_fn`.
-- `Refine` adds a feedback loop, using the lm to generate a detailed feedback about the module's own performance using the previous prediction and the code in the `reward_fn`. This feedback is then used as hints for subsequent runs.
+- `Refine` adds a feedback loop, using the lm to generate a detailed feedback about the module's own performance using the previous prediction and the code in the `reward_fn`. The feedback is a non-authoritative hint: it is injected into the next attempt's throwaway program copy as a `hint_` input field on each blamed predictor, never into your module or its adapters, and every proposed hint stays inspectable on the search record.
 
 ## Practical Examples
 

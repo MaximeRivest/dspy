@@ -60,7 +60,7 @@ def test_refine_module_default_fail_count():
 
 
 def test_refine_feedback_reaches_retry_with_instance_adapter():
-    """Refine's hint wrapper must run even when the module has an instance adapter via `set_adapter()`."""
+    """Refine's feedback hint must reach the retry even when the module has an instance adapter via `set_adapter()`."""
     adapter_calls = []
 
     class TrackingChatAdapter(dspy.ChatAdapter):
@@ -104,7 +104,7 @@ def test_refine_feedback_reaches_retry_with_instance_adapter():
 
 
 def test_refine_feedback_retry_with_stateful_adapter_requiring_constructor_args():
-    """The hint wrapper must not re-instantiate adapters whose constructors require arguments."""
+    """Feedback delivery must preserve stateful adapters whose constructors require arguments."""
     adapter_calls = []
 
     class StatefulAdapter(dspy.ChatAdapter):

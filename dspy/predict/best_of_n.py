@@ -1,16 +1,23 @@
 from typing import Callable
 
-import dspy
+from dspy.predict.candidate_search import CandidateSearch
 from dspy.predict.predict import Module, Prediction
 
 
 class BestOfN(Module):
     """Runs a module up to N times and returns the highest-scoring prediction.
 
-    At each attempt, the module is called with a different rollout ID at
-    ``temperature=1.0`` to encourage output diversity. The attempt with the
+    At each attempt, the module is called on a fresh deep copy with a different
+    rollout ID at ``temperature=1.0`` to encourage output diversity; attempts
+    are independent (no feedback flows between them). The attempt with the
     highest reward is returned, or the first attempt whose reward meets or
     exceeds ``threshold`` (whichever comes first).
+
+    Only the winning attempt's execution is added to the caller's trace,
+    expressed in terms of the wrapped module's own predictors. The full search
+    provenance (every attempt, its rollout ID, reward, and error, if any) is
+    attached to the returned prediction and can be read with
+    ``dspy.predict.candidate_search.search_record(prediction)``.
 
     Args:
         module: The DSPy module to run repeatedly.
@@ -19,8 +26,10 @@ class BestOfN(Module):
             ``Prediction``, and returns a scalar float reward score.
         threshold: If an attempt's reward is at or above this value, that
             prediction is returned immediately without further attempts.
-        fail_count: Number of allowed failures before raising an exception.
-            Defaults to ``N`` if not provided.
+        fail_count: Number of failed attempts tolerated per call before the
+            last error is raised. Defaults to ``N`` if not provided. If every
+            attempt fails, the last error is raised rather than returning
+            ``None``.
 
     Example:
         >>> import dspy
@@ -47,37 +56,21 @@ class BestOfN(Module):
         self.N = N
         self.fail_count = fail_count or N  # default to N if fail_count is not provided
 
+    def _build_search(self) -> CandidateSearch:
+        # BestOfN is the independent-sampling policy: no `propose` hook, so no
+        # feedback flows between attempts.
+        return CandidateSearch(
+            module=self.module,
+            num_candidates=self.N,
+            reward_fn=self.reward_fn,
+            threshold=self.threshold,
+            fail_count=self.fail_count,
+        )
+
     def forward(self, **kwargs):
-        lm = self.module.get_lm() or dspy.settings.lm
-        start = lm.kwargs.get("rollout_id", 0)
-        rollout_ids = [start + i for i in range(self.N)]
-        best_pred, best_trace, best_reward = None, None, -float("inf")
+        search = self._build_search()
+        return search.finalize(search.run(kwargs))
 
-        for idx, rid in enumerate(rollout_ids):
-            lm_ = lm.copy(rollout_id=rid, temperature=1.0)
-            mod = self.module.deepcopy()
-            mod.set_lm(lm_)
-
-            try:
-                with dspy.context(trace=[]):
-                    pred = mod(**kwargs)
-                    trace = dspy.settings.trace.copy()
-
-                    # NOTE: Not including the trace of reward_fn.
-                    reward = self.reward_fn(kwargs, pred)
-
-                if reward > best_reward:
-                    best_reward, best_pred, best_trace = reward, pred, trace
-
-                if reward >= self.threshold:
-                    break
-
-            except Exception as e:
-                print(f"BestOfN: Attempt {idx + 1} failed with rollout id {rid}: {e}")
-                if idx > self.fail_count:
-                    raise e
-                self.fail_count -= 1
-
-        if best_trace:
-            dspy.settings.trace.extend(best_trace)
-        return best_pred
+    async def aforward(self, **kwargs):
+        search = self._build_search()
+        return search.finalize(await search.arun(kwargs))
