@@ -608,3 +608,40 @@ class TestSerializationAndExports:
 
     def test_openai_compat_lm_is_not_exported_at_top_level(self):
         assert not hasattr(dspy, "OpenAICompatLM")
+
+    @pytest.mark.parametrize("api_key", ["sk-live-SECRET", lambda: "sk-live-SECRET"])
+    def test_program_pickle_scrubs_engine_secrets_and_history(self, tmp_path, api_key):
+        lm = _OpenAICompatLM(
+            MODEL,
+            "http://localhost:8000/v1",
+            api_key=api_key,
+            cache=False,
+            extra_headers={"Authorization": "Token header-SECRET", "X-Route": "blue"},
+        )
+        lm.history.append({"prompt": "PRIVATE-PROMPT"})
+        predict = dspy.Predict("q -> a")
+        predict.lm = lm
+        predict.save(tmp_path / "program", save_program=True)
+
+        raw = (tmp_path / "program" / "program.pkl").read_bytes()
+        assert b"SECRET" not in raw
+        assert b"PRIVATE-PROMPT" not in raw
+
+        loaded = dspy.load(str(tmp_path / "program"), allow_pickle=True)
+        assert loaded.lm._resolved_api_key() is None
+        assert loaded.lm.extra_headers == {"X-Route": "blue"}
+        assert loaded.lm.history == []
+        assert loaded.lm._post is not None
+
+    def test_copy_and_deepcopy_keep_credentials_and_history(self):
+        import copy
+
+        lm = _make_lm(api_key="sk-keep")
+        lm.history.append("entry")
+
+        deep = copy.deepcopy(lm)
+        assert deep._resolved_api_key() == "sk-keep"
+        assert deep.history == ["entry"]
+
+        shallow = lm.copy()
+        assert shallow._resolved_api_key() == "sk-keep"

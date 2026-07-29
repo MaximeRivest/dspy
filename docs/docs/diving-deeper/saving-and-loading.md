@@ -67,9 +67,11 @@ program.load(
 
 This is deliberately manual: the safe path's whole point is that endpoint routes are typed into your code, where you can read them, not carried by a file you didn't write.
 
-### 6. API keys are never serialized
+### 6. API keys and call history are never serialized — on either path
 
-`LM.dump_state` explicitly excludes `api_key` from the saved kwargs, and there’s no flag to re-enable it. The LM client always needs its credentials configured fresh on the loading side. Anything else would be a credential leak waiting to happen.
+`LM.dump_state` explicitly excludes `api_key` from the saved kwargs, and there’s no flag to re-enable it. The full-program pickle path applies the same hygiene: while `save_program=True` pickles the module, LMs are serialized with credentials (string keys, credential callables, sensitive kwargs like `azure_ad_token`, and sensitive headers like `Authorization`) and `lm.history` scrubbed. The LM always needs its credentials configured fresh on the loading side. Anything else would be a credential leak waiting to happen — a saved artifact travels, and everything embedded in it travels too.
+
+This scrubbing applies only to saved artifacts: in-process `copy.deepcopy` and `lm.copy()` (which optimizers rely on) keep working credentials and history.
 
 ### 7. `load_state` is transactional
 
