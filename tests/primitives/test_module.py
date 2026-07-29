@@ -243,3 +243,24 @@ def test_load_state_is_transactional():
         assert template.a.predict.demos == [], (
             "load_state partially mutated module before failing"
         )
+
+
+def test_set_adapter_recursively():
+    module = HopModule()
+    adapter = dspy.ChatAdapter()
+    module.set_adapter(adapter)
+    assert module.predict1.adapter is adapter
+    assert module.predict2.adapter is adapter
+    assert module.get_adapter() is adapter
+
+    module.set_adapter(None)
+    assert module.predict1.adapter is None
+    assert module.get_adapter() is None
+
+
+def test_get_adapter_heterogeneous():
+    module = HopModule()
+    module.predict1.adapter = dspy.ChatAdapter()
+    module.predict2.adapter = dspy.JSONAdapter()
+    with pytest.raises(ValueError, match="Multiple adapters"):
+        module.get_adapter()

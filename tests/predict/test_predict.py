@@ -53,11 +53,13 @@ def test_initialization_with_string_signature():
 def test_reset_method():
     predict_instance = Predict("input -> output")
     predict_instance.lm = "modified"
+    predict_instance.adapter = "modified"
     predict_instance.traces = ["trace"]
     predict_instance.train = ["train"]
     predict_instance.demos = ["demo"]
     predict_instance.reset()
     assert predict_instance.lm is None
+    assert predict_instance.adapter is None
     assert predict_instance.traces == []
     assert predict_instance.train == []
     assert predict_instance.demos == []
@@ -1825,3 +1827,94 @@ def test_custom_signature_types(caplog, enable_type_warnings):
         assert "Type mismatch for field 'query': expected Query" in caplog.text
     else:
         assert "Type mismatch" not in caplog.text
+
+
+class _SpyAdapter(dspy.ChatAdapter):
+    """ChatAdapter subclass that records when it handles a call."""
+
+    def __init__(self):
+        super().__init__()
+        self.sync_calls = 0
+        self.async_calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.sync_calls += 1
+        return super().__call__(*args, **kwargs)
+
+    async def acall(self, *args, **kwargs):
+        self.async_calls += 1
+        return await super().acall(*args, **kwargs)
+
+
+def test_adapter_precedence_call_over_predict_over_settings():
+    lm = DummyLM([{"output": "test output"}] * 3)
+    settings_adapter, predict_adapter, call_adapter = _SpyAdapter(), _SpyAdapter(), _SpyAdapter()
+
+    with dspy.context(lm=lm, adapter=settings_adapter):
+        program = Predict("input -> output")
+
+        program(input="q")
+        assert settings_adapter.sync_calls == 1
+
+        program.adapter = predict_adapter
+        program(input="q")
+        assert predict_adapter.sync_calls == 1
+        assert settings_adapter.sync_calls == 1
+
+        program(input="q", adapter=call_adapter)
+        assert call_adapter.sync_calls == 1
+        assert predict_adapter.sync_calls == 1
+
+
+def test_adapter_explicit_none_falls_back_to_settings():
+    lm = DummyLM([{"output": "test output"}] * 2)
+    settings_adapter = _SpyAdapter()
+
+    with dspy.context(lm=lm, adapter=settings_adapter):
+        program = Predict("input -> output")
+        program.adapter = _SpyAdapter()
+
+        program(input="q", adapter=None)
+        assert settings_adapter.sync_calls == 1
+        assert program.adapter.sync_calls == 0
+
+    # Without any adapter configured anywhere, the default ChatAdapter is used.
+    with dspy.context(lm=lm, adapter=None):
+        result = Predict("input -> output")(input="q", adapter=None)
+        assert result.output == "test output"
+
+
+def test_adapter_kwarg_is_reserved(caplog):
+    lm = DummyLM([{"output": "test output"}])
+    with dspy.context(lm=lm, adapter=None):
+        program = Predict("input -> output")
+        with caplog.at_level(logging.WARNING, logger="dspy.predict.predict"):
+            program(input="q", adapter=_SpyAdapter())
+        assert "not in signature" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_adapter_precedence_async_parity():
+    lm = DummyLM([{"output": "test output"}] * 2)
+    predict_adapter, call_adapter = _SpyAdapter(), _SpyAdapter()
+
+    with dspy.context(lm=lm, adapter=_SpyAdapter()):
+        program = Predict("input -> output")
+        program.adapter = predict_adapter
+
+        await program.acall(input="q")
+        assert predict_adapter.async_calls == 1
+
+        await program.acall(input="q", adapter=call_adapter)
+        assert call_adapter.async_calls == 1
+        assert predict_adapter.async_calls == 1
+
+
+def test_adapter_not_serialized():
+    program = Predict("input -> output")
+    program.adapter = _SpyAdapter()
+    state = program.dump_state()
+    assert "adapter" not in state
+
+    loaded = Predict("input -> output").load_state(state)
+    assert loaded.adapter is None
