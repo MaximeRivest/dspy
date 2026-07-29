@@ -46,26 +46,74 @@ best_of_3(question="What is the capital of Belgium?")
 
 ## Refine
 
-`Refine` extends the functionality of `BestOfN` by adding an automatic feedback loop. After each unsuccessful attempt (except the final one), it automatically generates detailed feedback about the module's performance and uses this feedback as hints for subsequent runs.
+`Refine` extends the functionality of `BestOfN` with an *explicit* feedback loop. A scalar reward
+says that an attempt failed, not why, so `Refine` no longer manufactures an explanation
+automatically. Instead, you declare both halves of the loop yourself:
+
+1. **Where advice may go.** Give a predictor's Signature an input field named `hint` (configurable
+   via `hint_field`). Only predictors that declare the field can receive advice; everything else is
+   committed code that `Refine` resamples but never alters. If no predictor declares the field,
+   feedback is never generated and `Refine` degrades to pure resampling.
+2. **Where advice comes from.** Pass `feedback_fn(inputs, prediction, reward)`, returning `None`, a
+   hint string, a `{predictor_name: advice}` dict, a `dspy.Hint`, or a list of these.
+
+Hints are non-authoritative and scoped to the next attempt: they are delivered by filling the
+declared hint field's default on a per-attempt copy of your module, so a value your own code passes
+for that field always wins, and your configured adapter runs unmodified. Without `feedback_fn`,
+`Refine` behaves exactly like `BestOfN`.
 
 ### Basic Usage
 
 ```python
 import dspy
 
+class HintedQA(dspy.Signature):
+    question: str = dspy.InputField()
+    hint: str = dspy.InputField(default="", desc="Advice from an earlier attempt; may be ignored.")
+    answer: str = dspy.OutputField()
+
 def one_word_answer(args, pred: dspy.Prediction) -> float:
     return 1.0 if len(pred.answer.split()) == 1 else 0.0
 
+def one_word_feedback(args, pred: dspy.Prediction, reward: float):
+    if reward < 1.0:
+        return f"Your previous answer had {len(pred.answer.split())} words. Answer with exactly one word."
+
 refine = dspy.Refine(
-    module=dspy.ChainOfThought("question -> answer"), 
-    N=3, 
-    reward_fn=one_word_answer, 
-    threshold=1.0
+    module=dspy.ChainOfThought(HintedQA),
+    N=3,
+    reward_fn=one_word_answer,
+    threshold=1.0,
+    feedback_fn=one_word_feedback,
 )
 
 result = refine(question="What is the capital of Belgium?")
 print(result.answer)  # Brussels
 ```
+
+### Opting into an LM critic
+
+If you want an LM to write the hints, pass `dspy.LMCritic`. The critic requires you to declare the
+`objective` — what a good output looks like, in your own words — because it will not guess by
+reading your reward function's source code. It sees only your declared objective, each module's
+declared signature, and the evidence of the failed run (inputs, trajectory, outputs, reward):
+
+```python
+refine = dspy.Refine(
+    module=dspy.ChainOfThought(HintedQA),
+    N=3,
+    reward_fn=one_word_answer,
+    threshold=1.0,
+    feedback_fn=dspy.LMCritic(objective="The answer must be a single word."),
+)
+```
+
+### Inspecting what refinement did
+
+The returned prediction carries a `RefinementReport` on its `_refinement` attribute: per-attempt
+rollout IDs, rewards, applied and ignored hints (each with its provenance), and errors. The report
+is metadata about the search, not program output, so it never appears in the prediction's fields,
+in saved state, or in the trace.
 
 ### Error Handling
 
@@ -87,7 +135,12 @@ refine = dspy.Refine(
 Both modules serve similar purposes but differ in their approach:
 
 - `BestOfN` simply tries different rollout IDs and selects the best resulting prediction as defined by the `reward_fn`.
-- `Refine` adds a feedback loop, using the lm to generate a detailed feedback about the module's own performance using the previous prediction and the code in the `reward_fn`. This feedback is then used as hints for subsequent runs.
+- `Refine` adds an explicit feedback loop: your `feedback_fn` (or an opt-in `dspy.LMCritic`) turns a failed attempt into hints, which are delivered to the predictors that declare a `hint` input field on the next attempt. Without `feedback_fn`, `Refine` is `BestOfN`.
+
+Earlier versions of `Refine` generated feedback automatically by sending the program's and the
+reward function's source code to an internal LM critic, and injected the advice by appending a
+hidden `hint_` field at the adapter boundary. Both behaviors are gone: feedback is now something
+you declare, and hints only flow into fields your signatures declare.
 
 ## Practical Examples
 
@@ -108,11 +161,17 @@ def factuality_reward(args, pred: dspy.Prediction) -> float:
     result = factuality_judge(statement)    
     return 1.0 if result.is_factual else 0.0
 
+class HintedQA(dspy.Signature):
+    question: str = dspy.InputField()
+    hint: str = dspy.InputField(default="", desc="Advice from an earlier attempt; may be ignored.")
+    answer: str = dspy.OutputField()
+
 refined_qa = dspy.Refine(
-    module=dspy.ChainOfThought("question -> answer"),
+    module=dspy.ChainOfThought(HintedQA),
     N=3,
     reward_fn=factuality_reward,
-    threshold=1.0
+    threshold=1.0,
+    feedback_fn=dspy.LMCritic(objective="The answer must be factually accurate."),
 )
 
 result = refined_qa(question="Tell me about Belgium's capital city.")

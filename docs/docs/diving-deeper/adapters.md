@@ -168,8 +168,9 @@ keyword, then the predictor's own `predict.adapter`, then `settings.adapter`, th
 - **Not serialized.** Adapters are runtime configuration; `program.save` does not store them, so
   reconfigure after loading.
 - **Sticky across execution modes.** The resolved adapter is preserved through sync and async
-  calls, streaming (chunks are parsed with the caller's adapter format), and `Refine`'s feedback
-  retries.
+  calls, streaming (chunks are parsed with the caller's adapter format), and `Refine`'s retries.
+  `Refine` never wraps or subclasses the adapter: its hints travel through input fields the
+  Signature declares, so the configured adapter runs unmodified on every attempt.
 - **No automatic LM-based selection.** ChatAdapter is the default and stays the default until you set otherwise. Some teleprompts (e.g., `BootstrapFinetune`) accept an `adapter` dict keyed by LM, so different LMs in a finetuning loop can use different adapters.
 
 A note on optimization: built-in adapters are usually enough. Reach for a custom `Adapter`

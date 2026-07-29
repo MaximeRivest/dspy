@@ -489,15 +489,23 @@ best_of_3(question="What is the capital of Belgium?").answer
 
 ### Refine
 
-Refines a module by running it up to `N` times with different rollout IDs (bypassing cache) and returns the best prediction, as defined by the `reward_fn`, or the first prediction that passes the `threshold`. After each attempt (except the final one), `Refine` automatically generates detailed feedback about the module's performance and uses this feedback as hints for subsequent runs, creating an iterative refinement process.
+Refines a module by running it up to `N` times with different rollout IDs (bypassing cache) and returns the best prediction, as defined by the `reward_fn`, or the first prediction that passes the `threshold`. Feedback between attempts is explicit: pass `feedback_fn` (or an opt-in `dspy.LMCritic(objective=...)`) and declare a `hint` input field on the predictors that should receive the advice. Without `feedback_fn`, `Refine` behaves exactly like `BestOfN`.
 
 ```python
 import dspy
 
-qa = dspy.ChainOfThought("question -> answer")
+class HintedQA(dspy.Signature):
+    question: str = dspy.InputField()
+    hint: str = dspy.InputField(default="", desc="Advice from an earlier attempt; may be ignored.")
+    answer: str = dspy.OutputField()
+
+qa = dspy.ChainOfThought(HintedQA)
 def one_word_answer(args, pred):
-    return 1.0 if len(pred.answer) == 1 else 0.0
-best_of_3 = dspy.Refine(module=qa, N=3, reward_fn=one_word_answer, threshold=1.0)
+    return 1.0 if len(pred.answer.split()) == 1 else 0.0
+def one_word_feedback(args, pred, reward):
+    if reward < 1.0:
+        return "Answer with exactly one word."
+best_of_3 = dspy.Refine(module=qa, N=3, reward_fn=one_word_answer, threshold=1.0, feedback_fn=one_word_feedback)
 best_of_3(question="What is the capital of Belgium?").answer
 # Brussels
 ```
