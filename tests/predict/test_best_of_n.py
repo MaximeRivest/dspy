@@ -173,8 +173,6 @@ def test_best_of_n_all_attempts_failing_raises_last_error():
 
 @pytest.mark.asyncio
 async def test_best_of_n_async_all_attempts_failing_raises_last_error():
-    dspy.configure(lm=DummyLM([]))
-
     class AsyncAlwaysFail(dspy.Module):
         def __init__(self):
             super().__init__()
@@ -185,20 +183,23 @@ async def test_best_of_n_async_all_attempts_failing_raises_last_error():
 
     best_of_n = BestOfN(module=AsyncAlwaysFail(), N=3, reward_fn=lambda *_: 1.0, threshold=0.0, fail_count=5)
 
-    with pytest.raises(RuntimeError, match="always fails"):
-        await best_of_n.acall(question="q")
+    # `dspy.configure` is forbidden from a non-owner async task; scope the settings instead.
+    with dspy.context(lm=DummyLM([])):
+        with pytest.raises(RuntimeError, match="always fails"):
+            await best_of_n.acall(question="q")
 
 
 @pytest.mark.asyncio
 async def test_best_of_n_async_awaits_async_reward_fn():
     lm = DummyLM([{"answer": "wrong"}, {"answer": "right"}])
-    dspy.configure(lm=lm)
 
     async def reward(kwargs, pred):
         return 1.0 if pred.answer == "right" else 0.0
 
     best_of_n = BestOfN(module=AsyncDummyModule("question -> answer"), N=3, reward_fn=reward, threshold=1.0)
-    result = await best_of_n.acall(question="q")
+    # `dspy.configure` is forbidden from a non-owner async task; scope the settings instead.
+    with dspy.context(lm=lm):
+        result = await best_of_n.acall(question="q")
 
     assert result.answer == "right"
 

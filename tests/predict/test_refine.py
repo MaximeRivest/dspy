@@ -205,13 +205,22 @@ def test_refine_never_overwrites_user_declared_hint_field(caplog):
     predict = DummyModule("question, hint_ -> answer", call_predictor)
     refine = Refine(module=predict, N=3, reward_fn=lambda *_: 0.0, threshold=1.0)
 
-    with caplog.at_level(logging.WARNING, logger="dspy.predict.refine"):
-        with dspy.context(trace=[]):
-            refine(question="q", hint_="user hint")
-            trace = dspy.settings.trace
-            # A user-declared hint is a real input: it stays in the exported trace.
-            assert len(trace) == 1
-            assert trace[0][1][HINT_FIELD_NAME] == "user hint"
+    # The "dspy" logger does not propagate to the root logger (see
+    # dspy/utils/logging_utils.py), where caplog's capture handler lives; propagate
+    # temporarily so the records are observable.
+    dspy_logger = logging.getLogger("dspy")
+    original_propagate = dspy_logger.propagate
+    dspy_logger.propagate = True
+    try:
+        with caplog.at_level(logging.WARNING, logger="dspy.predict.refine"):
+            with dspy.context(trace=[]):
+                refine(question="q", hint_="user hint")
+                trace = dspy.settings.trace
+                # A user-declared hint is a real input: it stays in the exported trace.
+                assert len(trace) == 1
+                assert trace[0][1][HINT_FIELD_NAME] == "user hint"
+    finally:
+        dspy_logger.propagate = original_propagate
 
     module_calls = adapter.module_calls()
     assert len(module_calls) == 3
@@ -352,8 +361,6 @@ def test_refine_all_attempts_failing_raises_last_error():
 
 @pytest.mark.asyncio
 async def test_refine_async_all_attempts_failing_raises_last_error():
-    dspy.configure(lm=DummyLM([]))
-
     class AsyncAlwaysFail(dspy.Module):
         def __init__(self):
             super().__init__()
@@ -364,8 +371,10 @@ async def test_refine_async_all_attempts_failing_raises_last_error():
 
     refine = Refine(module=AsyncAlwaysFail(), N=3, reward_fn=lambda *_: 1.0, threshold=0.0, fail_count=5)
 
-    with pytest.raises(RuntimeError, match="always fails"):
-        await refine.acall(question="q")
+    # `dspy.configure` is forbidden from a non-owner async task; scope the settings instead.
+    with dspy.context(lm=DummyLM([])):
+        with pytest.raises(RuntimeError, match="always fails"):
+            await refine.acall(question="q")
 
 
 def test_refine_critic_failure_does_not_consume_budget_and_prior_advice_persists():
@@ -591,14 +600,15 @@ async def test_refine_async_hinted_retry_awaits_async_reward_fn():
             {"answer": "right"},
         ]
     )
-    dspy.configure(lm=lm, adapter=adapter)
 
     async def reward(kwargs, pred):
         return 1.0 if pred.answer == "right" else 0.0
 
     predict = AsyncDummyModule("question -> answer")
     refine = Refine(module=predict, N=3, reward_fn=reward, threshold=1.0)
-    result = await refine.acall(question="q")
+    # `dspy.configure` is forbidden from a non-owner async task; scope the settings instead.
+    with dspy.context(lm=lm, adapter=adapter):
+        result = await refine.acall(question="q")
 
     assert result.answer == "right"
     module_calls = adapter.module_calls()
