@@ -366,6 +366,55 @@ def test_load_with_explicit_lm_bypasses_saved_lm_state(tmp_path):
     assert loaded_predict.lm is trusted_lm
 
 
+def test_load_with_lm_mapping_assigns_per_predictor(tmp_path):
+    class TwoStage(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.draft = dspy.Predict("q->a")
+            self.critique = dspy.Predict("a->b")
+
+    file_path = tmp_path / "model.json"
+    original = TwoStage()
+    original.draft.lm = dspy.LM(model="openai/local-model", api_base="http://internal.local/v1")
+    original.critique.lm = dspy.LM(model="openai/gpt-4o-mini")
+    original.save(file_path)
+
+    # Default load refuses: one predictor's LM carries endpoint configuration.
+    with pytest.raises(dspy.LMStateError, match="api_base"):
+        TwoStage().load(file_path)
+
+    # A partial mapping supplies the endpoint-carrying LM from code; the other
+    # predictor loads its saved (safe) LM state normally.
+    draft_lm = dspy.LM(model="openai/local-model", api_base="http://localhost:8000/v1")
+    loaded = TwoStage()
+    loaded.load(file_path, lm={"draft": draft_lm})
+
+    assert loaded.draft.lm is draft_lm
+    assert isinstance(loaded.critique.lm, dspy.LM)
+    assert loaded.critique.lm.model == "openai/gpt-4o-mini"
+
+    # The trusted path still "just works" for any number of LMs.
+    trusted = TwoStage()
+    trusted.load(file_path, allow_unsafe_lm_state=True)
+    assert trusted.draft.lm.kwargs["api_base"] == "http://internal.local/v1"
+    assert trusted.critique.lm.model == "openai/gpt-4o-mini"
+
+
+def test_load_with_lm_mapping_rejects_unknown_predictor_names(tmp_path):
+    class TwoStage(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.draft = dspy.Predict("q->a")
+            self.critique = dspy.Predict("a->b")
+
+    file_path = tmp_path / "model.json"
+    original = TwoStage()
+    original.save(file_path)
+
+    with pytest.raises(ValueError, match="unknown predictor name"):
+        TwoStage().load(file_path, lm={"typo_name": dspy.LM(model="openai/gpt-4o-mini")})
+
+
 @pytest.mark.parametrize("endpoint_override_key", ["api_base", "base_url"])
 def test_load_allows_serialized_endpoint_override_with_opt_in(tmp_path, endpoint_override_key):
     file_path = tmp_path / "model.json"
