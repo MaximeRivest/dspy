@@ -147,29 +147,13 @@ If you run into errors, please refer to the [LiteLLM Docs](https://docs.litellm.
 
 ### Direct OpenAI-compatible endpoints without LiteLLM
 
-For an endpoint that implements the OpenAI Chat Completions JSON format, use
-`OpenAICompatLM` to connect with direct HTTP transport and no LiteLLM or OpenAI
-SDK dependency:
-
-```python linenums="1"
-import dspy
-
-lm = dspy.OpenAICompatLM(
-    model="meta-llama/Llama-3.1-8B-Instruct",
-    base_url="http://localhost:8000/v1",
-    api_key="local",  # Some servers require any non-empty token; omit if yours doesn't.
-)
-dspy.configure(lm=lm)
-```
-
-DSPy cannot ask a generic endpoint what it supports, so you declare
-capabilities yourself: pass `supports_function_calling=True` or
-`supports_response_schema=True` when your server supports those features. When
-left off, DSPy's adapters express tools and structured output through
-prompting instead of the native API; when turned on for a server that does not
-actually support the feature, requests fail with a provider error. This client
-supports Chat Completions (including streaming via `lm.stream()`) but not the
-OpenAI Responses API.
+DSPy ships an internal typed engine for OpenAI Chat Completions-compatible
+endpoints (vLLM, SGLang, Ollama, llama.cpp, gateways) that uses direct HTTP
+transport with no LiteLLM or OpenAI SDK dependency. It is not a public API:
+`dspy.LM` is the one user-facing interface, and the model string plus
+`api_base` shown above remain the way to reach these servers. As the LM router
+matures, `dspy.LM` will route such calls onto this engine under the hood
+without any change to your code.
 
 ## Calling the LM directly.
 

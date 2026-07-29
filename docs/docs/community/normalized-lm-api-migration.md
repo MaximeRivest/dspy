@@ -190,14 +190,20 @@ class EchoLM(dspy.BaseLM):
         return dspy.LMResponse.from_text("hello", model=request.model)
 ```
 
-### Reference typed LM: `OpenAICompatLM`
+### Reference typed LM: the OpenAI-compat engine
 
-`dspy.OpenAICompatLM` is the first full production typed LM shipped with DSPy. It
-connects directly to an OpenAI Chat Completions-compatible HTTP endpoint
-without LiteLLM or the OpenAI SDK:
+`_OpenAICompatLM` (in `dspy/clients/openai_compat_lm.py`) is the first full
+production typed LM shipped with DSPy. It connects directly to an OpenAI Chat
+Completions-compatible HTTP endpoint without LiteLLM or the OpenAI SDK. It is
+an internal engine, not a public API: `dspy.LM` is the user-facing interface,
+and the router constructs the engine under the hood. Serialized programs
+record `dspy.LM` router state (model string, `api_base`, request defaults)
+plus an `engine` block, never the engine class itself.
 
 ```python
-lm = dspy.OpenAICompatLM(
+from dspy.clients.openai_compat_lm import _OpenAICompatLM  # internal
+
+lm = _OpenAICompatLM(
     model="meta-llama/Llama-3.1-8B-Instruct",
     base_url="http://localhost:8000/v1",
     api_key="local",  # Some servers require any non-empty token; omit if yours doesn't.
@@ -220,14 +226,14 @@ implementation — see "Streaming contract for typed LMs" below.
 
 Typed LMs are data-plane objects: they perform inference, never setup. A missing
 credential is a typed, actionable error — not a prompt, a browser window, or a
-silent fallback to a different account. `OpenAICompatLM` sets the pattern that
-other typed LMs should follow.
+silent fallback to a different account. The OpenAI-compat engine sets the
+pattern that other typed LMs should follow.
 
 **1. Accept a handle, not only a string.** `api_key` takes a string or a
 zero-argument callable returning one:
 
 ```python
-lm = dspy.OpenAICompatLM(
+lm = _OpenAICompatLM(
     model="my-model",
     base_url="https://gateway.example.com/v1",
     api_key=lambda: my_vault.read("gateway-token"),
@@ -297,7 +303,7 @@ the request body, so supporting it requires a separate request-signing hook.
 ### Constructor conventions for typed LMs
 
 Typed LMs deliberately do not continue DSPy's historical reliance on
-`**kwargs` for behavior. The conventions, set by `OpenAICompatLM`:
+`**kwargs` for behavior. The conventions, set by the OpenAI-compat engine:
 
 - **Behavioral parameters are explicit and keyword-only.** Endpoint identity,
   credentials, transport, and capability flags are named parameters after
@@ -341,7 +347,7 @@ implements `forward_stream(request) -> Iterator[LMStreamEvent]` and declares
 `supports_streaming = True`. Async callers get incremental events either from
 a native `aforward_stream` or, by default, from the base class bridging the
 synchronous stream through a worker thread. The rules, set by
-`OpenAICompatLM`:
+the OpenAI-compat engine:
 
 1. **Every LM streams; only some stream incrementally.** When
    `supports_streaming` is False, `stream()` runs the buffered `forward()`

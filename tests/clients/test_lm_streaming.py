@@ -8,7 +8,7 @@ import pytest
 import dspy
 from dspy.clients.base_lm import BaseLM
 from dspy.clients.cache import Cache
-from dspy.clients.openai_compat_lm import OpenAICompatLM
+from dspy.clients.openai_compat_lm import _OpenAICompatLM
 from dspy.clients.openai_format import ChatCompletionChunkAssembler
 from dspy.core.types import (
     LMResponse,
@@ -259,7 +259,7 @@ def _chunks():
 class TestOpenAICompatLMStreaming:
     def _make_lm(self, base_url, **kwargs):
         kwargs.setdefault("cache", False)
-        return OpenAICompatLM(model=MODEL, base_url=base_url, num_retries=0, **kwargs)
+        return _OpenAICompatLM(model=MODEL, base_url=base_url, num_retries=0, **kwargs)
 
     def test_streams_sse_into_normalized_events(self, openai_compat_server):
         base_url, state = openai_compat_server

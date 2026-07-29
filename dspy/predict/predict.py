@@ -18,7 +18,9 @@ from dspy.utils.constants import IS_TYPE_UNDEFINED
 
 logger = logging.getLogger(__name__)
 
-UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
+# `engine` is the serialized engine-configuration block (see `dspy.LM.load_state`);
+# it carries the endpoint URL, so untrusted loads strip it like `api_base`.
+UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list", "engine"}
 
 
 def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
