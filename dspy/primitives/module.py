@@ -176,6 +176,62 @@ class Module(BaseModule, metaclass=ProgramMeta):
         """
         return [param for _, param in self.named_predictors()]
 
+    def named_refinement_units(self):
+        """Return the declared refinement units of this module, with their names.
+
+        A refinement unit is a ``dspy.predict.parameter.Parameter`` leaf: an
+        optimizer's atomic update unit. Unlike ``named_predictors``, this
+        traversal treats every ``Parameter`` as an *atomic boundary*: state
+        reachable through a unit (for example, predictors that a code-holding
+        leaf constructs from its own source) is derived runtime state owned by
+        that unit and is not yielded as an independent target.
+
+        Units decline call-time feedback by default; search components such as
+        ``dspy.Refine`` should only inject hints into units whose
+        ``accepts_hint()`` returns ``True``.
+
+        Returns:
+            list[tuple[str, Parameter]]: ``(name, unit)`` pairs, where names
+                follow the same attribute-path convention as
+                ``named_parameters``.
+        """
+        from dspy.predict.parameter import Parameter
+
+        if isinstance(self, Parameter):
+            # This module *is* an atomic unit; nothing inside it is an
+            # independent refinement target.
+            return [("self", self)]
+
+        visited = set()
+        units = []
+
+        def add(name, value):
+            if id(value) in visited:
+                return
+            visited.add(id(value))
+            if isinstance(value, Parameter):
+                units.append((name, value))  # atomic boundary: do not descend
+            elif isinstance(value, Module):
+                # Pre-compiled sub-modules stay frozen, mirroring named_parameters.
+                if not getattr(value, "_compiled", False):
+                    for sub_name, sub_value in value.__dict__.items():
+                        add_value(f"{name}.{sub_name}", sub_value)
+
+        def add_value(name, value):
+            if isinstance(value, (Parameter, Module)):
+                add(name, value)
+            elif isinstance(value, (list, tuple)):
+                for idx, item in enumerate(value):
+                    add_value(f"{name}[{idx}]", item)
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    add_value(f"{name}['{key}']", item)
+
+        for name, value in self.__dict__.items():
+            add_value(name, value)
+
+        return units
+
     def set_lm(self, lm):
         """Set the language model for all predictors in this module.
 

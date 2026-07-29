@@ -23,12 +23,26 @@ class Prediction(Example):
 
         self._completions = None
         self._lm_usage = None
+        self._refinement = None
 
     def get_lm_usage(self):
         return self._lm_usage
 
     def set_lm_usage(self, value):
         self._lm_usage = value
+
+    def get_refinement(self):
+        """Refinement metadata attached by search components such as `dspy.Refine`.
+
+        Returns `None` for predictions that were not produced by a refinement
+        loop. Otherwise, a dict describing the attempts made (rollout ids,
+        rewards, applied hints with provenance) and the selected attempt. This
+        is search provenance, deliberately kept out of the program trace.
+        """
+        return self._refinement
+
+    def set_refinement(self, value):
+        self._refinement = value
 
     @classmethod
     def from_completions(cls, list_or_dict, signature=None):

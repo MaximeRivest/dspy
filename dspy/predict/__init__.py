@@ -5,6 +5,7 @@ from dspy.predict.code_act import CodeAct
 from dspy.predict.knn import KNN
 from dspy.predict.multi_chain_comparison import MultiChainComparison
 from dspy.predict.parallel import Parallel
+from dspy.predict.parameter import Hint, Parameter
 from dspy.predict.predict import Predict
 from dspy.predict.program_of_thought import ProgramOfThought
 from dspy.predict.react import ReAct, Tool
@@ -15,6 +16,8 @@ from dspy.predict.rlm import RLM
 __all__ = [
     "majority",
     "BestOfN",
+    "Hint",
+    "Parameter",
     "ChainOfThought",
     "CodeAct",
     "KNN",

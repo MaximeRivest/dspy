@@ -1,6 +1,7 @@
 import pytest
 
 import dspy
+from dspy.predict.parameter import Parameter
 from dspy.predict.predict import Predict
 from dspy.predict.refine import Refine
 from dspy.primitives.prediction import Prediction
@@ -171,3 +172,162 @@ def test_refine_module_custom_fail_count():
     assert module_call_count[0] == 2, (
         "Module should have been called exactly 2 times, but was called %d times" % module_call_count[0]
     )
+
+
+def test_refine_failure_budget_is_per_call():
+    """The failure budget must reset each call: no cross-call or cross-thread decay."""
+    lm = DummyLM([{"answer": "ok"}] * 4)
+    dspy.configure(lm=lm)
+    call_count = [0]
+
+    def fail_first_attempt_each_call(self, **kwargs):
+        call_count[0] += 1
+        if call_count[0] % 2 == 1:
+            raise ValueError("Deliberately failing the first attempt")
+        return self.predictor(**kwargs)
+
+    module = DummyModule("question -> answer", fail_first_attempt_each_call)
+    refine = Refine(module=module, N=2, reward_fn=lambda _, __: 1.0, threshold=0.0, fail_count=1)
+
+    # Each call fails once and then succeeds; a shared, decaying budget would
+    # eventually raise. Four consecutive calls must all succeed.
+    for _ in range(4):
+        result = refine(question="What is the capital of Belgium?")
+        assert result.answer == "ok"
+
+
+def test_refine_keeps_hint_out_of_trace_and_records_provenance():
+    """The winning trace shows the program as declared; search provenance lives in metadata."""
+    lm = DummyLM(
+        [
+            {"answer": "wrong"},
+            {"discussion": "The answer was wrong.", "advice": {"predictor": "Answer with 'right'."}},
+            {"answer": "right"},
+        ]
+    )
+    dspy.configure(lm=lm, adapter=None)
+
+    module = DummyModule("question -> answer", lambda self, **kwargs: self.predictor(**kwargs))
+    refine = Refine(
+        module=module,
+        N=2,
+        reward_fn=lambda _, pred: 1.0 if pred.answer == "right" else 0.0,
+        threshold=1.0,
+    )
+
+    with dspy.context(trace=[]):
+        result = refine(question="What is the right answer?")
+        trace = dspy.settings.trace.copy()
+
+    assert result.answer == "right"
+
+    # Only the winning attempt is narrated, without the hint and without critic steps.
+    assert len(trace) == 1, "Critic calls and losing attempts must not appear in the program trace"
+    _, traced_inputs, traced_outputs = trace[0]
+    assert "hint_" not in traced_inputs
+    assert "advice" not in traced_outputs
+
+    # The hint is not erased: it is recorded as refinement metadata with provenance.
+    metadata = result.get_refinement()
+    assert metadata["best_reward"] == 1.0
+    assert [a["rollout_id"] for a in metadata["attempts"]] == [0, 1]
+    assert metadata["attempts"][0]["hints"] == []
+    (hint,) = metadata["attempts"][1]["hints"]
+    assert hint.target == "predictor"
+    assert hint.content == "Answer with 'right'."
+    assert hint.authority == "non_authoritative"
+    assert hint.provenance["source"] == "dspy.Refine/OfferFeedback"
+
+    # The original module is untouched: no adapter changes, no lingering hints.
+    assert module.predictor.adapter is None
+    assert module.predictor._hints == []
+
+
+def test_refine_declines_feedback_without_hint_accepting_units():
+    """With no declared hint channel, Refine resamples and selects; it never
+    manufactures a feedback path through transport or runtime predictors."""
+
+    class SealedLeaf(dspy.Module, Parameter):
+        """Flex-shaped: the predictor is derived from the leaf's own state and
+        must not become a refinement target; the leaf itself declines hints."""
+
+        def __init__(self):
+            super().__init__()
+            self.derived = Predict("question -> answer")
+
+        def forward(self, **kwargs):
+            return self.derived(**kwargs)
+
+    class Wrapper(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.leaf = SealedLeaf()
+
+        def forward(self, **kwargs):
+            return self.leaf(**kwargs)
+
+    # Two module answers plus a sentinel: if Refine attempted feedback between
+    # the two attempts, the critic would consume a response and shift the
+    # sequence, leaving the sentinel consumed by the second attempt.
+    lm = DummyLM([{"answer": "a"}, {"answer": "b"}, {"answer": "sentinel"}])
+    dspy.configure(lm=lm, adapter=None)
+
+    wrapper = Wrapper()
+    refine = Refine(
+        module=wrapper,
+        N=2,
+        reward_fn=lambda _, pred: 1.0 if pred.answer == "a" else 0.0,
+        threshold=2.0,  # unreachable: force both attempts
+    )
+    result = refine(question="q")
+
+    assert result.answer == "a"
+    metadata = result.get_refinement()
+    assert len(metadata["attempts"]) == 2
+    assert [attempt["hints"] for attempt in metadata["attempts"]] == [[], []]
+    # No critic call happened: the sentinel response was never consumed.
+    assert next(lm.answers)["answer"] == "sentinel"
+
+
+@pytest.mark.asyncio
+async def test_refine_async_feedback_reaches_retry():
+    """aforward mirrors forward: hints flow through the leaf protocol in async too."""
+
+    class AsyncModule(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.predictor = Predict("question -> answer")
+
+        async def aforward(self, **kwargs):
+            return await self.predictor.acall(**kwargs)
+
+    adapter_calls = []
+
+    class TrackingChatAdapter(dspy.ChatAdapter):
+        async def acall(self, lm, lm_kwargs, signature, demos, inputs):
+            adapter_calls.append(dict(inputs))
+            return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+
+    lm = DummyLM(
+        [
+            {"answer": "wrong"},
+            {"discussion": "The answer was wrong.", "advice": {"predictor": "Answer with 'right'."}},
+            {"answer": "right"},
+        ]
+    )
+    dspy.configure(lm=lm, adapter=None)
+
+    module = AsyncModule()
+    module.set_adapter(TrackingChatAdapter())
+
+    refine = Refine(
+        module=module,
+        N=2,
+        reward_fn=lambda _, pred: 1.0 if pred.answer == "right" else 0.0,
+        threshold=1.0,
+    )
+    result = await refine.acall(question="What is the right answer?")
+
+    assert result.answer == "right"
+    hinted = [inputs for inputs in adapter_calls if "hint_" in inputs]
+    assert hinted and hinted[0]["hint_"] == "Answer with 'right'."

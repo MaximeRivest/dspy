@@ -9,9 +9,10 @@ from pydantic_core import PydanticUndefined
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.clients.base_lm import BaseLM
 from dspy.dsp.utils.settings import settings
-from dspy.predict.parameter import Parameter
+from dspy.predict.parameter import Hint, Parameter
 from dspy.primitives.module import Module
 from dspy.primitives.prediction import Prediction
+from dspy.signatures.field import InputField
 from dspy.signatures.signature import Signature, ensure_signature
 from dspy.utils.callback import BaseCallback
 from dspy.utils.constants import IS_TYPE_UNDEFINED
@@ -71,6 +72,8 @@ class Predict(Module, Parameter):
         self.traces = []
         self.train = []
         self.demos = []
+        # Transient, non-serialized refinement hints (see `apply_hint`).
+        self._hints = []
 
     def dump_state(self, json_mode=True):
         state_keys = ["traces", "train"]
@@ -122,6 +125,65 @@ class Predict(Module, Parameter):
             raise NotImplementedError("Loading extended_signature is no longer supported in DSPy 2.6+")
 
         return self
+
+    def accepts_hint(self, hint: Hint | None = None) -> bool:
+        """``dspy.Predict`` declares itself a hint-capable refinement unit.
+
+        A hint is interpreted here, by the leaf, into an effective call — an
+        appended ``hint_`` input field — before the resolved adapter formats
+        it. Adapters are never wrapped or mutated to carry hints.
+        """
+        return True
+
+    def apply_hint(self, hint: Hint) -> None:
+        """Install a non-authoritative hint for this predictor's next calls.
+
+        Hints are transient overlay state: they are excluded from ``dump_state``,
+        from the recorded trace, and from the persistent signature. They are
+        intended for candidate copies (``scope="next_candidate"``), as used by
+        ``dspy.Refine``; install them on the original predictor only if you
+        want every subsequent call hinted until ``clear_hints()``.
+        """
+        self._hints = [*getattr(self, "_hints", []), hint]
+
+    def clear_hints(self) -> None:
+        """Remove any installed refinement hints."""
+        self._hints = []
+
+    def describe_refinement_unit(self) -> str:
+        """Describe this predictor's I/O and instructions for a critic."""
+        import textwrap
+
+        from dspy.adapters.utils import get_field_description_string
+
+        signature = self.signature
+        instructions = textwrap.dedent(signature.instructions)
+        instructions = ("\n" + "\t" * 2).join([""] + instructions.splitlines())
+
+        output = ["\n\tInput Fields:"]
+        output.append(("\n" + "\t" * 2).join([""] + get_field_description_string(signature.input_fields).splitlines()))
+        output.append("\tOutput Fields:")
+        output.append(("\n" + "\t" * 2).join([""] + get_field_description_string(signature.output_fields).splitlines()))
+        output.append(f"\tOriginal Instructions: {instructions}")
+        return "\n".join(o.strip("\n") for o in output)
+
+    def _hinted_call(self, signature, inputs):
+        """Interpret installed hints into the effective call for the executor.
+
+        Returns a possibly-extended ``(signature, inputs)`` pair that the
+        adapter formats. The original signature and inputs are left untouched,
+        so the trace and saved state never contain the hint.
+        """
+        hints = [hint for hint in getattr(self, "_hints", []) if hint.content and hint.content.strip()]
+        if not hints:
+            return signature, inputs
+
+        if "hint_" not in signature.fields:
+            signature = signature.append(
+                "hint_",
+                InputField(desc="A non-authoritative hint from an earlier attempt; it may be imperfect or ignored"),
+            )
+        return signature, {**inputs, "hint_": "\n\n".join(hint.content for hint in hints)}
 
     def _get_positional_args_error_message(self):
         input_fields = list(self.signature.input_fields.keys())
@@ -257,25 +319,31 @@ class Predict(Module, Parameter):
 
     def forward(self, **kwargs):
         lm, adapter, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+        call_signature, call_inputs = self._hinted_call(signature, kwargs)
 
         if self._should_stream():
             with settings.context(caller_predict=self, adapter=adapter):
-                completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+                completions = adapter(lm, lm_kwargs=config, signature=call_signature, demos=demos, inputs=call_inputs)
         else:
             with settings.context(send_stream=None, adapter=adapter):
-                completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+                completions = adapter(lm, lm_kwargs=config, signature=call_signature, demos=demos, inputs=call_inputs)
 
         return self._forward_postprocess(completions, signature, **kwargs)
 
     async def aforward(self, **kwargs):
         lm, adapter, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+        call_signature, call_inputs = self._hinted_call(signature, kwargs)
 
         if self._should_stream():
             with settings.context(caller_predict=self, adapter=adapter):
-                completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+                completions = await adapter.acall(
+                    lm, lm_kwargs=config, signature=call_signature, demos=demos, inputs=call_inputs
+                )
         else:
             with settings.context(send_stream=None, adapter=adapter):
-                completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+                completions = await adapter.acall(
+                    lm, lm_kwargs=config, signature=call_signature, demos=demos, inputs=call_inputs
+                )
 
         return self._forward_postprocess(completions, signature, **kwargs)
 
