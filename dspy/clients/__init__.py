@@ -8,7 +8,6 @@ from dspy.clients.base_lm import BaseLM, inspect_history
 from dspy.clients.cache import Cache
 from dspy.clients.embedding import Embedder
 from dspy.clients.lm import LM
-from dspy.clients.openai_compat_lm import OpenAICompatLM
 from dspy.clients.provider import Provider, TrainingJob
 
 logger = logging.getLogger(__name__)
@@ -114,7 +113,6 @@ def disable_litellm_logging():
 __all__ = [
     "BaseLM",
     "LM",
-    "OpenAICompatLM",
     "Provider",
     "TrainingJob",
     "inspect_history",

@@ -1,8 +1,9 @@
-"""Local HTTP integration tests for `OpenAICompatLM`."""
+"""Local HTTP integration tests for the `_OpenAICompatLM` engine."""
 
 import pytest
 
 import dspy
+from dspy.clients.openai_compat_lm import _OpenAICompatLM
 
 
 def _completion(text):
@@ -17,7 +18,7 @@ def _completion(text):
 def test_openai_compat_lm_drives_predict_over_http(openai_compat_server):
     base_url, server = openai_compat_server
     server.reply(200, _completion("[[ ## answer ## ]]\nParis\n\n[[ ## completed ## ]]"))
-    lm = dspy.OpenAICompatLM(
+    lm = _OpenAICompatLM(
         "local-model",
         base_url,
         api_key="local",
@@ -42,7 +43,7 @@ def test_openai_compat_lm_drives_predict_over_http(openai_compat_server):
 def test_openai_compat_lm_maps_rate_limit_over_http(openai_compat_server):
     base_url, server = openai_compat_server
     server.reply(429, {"error": {"code": "rate_limit_exceeded", "message": "slow down"}})
-    lm = dspy.OpenAICompatLM("local-model", base_url, cache=False, num_retries=0)
+    lm = _OpenAICompatLM("local-model", base_url, cache=False, num_retries=0)
 
     with pytest.raises(dspy.LMRateLimitError, match="slow down"):
         lm("429")
@@ -51,7 +52,7 @@ def test_openai_compat_lm_maps_rate_limit_over_http(openai_compat_server):
 def test_openai_compat_lm_maps_context_window_over_http(openai_compat_server):
     base_url, server = openai_compat_server
     server.reply(400, {"error": {"code": "context_length_exceeded", "message": "prompt too long"}})
-    lm = dspy.OpenAICompatLM("local-model", base_url, cache=False, num_retries=0)
+    lm = _OpenAICompatLM("local-model", base_url, cache=False, num_retries=0)
 
     with pytest.raises(dspy.ContextWindowExceededError, match="prompt too long"):
         lm("too long")

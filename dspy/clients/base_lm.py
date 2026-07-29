@@ -36,12 +36,7 @@ from dspy.utils.inspect_history import pretty_print_history
 MAX_HISTORY_SIZE = 10_000
 GLOBAL_HISTORY = []
 LM_CLASS_STATE_KEY = "_dspy_lm_class"
-_BUILTIN_LM_CLASS_PATHS = frozenset(
-    {
-        "dspy.clients.lm.LM",
-        "dspy.clients.openai_compat_lm.OpenAICompatLM",
-    }
-)
+_BUILTIN_LM_CLASS_PATHS = frozenset({"dspy.clients.lm.LM"})
 ForwardContract = Literal["legacy", "typed_lm"]
 
 

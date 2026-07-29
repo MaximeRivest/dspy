@@ -1,4 +1,4 @@
-"""Offline unit tests for `dspy.OpenAICompatLM`."""
+"""Offline unit tests for the `_OpenAICompatLM` engine."""
 
 import json
 import logging
@@ -10,7 +10,7 @@ import requests
 import dspy
 from dspy.clients.base_lm import BaseLM
 from dspy.clients.cache import Cache
-from dspy.clients.openai_compat_lm import OpenAICompatLM, _normalize_error, _RawResponse
+from dspy.clients.openai_compat_lm import _normalize_error, _OpenAICompatLM, _RawResponse
 from dspy.utils.exceptions import (
     ContextWindowExceededError,
     LMAuthError,
@@ -64,7 +64,7 @@ def _make_lm(*, post=None, **kwargs):
         "_post": post or _FakePost(),
     }
     defaults.update(kwargs)
-    return OpenAICompatLM(**defaults)
+    return _OpenAICompatLM(**defaults)
 
 
 def _envelope(code=None, message="boom", type_=None):
@@ -463,8 +463,8 @@ class TestConfigurationAndCapabilities:
     def test_require_auth_round_trips_through_state(self):
         state = _make_lm(require_auth=True, api_key="k").dump_state()
 
-        assert state["require_auth"] is True
-        assert BaseLM.load_state(state).require_auth is True
+        assert state["engine"]["require_auth"] is True
+        assert BaseLM.load_state(state)._engine_state["require_auth"] is True
 
     def test_callable_api_key_is_resolved_per_request(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -484,7 +484,7 @@ class TestConfigurationAndCapabilities:
         state = lm.dump_state()
 
         assert "secret-token" not in json.dumps(state)
-        assert state["use_openai_api_key_env"] is False
+        assert state["engine"]["use_openai_api_key_env"] is False
 
     @pytest.mark.parametrize("flag", ["supports_function_calling", "supports_reasoning", "supports_response_schema"])
     def test_capabilities_default_false_and_honor_opt_in(self, flag):
@@ -517,7 +517,7 @@ class TestConfigurationAndCapabilities:
 
 
 class TestSerializationAndExports:
-    def test_dump_load_round_trip_is_safe(self, monkeypatch):
+    def test_dump_state_is_router_state_and_loads_as_lm(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GATEWAY_KEY", raising=False)
         lm = _make_lm(
@@ -537,13 +537,50 @@ class TestSerializationAndExports:
         assert "explicit-secret" not in serialized
         assert "other-secret" not in serialized
         assert '"X-API-Key"' not in serialized
-        assert isinstance(loaded, OpenAICompatLM)
-        assert loaded.base_url == lm.base_url
-        assert loaded.extra_headers == {"X-Custom": "yes"}
+        assert "OpenAICompatLM" not in serialized
+
+        from dspy.clients.lm import LM
+
+        assert type(loaded) is LM
+        assert loaded.model == f"openai/{MODEL}"
+        assert loaded.kwargs["api_base"] == lm.base_url
         assert loaded.kwargs["temperature"] == 0.3
         assert loaded.kwargs["max_tokens"] == 256
-        assert loaded._resolved_api_key() is None
-        assert loaded.use_openai_api_key_env is False
+        assert loaded.kwargs["extra_headers"] == {"X-Custom": "yes"}
 
-    def test_openai_compat_lm_is_exported_at_top_level(self):
-        assert dspy.OpenAICompatLM is OpenAICompatLM
+        engine = state["engine"]
+        assert engine["engine"] == "openai_compat"
+        assert engine["model"] == MODEL
+        assert engine["base_url"] == lm.base_url
+        assert engine["api_key_env"] == "GATEWAY_KEY"
+        assert engine["use_openai_api_key_env"] is False
+        assert engine["supports_function_calling"] is True
+        assert engine["extra_headers"] == {"X-Custom": "yes"}
+        assert loaded._engine_state == engine
+
+    def test_engine_state_survives_a_second_save_cycle(self):
+        state = _make_lm(require_auth=True).dump_state()
+        loaded = BaseLM.load_state(state)
+
+        assert loaded.dump_state()["engine"] == state["engine"]
+
+    def test_saved_predict_program_loads_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        predict = dspy.Predict("q -> a")
+        predict.lm = _make_lm(api_key="secret")
+        path = tmp_path / "program.json"
+        predict.save(str(path))
+
+        untrusted = dspy.Predict("q -> a")
+        untrusted.load(str(path))
+        assert type(untrusted.lm).__name__ == "LM"
+        assert "api_base" not in untrusted.lm.kwargs
+        assert untrusted.lm._engine_state is None
+
+        trusted = dspy.Predict("q -> a")
+        trusted.load(str(path), allow_unsafe_lm_state=True)
+        assert trusted.lm.kwargs["api_base"] == "http://localhost:8000/v1"
+        assert trusted.lm._engine_state["base_url"] == "http://localhost:8000/v1"
+
+    def test_openai_compat_lm_is_not_exported_at_top_level(self):
+        assert not hasattr(dspy, "OpenAICompatLM")

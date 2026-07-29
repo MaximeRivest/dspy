@@ -1,10 +1,11 @@
-"""Typed LM for OpenAI Chat Completions-compatible HTTP endpoints.
+"""Typed LM engine for OpenAI Chat Completions-compatible HTTP endpoints.
 
-`OpenAICompatLM` uses direct `requests` transport and DSPy's typed
-`LMRequest` / `LMResponse` boundary. Async calls run the same synchronous
-transport in an AnyIO worker thread. Streaming is supported through
-`forward_stream`, which parses the endpoint's SSE response into normalized
-`LMStreamEvent`s.
+`_OpenAICompatLM` is an internal engine, not a public API: users configure
+`dspy.LM`, and the router constructs an engine under the hood. It uses direct
+`requests` transport and DSPy's typed `LMRequest` / `LMResponse` boundary.
+Async calls run the same synchronous transport in an AnyIO worker thread.
+Streaming is supported through `forward_stream`, which parses the endpoint's
+SSE response into normalized `LMStreamEvent`s.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ from dspy.utils.exceptions import (
     is_retryable_lm_error,
 )
 
-__all__ = ["OpenAICompatLM"]
+__all__ = ["_OpenAICompatLM"]
 
 logger = logging.getLogger(__name__)
 
@@ -191,23 +192,23 @@ def _error_class_from_status(status: int) -> type[LMError]:
     return LMProviderError
 
 
-class OpenAICompatLM(BaseLM):
-    """A typed LM for an OpenAI Chat Completions-compatible endpoint.
+class _OpenAICompatLM(BaseLM):
+    """Internal typed LM engine for an OpenAI Chat Completions-compatible endpoint.
 
-    Use this when you run or point at an OpenAI-compatible server — vLLM,
-    SGLang, Ollama, llama.cpp, or a gateway — and want direct HTTP transport
-    with no LiteLLM or OpenAI SDK dependency. For hosted providers, `dspy.LM`
-    is usually the right choice.
+    This engine speaks the Chat Completions wire format over direct HTTP with
+    no LiteLLM or OpenAI SDK dependency — for servers such as vLLM, SGLang,
+    Ollama, llama.cpp, or a gateway. It is not a public API: `dspy.LM` is the
+    user-facing interface, and serialized state always round-trips through
+    `dspy.LM`, never through this class.
 
-    Example:
+    Example (internal construction):
         ```python
-        import dspy
+        from dspy.clients.openai_compat_lm import _OpenAICompatLM
 
-        lm = dspy.OpenAICompatLM(
+        lm = _OpenAICompatLM(
             model="meta-llama/Llama-3.1-8B-Instruct",
             base_url="http://localhost:8000/v1",
         )
-        dspy.configure(lm=lm)
         ```
 
     Args:
@@ -361,7 +362,7 @@ class OpenAICompatLM(BaseLM):
         }
         cache_config = request.config.cache
         return {
-            "_fn_identifier": "dspy.clients.openai_compat_lm.OpenAICompatLM.forward",
+            "_fn_identifier": "dspy.clients.openai_compat_lm._OpenAICompatLM.forward",
             "base_url": self.base_url,
             "request": to_openai_chat_request(request),
             "rollout_id": cache_config.rollout_id if cache_config is not None else None,
@@ -597,12 +598,36 @@ class OpenAICompatLM(BaseLM):
         return params
 
     def dump_state(self) -> dict[str, Any]:
-        state = super().dump_state()
+        """Serialize as `dspy.LM` router state, never as engine state.
+
+        Saved programs record the router-level facts — a LiteLLM-routable model
+        string, `api_base`, and default request parameters — so
+        `BaseLM.load_state` reconstructs a `dspy.LM` pointed at the same
+        endpoint. Engine-only configuration (credential resolution, declared
+        capabilities, the raw endpoint model id) is carried losslessly under
+        the `"engine"` key, which `dspy.LM` preserves for the router without
+        interpreting today.
+        """
+        request_kwargs = {
+            key: value for key, value in self.kwargs.items() if key not in ("api_key", LM_CLASS_STATE_KEY)
+        }
         safe_headers = {
             key: value for key, value in self.extra_headers.items() if key.lower() not in _SENSITIVE_HEADER_NAMES
         }
-        state.update(
-            {
+        state = {
+            LM_CLASS_STATE_KEY: "dspy.clients.lm.LM",
+            # LiteLLM routes `openai/<model>` + `api_base` to the same
+            # Chat Completions endpoint this engine speaks to directly.
+            "model": f"openai/{self.model}",
+            "model_type": self.model_type,
+            "cache": self.cache,
+            "num_retries": self.num_retries,
+            **request_kwargs,
+            "api_base": self.base_url,
+            "timeout": self.timeout,
+            "engine": {
+                "engine": "openai_compat",
+                "model": self.model,
                 "base_url": self.base_url,
                 "api_key_env": self.api_key_env,
                 "use_openai_api_key_env": self.use_openai_api_key_env if self._api_key is None else False,
@@ -612,12 +637,8 @@ class OpenAICompatLM(BaseLM):
                 "supports_function_calling": self._supports_function_calling,
                 "supports_reasoning": self._supports_reasoning,
                 "supports_response_schema": self._supports_response_schema,
-            }
-        )
+            },
+        }
+        if safe_headers:
+            state["extra_headers"] = safe_headers
         return state
-
-    @classmethod
-    def load_state(cls, state: dict[str, Any], *, allow_custom_lm_class: bool = False) -> OpenAICompatLM:
-        state = dict(state)
-        state.pop(LM_CLASS_STATE_KEY, None)
-        return cls(**state)

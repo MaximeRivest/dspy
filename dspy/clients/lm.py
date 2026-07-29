@@ -117,6 +117,10 @@ class LM(BaseLM):
         self.launch_kwargs = launch_kwargs or {}
         self.train_kwargs = train_kwargs or {}
         self.use_developer_role = use_developer_role
+        # Engine configuration carried from serialized state (see `load_state`).
+        # The router will consume this to reconstruct a typed engine; today it
+        # is preserved so a save/load/save cycle loses nothing.
+        self._engine_state: dict[str, Any] | None = None
 
         self._warn_zero_temp_rollout(self.kwargs.get("temperature"), self.kwargs.get("rollout_id"))
 
@@ -420,11 +424,14 @@ class LM(BaseLM):
             state["use_developer_role"] = self.use_developer_role
         if _is_openai_reasoning_model(self.model) and "max_completion_tokens" in state:
             state["max_tokens"] = state.pop("max_completion_tokens")
+        if self._engine_state is not None:
+            state["engine"] = self._engine_state
         return state
 
     @classmethod
     def load_state(cls, state: dict[str, Any], *, allow_custom_lm_class: bool = False):
         state = dict(state)
+        engine_state = state.pop("engine", None)
 
         model = state.get("model")
         if isinstance(model, str) and _is_openai_reasoning_model(model) and "max_completion_tokens" in state:
@@ -432,7 +439,10 @@ class LM(BaseLM):
                 state["max_tokens"] = state["max_completion_tokens"]
             state.pop("max_completion_tokens")
 
-        return super().load_state(state, allow_custom_lm_class=allow_custom_lm_class)
+        lm = super().load_state(state, allow_custom_lm_class=allow_custom_lm_class)
+        if engine_state is not None:
+            lm._engine_state = dict(engine_state)
+        return lm
 
     def _check_truncation(self, results):
         if self.model_type != "responses" and any(c.finish_reason == "length" for c in results["choices"]):
