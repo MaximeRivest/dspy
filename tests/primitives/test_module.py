@@ -55,6 +55,25 @@ def test_forward():
     assert result == "2"
 
 
+def test_set_adapter_applies_to_all_predictors():
+    program = HopModule()
+    adapter = dspy.ChatAdapter()
+
+    program.set_adapter(adapter)
+
+    assert all(predictor.adapter is adapter for predictor in program.predictors())
+    assert program.get_adapter() is adapter
+
+
+def test_get_adapter_with_heterogeneous_adapters():
+    program = HopModule()
+    program.predict1.adapter = dspy.ChatAdapter()
+    program.predict2.adapter = dspy.JSONAdapter()
+
+    with pytest.raises(ValueError, match="Multiple adapters"):
+        program.get_adapter()
+
+
 def test_nested_named_predictors():
     class Hop2Module(dspy.Module):
         def __init__(self):

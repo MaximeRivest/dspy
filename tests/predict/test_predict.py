@@ -53,11 +53,13 @@ def test_initialization_with_string_signature():
 def test_reset_method():
     predict_instance = Predict("input -> output")
     predict_instance.lm = "modified"
+    predict_instance.adapter = "modified"
     predict_instance.traces = ["trace"]
     predict_instance.train = ["train"]
     predict_instance.demos = ["demo"]
     predict_instance.reset()
     assert predict_instance.lm is None
+    assert predict_instance.adapter is None
     assert predict_instance.traces == []
     assert predict_instance.train == []
     assert predict_instance.demos == []
@@ -90,6 +92,95 @@ def test_lm_after_dump_and_load_state():
     new_instance = Predict("input -> output")
     new_instance.load_state(dumped_state)
     assert new_instance.lm.dump_state() == expected_lm_state
+
+
+class TrackingChatAdapter(dspy.ChatAdapter):
+    """ChatAdapter that records each set of inputs it formats."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def format(self, signature, demos, inputs):
+        self.calls.append(inputs)
+        return super().format(signature, demos, inputs)
+
+
+def test_adapter_precedence_call_over_predict_over_settings():
+    settings_adapter = TrackingChatAdapter()
+    predict_adapter = TrackingChatAdapter()
+    call_adapter = TrackingChatAdapter()
+    predict_instance = Predict("question -> answer")
+    dspy.configure(lm=DummyLM([{"answer": "Paris"}] * 4), adapter=settings_adapter)
+
+    predict_instance(question="q1")
+    assert len(settings_adapter.calls) == 1
+
+    predict_instance.adapter = predict_adapter
+    predict_instance(question="q2")
+    assert len(predict_adapter.calls) == 1
+
+    predict_instance(question="q3", adapter=call_adapter)
+    assert len(call_adapter.calls) == 1
+
+    # Explicit `adapter=None` falls back to the settings adapter, like `lm=None`.
+    predict_instance(question="q4", adapter=None)
+    assert len(settings_adapter.calls) == 2
+    assert len(predict_adapter.calls) == 1
+
+
+def test_adapter_defaults_to_chat_adapter(monkeypatch):
+    predict_instance = Predict("question -> answer")
+    dspy.configure(lm=DummyLM([{"answer": "Paris"}]), adapter=None)
+
+    used_adapters = []
+    original_call = dspy.ChatAdapter.__call__
+
+    def tracked_call(self, *args, **kwargs):
+        used_adapters.append(self)
+        return original_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(dspy.ChatAdapter, "__call__", tracked_call)
+    predict_instance(question="q")
+    assert len(used_adapters) == 1
+    assert type(used_adapters[0]) is dspy.ChatAdapter
+
+
+def test_adapter_kwarg_is_not_treated_as_input(caplog):
+    adapter = TrackingChatAdapter()
+    predict_instance = Predict("question -> answer")
+    dspy.configure(lm=DummyLM([{"answer": "Paris"}]))
+
+    with caplog.at_level(logging.WARNING):
+        predict_instance(question="q", adapter=adapter)
+
+    assert "fields not in signature" not in caplog.text
+    assert adapter.calls == [{"question": "q"}]
+
+
+@pytest.mark.asyncio
+async def test_adapter_precedence_async_matches_sync():
+    predict_adapter = TrackingChatAdapter()
+    call_adapter = TrackingChatAdapter()
+    predict_instance = Predict("question -> answer")
+    predict_instance.adapter = predict_adapter
+
+    with dspy.context(lm=DummyLM([{"answer": "Paris"}] * 2)):
+        await predict_instance.acall(question="q1")
+        await predict_instance.acall(question="q2", adapter=call_adapter)
+
+    assert predict_adapter.calls == [{"question": "q1"}]
+    assert call_adapter.calls == [{"question": "q2"}]
+
+
+def test_adapter_is_not_serialized():
+    predict_instance = Predict("question -> answer")
+    predict_instance.adapter = TrackingChatAdapter()
+
+    assert "adapter" not in predict_instance.dump_state()
+
+    loaded = Predict("question -> answer").load_state(predict_instance.dump_state())
+    assert loaded.adapter is None
 
 
 def test_base_lm_dump_state_ignores_internal_class_marker_kwarg():

@@ -65,6 +65,7 @@ class Predict(Module, Parameter):
 
     def reset(self):
         self.lm = None
+        self.adapter = None
         self.traces = []
         self.train = []
         self.demos = []
@@ -152,11 +153,14 @@ class Predict(Module, Parameter):
         return await super().acall(**kwargs)
 
     def _forward_preprocess(self, **kwargs):
-        # Extract the three privileged keyword arguments.
+        # Extract the privileged keyword arguments.
         assert "new_signature" not in kwargs, "new_signature is no longer a valid keyword argument."
         signature = ensure_signature(kwargs.pop("signature", self.signature))
         demos = kwargs.pop("demos", self.demos)
         config = {**self.config, **kwargs.pop("config", {})}
+
+        # Get the right adapter to use, mirroring LM resolution: call > instance > settings > default.
+        adapter = kwargs.pop("adapter", self.adapter) or settings.adapter or ChatAdapter()
 
         # Get the right LM to use.
         lm = kwargs.pop("lm", self.lm) or settings.lm
@@ -241,7 +245,7 @@ class Predict(Module, Parameter):
                 present,
                 missing,
             )
-        return lm, config, signature, demos, kwargs
+        return lm, adapter, config, signature, demos, kwargs
 
     def _forward_postprocess(self, completions, signature, **kwargs):
         pred = Prediction.from_completions(completions, signature=signature)
@@ -261,9 +265,7 @@ class Predict(Module, Parameter):
         return should_stream
 
     def forward(self, **kwargs):
-        lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
-
-        adapter = settings.adapter or ChatAdapter()
+        lm, adapter, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
 
         if self._should_stream():
             with settings.context(caller_predict=self):
@@ -275,9 +277,8 @@ class Predict(Module, Parameter):
         return self._forward_postprocess(completions, signature, **kwargs)
 
     async def aforward(self, **kwargs):
-        lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+        lm, adapter, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
 
-        adapter = settings.adapter or ChatAdapter()
         if self._should_stream():
             with settings.context(caller_predict=self):
                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
