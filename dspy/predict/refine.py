@@ -1,5 +1,5 @@
-import copy
 import inspect
+import logging
 import textwrap
 from typing import Callable
 
@@ -11,6 +11,13 @@ from dspy.predict.predict import Prediction
 from dspy.signatures import InputField, OutputField, Signature
 
 from .predict import Module
+
+logger = logging.getLogger(__name__)
+
+# Name of the input field through which feedback reaches a retry. The field is appended to the
+# per-attempt copy's predictor signatures (never the wrapped module's), and is stripped from the
+# trace that `Refine` reports to its caller.
+HINT_FIELD_NAME = "hint_"
 
 
 class OfferFeedback(Signature):
@@ -39,6 +46,49 @@ class OfferFeedback(Signature):
     )
 
 
+def _safe_getsource(obj) -> str:
+    """Best-effort source retrieval for the feedback prompt.
+
+    Source code is evidence shown to the feedback LM, not a requirement for running the wrapped
+    module, so unavailable source (REPL/exec-defined classes, builtins, partials) degrades to a
+    placeholder instead of failing construction.
+    """
+    targets = [obj]
+    if not inspect.isclass(obj):
+        targets.append(type(obj))
+    for target in targets:
+        try:
+            return inspect.getsource(target)
+        except (OSError, TypeError):
+            continue
+    name = getattr(obj, "__name__", type(obj).__name__)
+    return f"<source unavailable for {name}>"
+
+
+def _apply_feedback_hints(candidate: Module, advice: dict[str, str]) -> None:
+    """Interpret critic advice into the throwaway candidate, above the adapter boundary.
+
+    The advice produced by ``OfferFeedback`` is a fallible, non-authoritative search hint. It is
+    applied by appending an explicit ``hint_`` input field, whose default value is that predictor's
+    slice of the advice, to each predictor's signature on the per-attempt deep copy. The effective
+    candidate is therefore fully defined before any adapter formats a call: adapters stay pure
+    renderers (never wrapped or subclassed), each predictor's own adapter resolution is untouched,
+    and the wrapped module is never mutated.
+
+    Only ``dspy.Predict`` leaves discovered through ``named_predictors()`` receive hints; other
+    kinds of sub-modules are resampled and selected but not hinted.
+    """
+    for name, predictor in candidate.named_predictors():
+        predictor.signature = predictor.signature.append(
+            HINT_FIELD_NAME,
+            InputField(
+                desc="A hint to the module from an earlier run",
+                default=advice.get(name, "N/A"),
+            ),
+            type_=str,
+        )
+
+
 class Refine(Module):
     def __init__(
         self,
@@ -56,13 +106,21 @@ class Refine(Module):
         either the first prediction that exceeds the specified threshold or the one with the highest reward.
         If no prediction meets the threshold, it automatically generates feedback to improve future predictions.
 
+        The feedback is a non-authoritative search hint: it is applied to the throwaway per-attempt copy of
+        the module as an explicit `hint_` input field on each predictor's signature, so a retry is fully
+        defined before any adapter formats a call. The wrapped module is never mutated, adapters are never
+        wrapped or subclassed, and the hint is stripped from the trace reported to the caller. Only
+        `dspy.Predict` leaves found via `named_predictors()` receive hints; other sub-modules are resampled
+        and selected but not hinted.
 
         Args:
             module (Module): The module to refine.
-            N (int): The number of times to run the module. must
+            N (int): The maximum number of times to run the module.
             reward_fn (Callable): The reward function.
             threshold (float): The threshold for the reward function.
-            fail_count (Optional[int], optional): The number of times the module can fail before raising an error
+            fail_count (Optional[int], optional): The number of failed attempts tolerated per call before
+                the most recent error is raised. Defaults to `N`. Independently of this budget, if every
+                attempt fails, the last error is raised instead of returning `None`.
 
         Examples:
             ```python
@@ -90,70 +148,30 @@ class Refine(Module):
         self.threshold = threshold
         self.N = N
         self.fail_count = fail_count or N  # default to N if fail_count is not provided
-        self.module_code = inspect.getsource(module.__class__)
-        try:
-            self.reward_fn_code = inspect.getsource(reward_fn)
-        except TypeError:
-            self.reward_fn_code = inspect.getsource(reward_fn.__class__)
+        self.module_code = _safe_getsource(module.__class__)
+        self.reward_fn_code = _safe_getsource(reward_fn)
 
     def forward(self, **kwargs):
         lm = self.module.get_lm() or dspy.settings.lm
         start = lm.kwargs.get("rollout_id", 0)
-        rollout_ids = [start + i for i in range(self.N)]
-        best_pred, best_trace, best_reward = None, None, -float("inf")
-        advice = None
+        best_pred, best_trace, best_map, best_reward = None, None, None, -float("inf")
+        advice, failures, last_error = None, 0, None
 
-        for idx, rid in enumerate(rollout_ids):
-            lm_ = lm.copy(rollout_id=rid, temperature=1.0)
-            mod = self.module.deepcopy()
-            mod.set_lm(lm_)
-
-            predictor2name = {predictor: name for name, predictor in mod.named_predictors()}
-            signature2name = {predictor.signature: name for name, predictor in mod.named_predictors()}
-            module_names = [name for name, _ in mod.named_predictors()]
+        for idx in range(self.N):
+            mod, predictor2name = self._prepare_attempt(lm, start + idx, advice)
 
             try:
                 with dspy.context(trace=[]):
-                    if not advice:
-                        outputs = mod(**kwargs)
-                    else:
-
-                        def wrap_with_hint(base_adapter):
-                            class WrapperAdapter(base_adapter.__class__):
-                                def __call__(self, lm, lm_kwargs, signature, demos, inputs):
-                                    inputs["hint_"] = advice.get(signature2name[signature], "N/A")  # noqa: B023
-                                    signature = signature.append(
-                                        "hint_", InputField(desc="A hint to the module from an earlier run")
-                                    )
-                                    return base_adapter(lm, lm_kwargs, signature, demos, inputs)
-
-                            # Build the wrapper from a shallow copy of the configured adapter instead of
-                            # calling the constructor, which may require arguments (e.g. TwoStepAdapter).
-                            # This preserves the adapter's state and keeps `isinstance` checks intact
-                            # without mutating the original instance.
-                            wrapper = copy.copy(base_adapter)
-                            wrapper.__class__ = WrapperAdapter
-                            return wrapper
-
-                        # Install the hint-injecting wrapper as an instance adapter on each predictor of the
-                        # deep copy, so it takes effect regardless of whether the module was configured via
-                        # `set_adapter()` (instance adapters outrank context overrides). The wrapped adapter
-                        # preserves each predictor's own resolution: instance > settings > ChatAdapter.
-                        default_adapter = dspy.settings.adapter or dspy.ChatAdapter()
-                        for _, predictor in mod.named_predictors():
-                            predictor.adapter = wrap_with_hint(predictor.adapter or default_adapter)
-
-                        outputs = mod(**kwargs)
-
+                    outputs = mod(**kwargs)
                     trace = dspy.settings.trace.copy()
-
-                    # TODO: Remove the hint from the trace, if it's there.
 
                     # NOTE: Not including the trace of reward_fn.
                     reward = self.reward_fn(kwargs, outputs)
 
+                logger.debug("Refine: attempt %d/%d achieved reward %s.", idx + 1, self.N, reward)
+
                 if reward > best_reward:
-                    best_reward, best_pred, best_trace = reward, outputs, trace
+                    best_reward, best_pred, best_trace, best_map = reward, outputs, trace, predictor2name
 
                 if self.threshold is not None and reward >= self.threshold:
                     break
@@ -161,36 +179,132 @@ class Refine(Module):
                 if idx == self.N - 1:
                     break
 
-                modules = {"program_code": self.module_code, "modules_defn": inspect_modules(mod)}
-                trajectory = [{"module_name": predictor2name[p], "inputs": i, "outputs": dict(o)} for p, i, o in trace]
-                trajectory = {
-                    "program_inputs": kwargs,
-                    "program_trajectory": trajectory,
-                    "program_outputs": dict(outputs),
-                }
-                reward = {
-                    "reward_code": self.reward_fn_code,
-                    "target_threshold": self.threshold,
-                    "reward_value": reward,
-                }
-
-                advise_kwargs = dict(**modules, **trajectory, **reward, module_names=module_names)
-                # only dumps if it's a list or dict
-                advise_kwargs = {
-                    k: v if isinstance(v, str) else orjson.dumps(recursive_mask(v), option=orjson.OPT_INDENT_2).decode()
-                    for k, v in advise_kwargs.items()
-                }
-                advice = dspy.Predict(OfferFeedback)(**advise_kwargs).advice
-                # print(f"Advice for each module: {advice}")
+                advise_kwargs = self._advice_kwargs(predictor2name, kwargs, outputs, trace, reward)
+                # The critic call is refinement machinery, not part of the wrapped program:
+                # keep it out of the caller's trace.
+                with dspy.context(trace=[]):
+                    advice = dspy.Predict(OfferFeedback)(**advise_kwargs).advice
+                logger.debug("Refine: advice for each module: %s", advice)
 
             except Exception as e:
-                print(f"Refine: Attempt failed with rollout id {rid}: {e}")
-                if idx > self.fail_count:
+                failures += 1
+                last_error = e
+                logger.warning(
+                    "Refine: attempt %d/%d failed with rollout id %s: %s", idx + 1, self.N, start + idx, e
+                )
+                if failures > self.fail_count:
                     raise e
-                self.fail_count -= 1
+
+        return self._conclude(best_pred, best_trace, best_map, last_error)
+
+    async def aforward(self, **kwargs):
+        lm = self.module.get_lm() or dspy.settings.lm
+        start = lm.kwargs.get("rollout_id", 0)
+        best_pred, best_trace, best_map, best_reward = None, None, None, -float("inf")
+        advice, failures, last_error = None, 0, None
+
+        for idx in range(self.N):
+            mod, predictor2name = self._prepare_attempt(lm, start + idx, advice)
+
+            try:
+                with dspy.context(trace=[]):
+                    outputs = await mod.acall(**kwargs)
+                    trace = dspy.settings.trace.copy()
+
+                    # NOTE: Not including the trace of reward_fn.
+                    reward = self.reward_fn(kwargs, outputs)
+
+                logger.debug("Refine: attempt %d/%d achieved reward %s.", idx + 1, self.N, reward)
+
+                if reward > best_reward:
+                    best_reward, best_pred, best_trace, best_map = reward, outputs, trace, predictor2name
+
+                if self.threshold is not None and reward >= self.threshold:
+                    break
+
+                if idx == self.N - 1:
+                    break
+
+                advise_kwargs = self._advice_kwargs(predictor2name, kwargs, outputs, trace, reward)
+                # The critic call is refinement machinery, not part of the wrapped program:
+                # keep it out of the caller's trace.
+                with dspy.context(trace=[]):
+                    advice = (await dspy.Predict(OfferFeedback).acall(**advise_kwargs)).advice
+                logger.debug("Refine: advice for each module: %s", advice)
+
+            except Exception as e:
+                failures += 1
+                last_error = e
+                logger.warning(
+                    "Refine: attempt %d/%d failed with rollout id %s: %s", idx + 1, self.N, start + idx, e
+                )
+                if failures > self.fail_count:
+                    raise e
+
+        return self._conclude(best_pred, best_trace, best_map, last_error)
+
+    def _prepare_attempt(self, lm, rollout_id, advice):
+        """Build the throwaway candidate for one attempt.
+
+        The candidate is a deep copy of the wrapped module with a diversified LM and, when
+        advice is available, the feedback hints applied to its predictor signatures.
+        """
+        mod = self.module.deepcopy()
+        mod.set_lm(lm.copy(rollout_id=rollout_id, temperature=1.0))
+        if advice:
+            _apply_feedback_hints(mod, advice)
+        return mod, {predictor: name for name, predictor in mod.named_predictors()}
+
+    def _advice_kwargs(self, predictor2name, kwargs, outputs, trace, reward):
+        modules = {"program_code": self.module_code, "modules_defn": inspect_modules(self.module)}
+        trajectory = [
+            {"module_name": predictor2name.get(p, type(p).__name__), "inputs": i, "outputs": dict(o)}
+            for p, i, o in trace
+        ]
+        trajectory = {
+            "program_inputs": kwargs,
+            "program_trajectory": trajectory,
+            "program_outputs": dict(outputs),
+        }
+        reward_info = {
+            "reward_code": self.reward_fn_code,
+            "target_threshold": self.threshold,
+            "reward_value": reward,
+        }
+        module_names = [name for name, _ in self.module.named_predictors()]
+
+        advise_kwargs = dict(**modules, **trajectory, **reward_info, module_names=module_names)
+        # only dumps if it's a list or dict
+        return {
+            k: v if isinstance(v, str) else orjson.dumps(recursive_mask(v), option=orjson.OPT_INDENT_2).decode()
+            for k, v in advise_kwargs.items()
+        }
+
+    def _conclude(self, best_pred, best_trace, best_map, last_error):
         if best_trace:
-            dspy.settings.trace.extend(best_trace)
+            self._export_trace(best_trace, best_map)
+        if best_pred is None and last_error is not None:
+            raise last_error
         return best_pred
+
+    def _export_trace(self, trace, predictor2name):
+        """Append the winning attempt's trace to the caller's trace.
+
+        The winning attempt is reported as if the wrapped module had produced the prediction
+        directly: the refinement hint is stripped from recorded inputs and the per-attempt
+        predictor copies are mapped back to the original module's predictors, so trace consumers
+        (e.g. demo bootstrapping) see the program the caller actually owns.
+        """
+        parent_trace = dspy.settings.trace
+        if parent_trace is None:
+            return
+        original_by_name = dict(self.module.named_predictors())
+        predictor2name = predictor2name or {}
+        for predictor, inputs, outputs in trace:
+            name = predictor2name.get(predictor)
+            original = original_by_name.get(name, predictor)
+            inputs = {k: v for k, v in inputs.items() if k != HINT_FIELD_NAME}
+            parent_trace.append((original, inputs, outputs))
 
 
 def inspect_modules(program):

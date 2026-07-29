@@ -1,7 +1,10 @@
+import logging
 from typing import Callable
 
 import dspy
 from dspy.predict.predict import Module, Prediction
+
+logger = logging.getLogger(__name__)
 
 
 class BestOfN(Module):
@@ -19,8 +22,10 @@ class BestOfN(Module):
             ``Prediction``, and returns a scalar float reward score.
         threshold: If an attempt's reward is at or above this value, that
             prediction is returned immediately without further attempts.
-        fail_count: Number of allowed failures before raising an exception.
-            Defaults to ``N`` if not provided.
+        fail_count: Number of failed attempts tolerated per call before the
+            most recent error is raised. Defaults to ``N`` if not provided.
+            Independently of this budget, if every attempt fails, the last
+            error is raised instead of returning ``None``.
 
     Example:
         >>> import dspy
@@ -50,13 +55,11 @@ class BestOfN(Module):
     def forward(self, **kwargs):
         lm = self.module.get_lm() or dspy.settings.lm
         start = lm.kwargs.get("rollout_id", 0)
-        rollout_ids = [start + i for i in range(self.N)]
-        best_pred, best_trace, best_reward = None, None, -float("inf")
+        best_pred, best_trace, best_map, best_reward = None, None, None, -float("inf")
+        failures, last_error = 0, None
 
-        for idx, rid in enumerate(rollout_ids):
-            lm_ = lm.copy(rollout_id=rid, temperature=1.0)
-            mod = self.module.deepcopy()
-            mod.set_lm(lm_)
+        for idx in range(self.N):
+            mod, predictor2name = self._prepare_attempt(lm, start + idx)
 
             try:
                 with dspy.context(trace=[]):
@@ -66,18 +69,86 @@ class BestOfN(Module):
                     # NOTE: Not including the trace of reward_fn.
                     reward = self.reward_fn(kwargs, pred)
 
+                logger.debug("BestOfN: attempt %d/%d achieved reward %s.", idx + 1, self.N, reward)
+
                 if reward > best_reward:
-                    best_reward, best_pred, best_trace = reward, pred, trace
+                    best_reward, best_pred, best_trace, best_map = reward, pred, trace, predictor2name
 
                 if reward >= self.threshold:
                     break
 
             except Exception as e:
-                print(f"BestOfN: Attempt {idx + 1} failed with rollout id {rid}: {e}")
-                if idx > self.fail_count:
+                failures += 1
+                last_error = e
+                logger.warning(
+                    "BestOfN: attempt %d/%d failed with rollout id %s: %s", idx + 1, self.N, start + idx, e
+                )
+                if failures > self.fail_count:
                     raise e
-                self.fail_count -= 1
 
+        return self._conclude(best_pred, best_trace, best_map, last_error)
+
+    async def aforward(self, **kwargs):
+        lm = self.module.get_lm() or dspy.settings.lm
+        start = lm.kwargs.get("rollout_id", 0)
+        best_pred, best_trace, best_map, best_reward = None, None, None, -float("inf")
+        failures, last_error = 0, None
+
+        for idx in range(self.N):
+            mod, predictor2name = self._prepare_attempt(lm, start + idx)
+
+            try:
+                with dspy.context(trace=[]):
+                    pred = await mod.acall(**kwargs)
+                    trace = dspy.settings.trace.copy()
+
+                    # NOTE: Not including the trace of reward_fn.
+                    reward = self.reward_fn(kwargs, pred)
+
+                logger.debug("BestOfN: attempt %d/%d achieved reward %s.", idx + 1, self.N, reward)
+
+                if reward > best_reward:
+                    best_reward, best_pred, best_trace, best_map = reward, pred, trace, predictor2name
+
+                if reward >= self.threshold:
+                    break
+
+            except Exception as e:
+                failures += 1
+                last_error = e
+                logger.warning(
+                    "BestOfN: attempt %d/%d failed with rollout id %s: %s", idx + 1, self.N, start + idx, e
+                )
+                if failures > self.fail_count:
+                    raise e
+
+        return self._conclude(best_pred, best_trace, best_map, last_error)
+
+    def _prepare_attempt(self, lm, rollout_id):
+        """Build the throwaway candidate for one attempt: a deep copy with a diversified LM."""
+        mod = self.module.deepcopy()
+        mod.set_lm(lm.copy(rollout_id=rollout_id, temperature=1.0))
+        return mod, {predictor: name for name, predictor in mod.named_predictors()}
+
+    def _conclude(self, best_pred, best_trace, best_map, last_error):
         if best_trace:
-            dspy.settings.trace.extend(best_trace)
+            self._export_trace(best_trace, best_map)
+        if best_pred is None and last_error is not None:
+            raise last_error
         return best_pred
+
+    def _export_trace(self, trace, predictor2name):
+        """Append the winning attempt's trace to the caller's trace.
+
+        The per-attempt predictor copies are mapped back to the original module's predictors,
+        so trace consumers (e.g. demo bootstrapping) see the program the caller actually owns.
+        """
+        parent_trace = dspy.settings.trace
+        if parent_trace is None:
+            return
+        original_by_name = dict(self.module.named_predictors())
+        predictor2name = predictor2name or {}
+        for predictor, inputs, outputs in trace:
+            name = predictor2name.get(predictor)
+            original = original_by_name.get(name, predictor)
+            parent_trace.append((original, inputs, outputs))

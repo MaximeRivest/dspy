@@ -29,7 +29,7 @@ print(result.answer)  # Brussels
 
 ### Error Handling
 
-By default, if the module encounters an error during an attempt, it will continue trying until it reaches `N` attempts. You can adjust this behavior with the `fail_count` parameter:
+By default, if the module encounters an error during an attempt, it will continue trying until it reaches `N` attempts. Each call tolerates up to `fail_count` failed attempts (defaulting to `N`); one more failure raises the error. If every attempt fails, the last error is raised instead of returning `None`. You can adjust the budget with the `fail_count` parameter:
 
 ```python
 best_of_3 = dspy.BestOfN(
@@ -41,7 +41,7 @@ best_of_3 = dspy.BestOfN(
 )
 
 best_of_3(question="What is the capital of Belgium?")
-# raises an error after the first failure
+# tolerates one failed attempt; a second failure raises the error
 ```
 
 ## Refine
@@ -69,10 +69,10 @@ print(result.answer)  # Brussels
 
 ### Error Handling
 
-Like `BestOfN`, `Refine` will try up to `N` times by default, even if errors occur. You can control this with the `fail_count` parameter:
+Like `BestOfN`, `Refine` will try up to `N` times by default, even if errors occur, and raises the last error when every attempt fails. You can control the per-call failure budget with the `fail_count` parameter:
 
 ```python
-# Stop after the first error
+# Tolerate a single failed attempt per call
 refine = dspy.Refine(
     module=qa, 
     N=3, 
