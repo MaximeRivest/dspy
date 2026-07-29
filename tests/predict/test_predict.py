@@ -56,8 +56,10 @@ def test_reset_method():
     predict_instance.traces = ["trace"]
     predict_instance.train = ["train"]
     predict_instance.demos = ["demo"]
+    predict_instance.adapter = "modified"
     predict_instance.reset()
     assert predict_instance.lm is None
+    assert predict_instance.adapter is None
     assert predict_instance.traces == []
     assert predict_instance.train == []
     assert predict_instance.demos == []
@@ -1825,3 +1827,107 @@ def test_custom_signature_types(caplog, enable_type_warnings):
         assert "Type mismatch for field 'query': expected Query" in caplog.text
     else:
         assert "Type mismatch" not in caplog.text
+
+
+class TrackingAdapter(dspy.ChatAdapter):
+    """ChatAdapter that counts sync and async invocations."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+        self.acalls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return super().__call__(*args, **kwargs)
+
+    async def acall(self, *args, **kwargs):
+        self.acalls += 1
+        return await super().acall(*args, **kwargs)
+
+
+def test_adapter_precedence_call_over_predict_over_settings():
+    dspy.configure(lm=DummyLM([{"answer": "a"}] * 10))
+    settings_adapter = TrackingAdapter()
+    predict_adapter = TrackingAdapter()
+    call_adapter = TrackingAdapter()
+
+    program = Predict("question -> answer")
+
+    with dspy.context(adapter=settings_adapter):
+        # No instance or call adapter: settings adapter wins.
+        program(question="q")
+        assert settings_adapter.calls == 1
+
+        # Instance adapter takes precedence over settings.
+        program.adapter = predict_adapter
+        program(question="q")
+        assert predict_adapter.calls == 1
+        assert settings_adapter.calls == 1
+
+        # Call adapter takes precedence over instance and settings.
+        program(question="q", adapter=call_adapter)
+        assert call_adapter.calls == 1
+        assert predict_adapter.calls == 1
+        assert settings_adapter.calls == 1
+
+        # Explicit adapter=None falls back to settings, mirroring lm=None.
+        program(question="q", adapter=None)
+        assert settings_adapter.calls == 2
+
+
+def test_adapter_defaults_to_chat_adapter(monkeypatch):
+    dspy.configure(lm=DummyLM([{"answer": "a"}]))
+    program = Predict("question -> answer")
+
+    used = []
+    original = dspy.ChatAdapter.__call__
+
+    def spy(self, *args, **kwargs):
+        used.append(self)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(dspy.ChatAdapter, "__call__", spy)
+    with dspy.context(adapter=None):
+        program(question="q")
+
+    assert len(used) == 1
+    assert type(used[0]) is dspy.ChatAdapter
+
+
+def test_adapter_kwarg_is_reserved_and_popped(caplog):
+    dspy.configure(lm=DummyLM([{"answer": "a"}]))
+    program = Predict("question -> answer")
+    adapter = TrackingAdapter()
+
+    with caplog.at_level(logging.WARNING, logger="dspy.predict.predict"):
+        result = program(question="q", adapter=adapter)
+
+    assert result.answer == "a"
+    assert adapter.calls == 1
+    # `adapter` must not be treated as an extra signature input field.
+    assert "fields not in signature" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_adapter_precedence_async_parity():
+    predict_adapter = TrackingAdapter()
+    call_adapter = TrackingAdapter()
+
+    program = Predict("question -> answer")
+    program.adapter = predict_adapter
+
+    with dspy.context(lm=DummyLM([{"answer": "a"}] * 10)):
+        await program.acall(question="q")
+        assert predict_adapter.acalls == 1
+
+        await program.acall(question="q", adapter=call_adapter)
+        assert call_adapter.acalls == 1
+        assert predict_adapter.acalls == 1
+
+
+def test_adapter_excluded_from_dump_state():
+    program = Predict("question -> answer")
+    program.adapter = TrackingAdapter()
+    state = program.dump_state()
+    assert "adapter" not in state

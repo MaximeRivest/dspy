@@ -54,6 +54,10 @@ class Predict(Module, Parameter):
 
                 predict = dspy.Predict("q -> a", rollout_id=1, temperature=1.0)
                 predict(q="What is 1 + 52?", config={"rollout_id": 2, "temperature": 1.0})
+
+    When calling the module, the reserved keyword arguments ``lm`` and
+    ``adapter`` override, for that single invocation, the instance-level
+    ``self.lm``/``self.adapter`` and the global ``dspy.settings`` values.
     """
 
     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):
@@ -65,6 +69,7 @@ class Predict(Module, Parameter):
 
     def reset(self):
         self.lm = None
+        self.adapter = None
         self.traces = []
         self.train = []
         self.demos = []
@@ -158,6 +163,9 @@ class Predict(Module, Parameter):
         demos = kwargs.pop("demos", self.demos)
         config = {**self.config, **kwargs.pop("config", {})}
 
+        # Get the right adapter to use, following call > instance > settings > default precedence.
+        adapter = kwargs.pop("adapter", self.adapter) or settings.adapter or ChatAdapter()
+
         # Get the right LM to use.
         lm = kwargs.pop("lm", self.lm) or settings.lm
 
@@ -241,7 +249,7 @@ class Predict(Module, Parameter):
                 present,
                 missing,
             )
-        return lm, config, signature, demos, kwargs
+        return lm, config, signature, demos, kwargs, adapter
 
     def _forward_postprocess(self, completions, signature, **kwargs):
         pred = Prediction.from_completions(completions, signature=signature)
@@ -261,9 +269,7 @@ class Predict(Module, Parameter):
         return should_stream
 
     def forward(self, **kwargs):
-        lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
-
-        adapter = settings.adapter or ChatAdapter()
+        lm, config, signature, demos, kwargs, adapter = self._forward_preprocess(**kwargs)
 
         if self._should_stream():
             with settings.context(caller_predict=self):
@@ -275,9 +281,8 @@ class Predict(Module, Parameter):
         return self._forward_postprocess(completions, signature, **kwargs)
 
     async def aforward(self, **kwargs):
-        lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+        lm, config, signature, demos, kwargs, adapter = self._forward_preprocess(**kwargs)
 
-        adapter = settings.adapter or ChatAdapter()
         if self._should_stream():
             with settings.context(caller_predict=self):
                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
