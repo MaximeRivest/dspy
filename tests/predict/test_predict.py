@@ -1825,3 +1825,88 @@ def test_custom_signature_types(caplog, enable_type_warnings):
         assert "Type mismatch for field 'query': expected Query" in caplog.text
     else:
         assert "Type mismatch" not in caplog.text
+
+
+class CountingAdapter(dspy.ChatAdapter):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return super().__call__(*args, **kwargs)
+
+    async def acall(self, *args, **kwargs):
+        self.calls += 1
+        return await super().acall(*args, **kwargs)
+
+
+def test_reset_clears_adapter():
+    predict_instance = Predict("input -> output")
+    predict_instance.adapter = CountingAdapter()
+    predict_instance.reset()
+    assert predict_instance.adapter is None
+
+
+def test_adapter_precedence_call_over_predict_over_settings():
+    settings_adapter = CountingAdapter()
+    predict_adapter = CountingAdapter()
+    call_adapter = CountingAdapter()
+
+    program = Predict("question -> answer")
+    dspy.configure(lm=DummyLM([{"answer": "ok"}] * 4), adapter=settings_adapter)
+
+    program(question="q")
+    assert (settings_adapter.calls, predict_adapter.calls, call_adapter.calls) == (1, 0, 0)
+
+    program.adapter = predict_adapter
+    program(question="q")
+    assert (settings_adapter.calls, predict_adapter.calls, call_adapter.calls) == (1, 1, 0)
+
+    program(question="q", adapter=call_adapter)
+    assert (settings_adapter.calls, predict_adapter.calls, call_adapter.calls) == (1, 1, 1)
+
+    # Explicit adapter=None falls back to the settings adapter, like lm=None.
+    program.adapter = None
+    program(question="q", adapter=None)
+    assert (settings_adapter.calls, predict_adapter.calls, call_adapter.calls) == (2, 1, 1)
+
+
+def test_adapter_kwarg_is_reserved_not_an_input(caplog):
+    program = Predict("question -> answer")
+    dspy.configure(lm=DummyLM([{"answer": "ok"}]))
+
+    with caplog.at_level(logging.WARNING, logger="dspy.predict.predict"):
+        result = program(question="q", adapter=CountingAdapter())
+
+    assert result.answer == "ok"
+    assert "fields not in signature" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_adapter_precedence_async_parity():
+    predict_adapter = CountingAdapter()
+    call_adapter = CountingAdapter()
+
+    program = Predict("question -> answer")
+    program.adapter = predict_adapter
+    dspy.configure(lm=DummyLM([{"answer": "ok"}] * 2))
+
+    result = await program.acall(question="q")
+    assert result.answer == "ok"
+    assert (predict_adapter.calls, call_adapter.calls) == (1, 0)
+
+    await program.acall(question="q", adapter=call_adapter)
+    assert (predict_adapter.calls, call_adapter.calls) == (1, 1)
+
+
+def test_adapter_is_not_serialized():
+    program = Predict("question -> answer")
+    program.adapter = CountingAdapter()
+
+    state = program.dump_state()
+    assert "adapter" not in state
+
+    loaded = Predict("question -> answer")
+    loaded.load_state(state)
+    assert loaded.adapter is None
