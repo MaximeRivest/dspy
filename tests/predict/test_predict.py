@@ -1825,3 +1825,78 @@ def test_custom_signature_types(caplog, enable_type_warnings):
         assert "Type mismatch for field 'query': expected Query" in caplog.text
     else:
         assert "Type mismatch" not in caplog.text
+
+
+class TaggedAdapter(dspy.ChatAdapter):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append("sync")
+        return super().__call__(*args, **kwargs)
+
+    async def acall(self, *args, **kwargs):
+        self.calls.append("async")
+        return await super().acall(*args, **kwargs)
+
+
+def test_reset_clears_adapter():
+    predict_instance = Predict("input -> output")
+    predict_instance.adapter = TaggedAdapter()
+    predict_instance.reset()
+    assert predict_instance.adapter is None
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+def test_adapter_precedence(is_async):
+    lm = DummyLM([{"output": "test output"} for _ in range(4)])
+    dspy.configure(lm=lm)
+    predict_instance = Predict("input -> output")
+
+    async def run(**kwargs):
+        if is_async:
+            return await predict_instance.acall(input="test", **kwargs)
+        return predict_instance(input="test", **kwargs)
+
+    mode = "async" if is_async else "sync"
+
+    # settings.adapter is used when nothing else is set.
+    settings_adapter = TaggedAdapter()
+    with dspy.context(adapter=settings_adapter):
+        asyncio.run(run())
+        assert settings_adapter.calls == [mode]
+
+        # Predict-level adapter overrides settings.
+        predict_adapter = TaggedAdapter()
+        predict_instance.adapter = predict_adapter
+        asyncio.run(run())
+        assert predict_adapter.calls == [mode]
+        assert settings_adapter.calls == [mode]
+
+        # Call-level adapter overrides Predict-level.
+        call_adapter = TaggedAdapter()
+        asyncio.run(run(adapter=call_adapter))
+        assert call_adapter.calls == [mode]
+        assert predict_adapter.calls == [mode]
+
+        # Explicit adapter=None falls through to settings, like lm=None.
+        asyncio.run(run(adapter=None))
+        assert predict_adapter.calls == [mode]
+        assert settings_adapter.calls == [mode, mode]
+
+
+def test_adapter_kwarg_is_reserved(caplog):
+    lm = DummyLM([{"output": "test output"}])
+    dspy.configure(lm=lm)
+    predict_instance = Predict("input -> output")
+    with caplog.at_level(logging.WARNING, logger="dspy.predict.predict"):
+        predict_instance(input="test", adapter=TaggedAdapter())
+    assert "not in signature" not in caplog.text
+
+
+def test_adapter_excluded_from_dump_state():
+    predict_instance = Predict("input -> output")
+    predict_instance.adapter = TaggedAdapter()
+    state = predict_instance.dump_state()
+    assert "adapter" not in state
