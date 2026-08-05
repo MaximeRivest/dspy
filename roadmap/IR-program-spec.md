@@ -585,6 +585,37 @@ field's *type*, which mutates the signature: the sacred thing. Migration
 compat: legacy type annotations imply default roles (`Reasoning` ⇒ shape
 `str` + `semantic_role: reasoning`) for the deprecation arc.
 
+**Authoring syntax (ratified 2026-08-05): `Annotated` markers are the
+cross-surface primitive; everything else is sugar over them.** Python's
+`typing.Annotated[T, metadata]` is the language's own shape/role split — the
+first argument is the shape, the metadata the role — so dspy defines role
+**marker objects** once and every signature surface consumes the same
+registry entries, four spellings of one object:
+
+| spelling | surface | note |
+|---|---|---|
+| `Annotated[str, citations]` | all | canonical; type-checker-transparent (checkers see `str`) |
+| `citations[str]` | all (interactive sugar) | marker `__getitem__` returns the `Annotated` form; nests meaningfully (`list[citations[str]]` ≠ `citations[list[str]]`) |
+| `answer: str @citations` | string signatures | `@role` after the field (after the type if present); bare `@reasoning` defaults shape `str`; unknown role errors eagerly listing the vocabulary |
+| `OutputField(role="citations")` | class signatures | field-metadata kwarg, eager validation |
+
+Conflicting spellings on one field refuse loudly; the legacy types are
+documented as the *fused* spelling (`Reasoning` ≡ `Annotated[str,
+reasoning]`) — not wrong, just pre-factoring. The unification's reach is the
+point: **FunctAI** (plain Python function signatures under an `@ai`
+decorator — a third signature surface) consumes the markers natively
+(`def f(docs: media[list[Document]]) -> citations[str]`) with no translation
+layer, because it compiles to dspy signatures and the derivation rule simply
+unwraps `Annotated` metadata like any other wrapper. Its doctrine alignment:
+body-*declared* intermediate fields (`reasoning: str = _ai[...]`) are
+contractual — the user wrote them; auto-inserted CoT with no body assignment
+is mechanism → the observability channel (§d-sacred); derivation from a bare
+variable *name* is a warned convenience, `Annotated` the truth (name-based
+inference is the aliasing hole the role system exists to close). The
+pleasing symmetry: the legacy `Reasoning` type was shape pretending to carry
+a role; `citations[str]` is a role visibly parameterized by shape — the same
+compact spelling users like, the correct factoring underneath.
+
 <a name="tool-notes"></a>**§Tool-notes — two net-new pieces.** dspy has tool
 *identity* (`LMToolSpec`: `name` + `parameters`) but (1) **zero tool-body
 serialization** and (2) **no return-schema slot** (`parameters` is arg-schema
