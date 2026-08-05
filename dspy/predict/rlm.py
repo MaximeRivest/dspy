@@ -550,11 +550,10 @@ class RLM(Module):
             repl_history=history,
         )
 
-        return Prediction(
-            trajectory=[e.model_dump() for e in history],
-            final_reasoning="Extract forced final output",
-            **{name: getattr(extract_pred, name) for name in output_field_names},
-        )
+        prediction = Prediction(**{name: getattr(extract_pred, name) for name in output_field_names})
+        prediction._trajectory["trajectory"] = [e.model_dump() for e in history]
+        prediction._trajectory["final_reasoning"] = "Extract forced final output"
+        return prediction
 
     def _process_final_output(
         self,
@@ -629,11 +628,10 @@ class RLM(Module):
             final_history = history.append(
                 reasoning=pred.reasoning, code=code, output=f"FINAL: {parsed_outputs}"
             )
-            return Prediction(
-                **parsed_outputs,
-                trajectory=[e.model_dump() for e in final_history],
-                final_reasoning=pred.reasoning,
-            )
+            prediction = Prediction(**parsed_outputs)
+            prediction._trajectory["trajectory"] = [e.model_dump() for e in final_history]
+            prediction._trajectory["final_reasoning"] = pred.reasoning
+            return prediction
 
         # Format non-final result as output
         if isinstance(result, list):
@@ -745,11 +743,10 @@ class RLM(Module):
             repl_history=history,
         )
 
-        return Prediction(
-            trajectory=[e.model_dump() for e in history],
-            final_reasoning="Extract forced final output",
-            **{name: getattr(extract_pred, name) for name in output_field_names},
-        )
+        prediction = Prediction(**{name: getattr(extract_pred, name) for name in output_field_names})
+        prediction._trajectory["trajectory"] = [e.model_dump() for e in history]
+        prediction._trajectory["final_reasoning"] = "Extract forced final output"
+        return prediction
 
     async def _aexecute_iteration(
         self,

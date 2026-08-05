@@ -137,4 +137,6 @@ class CodeAct(ReAct, ProgramOfThought):
                     break
 
             extract = self._call_with_potential_trajectory_truncation(self.extractor, trajectory, **kwargs)
-            return dspy.Prediction(trajectory=trajectory, **extract)
+            prediction = dspy.Prediction(**extract)
+            prediction._trajectory["trajectory"] = trajectory
+            return prediction

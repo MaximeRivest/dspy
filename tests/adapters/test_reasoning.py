@@ -96,12 +96,12 @@ def test_reasoning_with_chain_of_thought():
     cot = dspy.ChainOfThought("question -> answer")
     result = cot(question="What is the answer?")
 
-    # Test that we can use string methods on result.reasoning
-    assert isinstance(result.reasoning, str)
-    assert result.reasoning.strip() == "Let me think step by step"
-    assert result.reasoning.lower() == "let me think step by step"
-    assert "step by step" in result.reasoning
-    assert len(result.reasoning) == 25
+    # Test that we can use string methods on result._trajectory["reasoning"]
+    assert isinstance(result._trajectory["reasoning"], str)
+    assert result._trajectory["reasoning"].strip() == "Let me think step by step"
+    assert result._trajectory["reasoning"].lower() == "let me think step by step"
+    assert "step by step" in result._trajectory["reasoning"]
+    assert len(result._trajectory["reasoning"]) == 25
 
 
 def test_reasoning_error_message():

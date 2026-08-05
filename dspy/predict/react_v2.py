@@ -121,7 +121,7 @@ class ReActV2(Module):
             pending_inputs = {}
 
             if final_outputs is not None:
-                return Prediction(**final_outputs, history=history, termination_reason="submit")
+                return _exhaust_prediction(final_outputs, history, "submit")
 
         return self._forced_submit(history, pending_inputs, break_reason, max_iters)
 
@@ -184,11 +184,11 @@ class ReActV2(Module):
             tool_calls = _ensure_tool_call_ids(_coerce_tool_calls(getattr(pred, "tool_calls", None)), turn_index)
         except (AdapterParseError, ValueError, ContextWindowExceededError) as err:
             logger.warning("Forced submit failed: %s", format_error_for_lm(err, traceback_frames=5))
-            return Prediction(history=history, termination_reason=break_reason or "failed")
+            return _exhaust_prediction(None, history, break_reason or "failed")
 
         submit_calls = ToolCalls(tool_calls=[call for call in tool_calls.tool_calls if call.name == "submit"])
         if not submit_calls.tool_calls:
-            return Prediction(history=history, termination_reason=break_reason or "failed")
+            return _exhaust_prediction(None, history, break_reason or "failed")
 
         tool_call_results, final_outputs = self._execute_tool_calls(submit_calls)
         event = self._history_event(pending_inputs, pred, submit_calls, tool_call_results)
@@ -197,9 +197,21 @@ class ReActV2(Module):
         _append_history_event(history, event)
 
         if final_outputs is not None:
-            return Prediction(**final_outputs, history=history, termination_reason="forced_submit")
+            return _exhaust_prediction(final_outputs, history, "forced_submit")
 
-        return Prediction(history=history, termination_reason=break_reason or "failed")
+        return _exhaust_prediction(None, history, break_reason or "failed")
+
+
+def _exhaust_prediction(
+    final_outputs: dict[str, Any] | None,
+    history: dspy.History,
+    termination_reason: str,
+) -> Prediction:
+    """Build a Prediction whose declared outputs come from `final_outputs`, with run exhaust on the channel."""
+    prediction = Prediction(**(final_outputs or {}))
+    prediction._trajectory["history"] = history
+    prediction._trajectory["termination_reason"] = termination_reason
+    return prediction
 
 
 def _json_schema_for_annotation(annotation: Any) -> dict[str, Any]:

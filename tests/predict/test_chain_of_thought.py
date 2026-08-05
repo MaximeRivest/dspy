@@ -52,8 +52,8 @@ def test_chain_of_thought_with_native_reasoning():
         cot = ChainOfThought("question -> answer")
         result = cot(question="What is the capital of France?")
         assert result.answer == "Paris"
-        assert isinstance(result.reasoning, str)
-        assert result.reasoning == "Step-by-step thinking about the capital of France"
+        assert isinstance(result._trajectory["reasoning"], str)
+        assert result._trajectory["reasoning"] == "Step-by-step thinking about the capital of France"
 
         args, kwargs = mock_completion.call_args
 
@@ -82,4 +82,4 @@ def test_chain_of_thought_with_manual_reasoning():
         cot = ChainOfThought("question -> answer")
         result = cot(question="What is the capital of France?")
         assert result.answer == "Paris"
-        assert result.reasoning == "Step-by-step thinking about the capital of France"
+        assert result._trajectory["reasoning"] == "Step-by-step thinking about the capital of France"

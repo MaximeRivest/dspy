@@ -25,11 +25,16 @@ class ChainOfThought(Module):
         **config: Additional keyword arguments forwarded to the underlying
             ``dspy.Predict`` module.
 
+    The generated reasoning is mechanism exhaust, not a declared output: it is
+    delivered on the prediction's `_trajectory` channel under the key
+    ``"reasoning"``. If your signature itself declares a ``reasoning`` output
+    field, it is part of your contract and stays a regular prediction field.
+
     Example:
         >>> import dspy
         >>> cot = dspy.ChainOfThought("question -> answer")
         >>> result = cot(question="What is the capital of France?")
-        >>> print(result.reasoning)
+        >>> print(result._trajectory["reasoning"])
         >>> print(result.answer)
     """
 
@@ -42,14 +47,21 @@ class ChainOfThought(Module):
     ):
         super().__init__()
         signature = ensure_signature(signature)
+        self._reasoning_is_declared = "reasoning" in signature.output_fields
         desc = "${reasoning}"
         rationale_field_type = rationale_field.annotation if rationale_field else rationale_field_type
         rationale_field = rationale_field if rationale_field else dspy.OutputField(desc=desc)
         extended_signature = signature.prepend(name="reasoning", field=rationale_field, type_=rationale_field_type)
         self.predict = dspy.Predict(extended_signature, **config)
 
+    def _route_reasoning(self, prediction):
+        """Move undeclared reasoning to the trajectory channel; declared reasoning stays contractual."""
+        if not self._reasoning_is_declared and "reasoning" in prediction._store:
+            prediction._trajectory["reasoning"] = prediction._store.pop("reasoning")
+        return prediction
+
     def forward(self, **kwargs):
-        return self.predict(**kwargs)
+        return self._route_reasoning(self.predict(**kwargs))
 
     async def aforward(self, **kwargs):
-        return await self.predict.acall(**kwargs)
+        return self._route_reasoning(await self.predict.acall(**kwargs))

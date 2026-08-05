@@ -118,7 +118,9 @@ class ReAct(Module):
                 break
 
         extract = self._call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)
-        return dspy.Prediction(trajectory=trajectory, **extract)
+        prediction = dspy.Prediction(**extract)
+        prediction._trajectory["trajectory"] = trajectory
+        return prediction
 
     async def aforward(self, **input_args):
         trajectory = {}
@@ -146,7 +148,9 @@ class ReAct(Module):
                 break
 
         extract = await self._async_call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)
-        return dspy.Prediction(trajectory=trajectory, **extract)
+        prediction = dspy.Prediction(**extract)
+        prediction._trajectory["trajectory"] = trajectory
+        return prediction
 
     def _call_with_potential_trajectory_truncation(self, module, trajectory, **input_args):
         last_error = None

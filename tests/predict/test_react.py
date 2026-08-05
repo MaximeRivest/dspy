@@ -130,7 +130,7 @@ def test_tool_calling_with_pydantic_args():
         "tool_args_1": {},
         "observation_1": "Completed.",
     }
-    assert outputs.trajectory == expected_trajectory
+    assert outputs._trajectory["trajectory"] == expected_trajectory
 
 
 def test_react_with_tools_skips_native_response_issubclass_for_generic_alias(monkeypatch):
@@ -175,8 +175,8 @@ def test_react_with_tools_skips_native_response_issubclass_for_generic_alias(mon
         result = react(user_request="Help me, my name is Adam")
 
     assert result.process_result == "Resolved Adam's request."
-    assert result.trajectory["tool_name_0"] == "get_user_info"
-    assert result.trajectory["tool_args_0"] == {"name": "Adam"}
+    assert result._trajectory["trajectory"]["tool_name_0"] == "get_user_info"
+    assert result._trajectory["trajectory"]["tool_args_0"] == {"name": "Adam"}
 
 
 def test_tool_calling_without_typehint():
@@ -208,7 +208,7 @@ def test_tool_calling_without_typehint():
         "tool_args_1": {},
         "observation_1": "Completed.",
     }
-    assert outputs.trajectory == expected_trajectory
+    assert outputs._trajectory["trajectory"] == expected_trajectory
 
 
 def test_trajectory_truncation():
@@ -247,8 +247,8 @@ def test_trajectory_truncation():
     result = react(input_text="test input")
 
     # Verify that older entries in the trajectory were truncated
-    assert "thought_0" not in result.trajectory
-    assert "thought_2" in result.trajectory
+    assert "thought_0" not in result._trajectory["trajectory"]
+    assert "thought_2" in result._trajectory["trajectory"]
     assert result.output_text == "Final output"
 
 
@@ -312,7 +312,7 @@ async def test_context_window_exceeded_after_retries():
     react.extract = mock_extract
 
     result = react(input_text="test input")
-    assert result.trajectory == {}
+    assert result._trajectory["trajectory"] == {}
     assert result.output_text == "Fallback output"
     assert len(extract_calls) == 1
     assert extract_calls[0]["input_text"] == "test input"
@@ -332,7 +332,7 @@ async def test_context_window_exceeded_after_retries():
     react.extract.acall = mock_extract_async
 
     result = await react.acall(input_text="test input")
-    assert result.trajectory == {}
+    assert result._trajectory["trajectory"] == {}
     assert result.output_text == "Fallback output"
     assert len(async_extract_calls) == 1
     assert async_extract_calls[0]["input_text"] == "test input"
@@ -365,7 +365,7 @@ def test_error_retry():
     dspy.configure(lm=lm)
 
     outputs = react(a=1, b=2, max_iters=2)
-    traj = outputs.trajectory
+    traj = outputs._trajectory["trajectory"]
 
     # --- exact-match checks (thoughts + tool calls) -------------------------
     control_expected = {
@@ -405,7 +405,7 @@ def test_tool_error_observation_format():
     dspy.configure(lm=lm)
 
     outputs = react(question="What happens?", max_iters=1)
-    obs = outputs.trajectory["observation_0"]
+    obs = outputs._trajectory["trajectory"]["observation_0"]
 
     assert obs.startswith("Execution error in failing_tool: \nTraceback (most recent call last):")
     assert obs.endswith("ValueError: tool blew up")
@@ -486,7 +486,7 @@ async def test_async_tool_calling_with_pydantic_args():
         "tool_args_1": {},
         "observation_1": "Completed.",
     }
-    assert outputs.trajectory == expected_trajectory
+    assert outputs._trajectory["trajectory"] == expected_trajectory
 
 
 @pytest.mark.asyncio
@@ -514,7 +514,7 @@ async def test_async_error_retry():
     )
     with dspy.context(lm=lm):
         outputs = await react.acall(a=1, b=2, max_iters=2)
-    traj = outputs.trajectory
+    traj = outputs._trajectory["trajectory"]
 
     # Exact-match checks (thoughts + tool calls)
     control_expected = {

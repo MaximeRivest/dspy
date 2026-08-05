@@ -773,7 +773,7 @@ class TestRLMMaxIterationsFallback:
 
         result = rlm.forward(mock, query="test")
         assert result.answer == "extracted_answer"
-        assert result.final_reasoning == "Extract forced final output"
+        assert result._trajectory["final_reasoning"] == "Extract forced final output"
 
 
 class TestRLMToolExceptions:
@@ -811,7 +811,7 @@ class TestRLMToolExceptions:
 
         result = rlm.forward(mock, query="test")
         assert result.answer == "recovered"
-        first_step = result.trajectory[0]
+        first_step = result._trajectory["trajectory"][0]
         assert first_step["code"] == "print(x)"
 
     def test_syntax_error_from_execute_is_recoverable(self):
@@ -828,7 +828,7 @@ class TestRLMToolExceptions:
 
         result = rlm.forward(mock, query="test")
         assert result.answer == "recovered"
-        assert result.trajectory[0]["output"].startswith("[Error] invalid syntax")
+        assert result._trajectory["trajectory"][0]["output"].startswith("[Error] invalid syntax")
 
     def test_syntax_error_from_strip_code_fences_is_recoverable(self):
         """SyntaxError raised by _strip_code_fences (e.g. non-Python fence tag) should be recoverable."""
@@ -843,7 +843,7 @@ class TestRLMToolExceptions:
 
         result = rlm.forward(mock, query="test")
         assert result.answer == "recovered"
-        assert result.trajectory[0]["output"].startswith("[Error]")
+        assert result._trajectory["trajectory"][0]["output"].startswith("[Error]")
 
     def test_interpreter_failure_propagates(self):
         """Process and protocol failures must not fall through to LM extraction."""
@@ -1373,7 +1373,7 @@ class TestRLMWithDummyLM:
             result = rlm.forward(pooled_interpreter, query="Double ten")
 
             assert result.answer == 20
-            assert len(result.trajectory) == 2
+            assert len(result._trajectory["trajectory"]) == 2
 
     def test_with_input_variables_e2e(self, pooled_interpreter):
         """Test RLM with input variables passed to sandbox."""
@@ -1469,7 +1469,7 @@ class TestRLMWithDummyLM:
             result = await rlm.aforward(query="Double ten")
 
             assert result.answer == 20
-            assert len(result.trajectory) == 2
+            assert len(result._trajectory["trajectory"]) == 2
 
     @pytest.mark.asyncio
     async def test_aforward_with_input_variables_e2e(self):
