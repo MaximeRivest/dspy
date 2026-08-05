@@ -515,6 +515,40 @@ the sacred line (§d-sacred):
   literal-table keys, and there will be pressure to add roles that are
   really shapes — the test for admission is *does it change how the exchange
   is conducted?* If not, it is a shape, not a role.
+
+  **Where the vocabulary comes from — the typed-LM grounding.** The roles
+  are not invented taste: they are the **field-level projection of the
+  typed LM contract** (`LMRequest`/`LMResponse`) into the signature —
+  `tools` → the request's tool specs, `tool_calls` → the response's
+  tool-call channel, `reasoning` → the native reasoning channel,
+  `citations` → citation blocks, `media` → content parts, `history` → the
+  message list, `plain` → the degenerate text channel (`code` projects onto
+  the interpreter leaf — and is collapsing toward the contract too, as
+  providers ship native code execution). This grounds the admission rule in
+  something checkable: a role exists iff it admits **at least two
+  materially different strategies, one of which escapes the token stream**
+  — if LLMs were pure text-in/text-out, "reasoning" would be a wording
+  choice (instruction text, optimizable as such), not a role. A textual
+  strategy is therefore a **polyfill**: dspy renders the role in token
+  space for models lacking the channel, exactly as web frameworks
+  polyfilled features before browsers shipped them — and history has run
+  this loop three times (CoT prompting → native reasoning channels; ReAct
+  textual tool use → function-calling APIs; quote-your-sources prompting →
+  native citations): the pattern precedes the channel, and the role marker
+  is what makes the polyfill→native transition free — the signature
+  declared the intent all along; a new native strategy joins the pool and a
+  binding flips. Two governance consequences: admitting a role is a **bet
+  about the contract** (it must project onto an existing
+  `LMRequest`/`LMResponse` capability, or be a credible polyfill-first
+  candidate providers may channelize); and the vocabulary
+  **version-tracks the contract** — when providers converge on a new
+  channel, the contract grows the field and the vocabulary grows the role,
+  in lockstep, with a mismatch between the two being a spec bug. The
+  dependency runs through the *contract*, never through any particular
+  provider — provider-keyed roles would fork the vocabulary per vendor,
+  the exact provider-hack disease the engine's strategies evicted from the
+  semantic types; the typed contract is the neutral middle layer providers
+  negotiate with via capability declarations.
 - **Strategy is mechanism → component 4**, the `strategies` block: per role,
   a named strategy binding — `reasoning: native_channel | textual_field |
   prefill`; `tools: native_fc | textual_json | xml_dispatch`; `citations:
