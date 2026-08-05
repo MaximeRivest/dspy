@@ -81,9 +81,7 @@ Shipped now (derive-and-record):
 
 ## 6. The strategy-resolution bridge
 
-Today (post-Epic A) strategies resolve **by annotation type**: `field_strategy_for(annotation)`. End state (spec): component 4's
-`strategies` block binds **per role** — `reasoning: native_channel |
-textual_field`, resolved against LM capabilities at bake. The bridge, in three stages, each shippable alone:
+Today (post-Epic A) strategies resolve **by annotation type**: `field_strategy_for(annotation)`. End state (spec): component 4's `strategies` block binds **per role** — `reasoning: native_channel | textual_field`, resolved against LM capabilities at bake. The bridge, in three stages, each shippable alone:
 
 1. **Record** (this epic): every `RenderField` carries its role. Resolution unchanged.
 2. **Double-key** (cutover epic, PR-stacked): the registry becomes role-keyed with the annotation-keyed lookup as compat — `strategy_for(role, annotation)` tries the role table first, falls back to `field_strategy_for(annotation)`, and `strategy_trace` records which key resolved. Built-ins register under both keys; byte-identical by construction, proven by the corpus.
