@@ -188,3 +188,146 @@ def test_contribute_returns_adapter_patch():
     strategy = NativeReasoningStrategy()
     assert strategy.applies(ctx)
     assert isinstance(strategy.contribute(ctx), AdapterPatch)
+
+
+class _BadgeNative(dspy.Type):
+    """Third-party fixture: a custom native type used both ways below."""
+
+    content: str = "x"
+
+    @classmethod
+    def adapt_to_native_lm_feature(cls, signature, field_name, lm, lm_kwargs):
+        lm_kwargs["badge_flag"] = True
+        return signature.delete(field_name)
+
+    @classmethod
+    def parse_lm_response(cls, output):
+        channel = output.get("badge") if isinstance(output, dict) else None
+        return cls(content=channel) if channel is not None else None
+
+    @classmethod
+    def description(cls):
+        return "badge"
+
+
+class _BadgeSig(dspy.Signature):
+    question: str = dspy.InputField()
+    badge: _BadgeNative = dspy.OutputField()
+    answer: str = dspy.OutputField()
+
+
+class _BadgeStrategy:
+    """The same behavior expressed as a proper TypeStrategy."""
+
+    name = "badge.native"
+    priority = 500
+    exclusive_group = "badge.representation"
+
+    def applies(self, ctx) -> bool:
+        return True
+
+    def contribute(self, ctx) -> AdapterPatch:
+        from dspy.adapters._engine.parser_hook import ThirdPartyNativeParserHook
+        from dspy.adapters._engine.transforms import HideOutputField
+
+        ctx.lm_kwargs["badge_flag"] = True
+        return AdapterPatch(
+            field_transforms=[HideOutputField(ctx.field.name, reason="native:_BadgeNative")],
+            parsers=[ThirdPartyNativeParserHook(_BadgeNative, ctx.field.name)],
+        )
+
+
+def _badge_plan_effects(built, lm_kwargs):
+    """The observable plan effects both paths must agree on."""
+    from dspy.adapters._engine.parser_hook import ThirdPartyNativeParserHook
+
+    assert lm_kwargs == {"badge_flag": True}
+    assert built.plan.metadata["native_feature_kwargs"]["_BadgeNative"] == {"badge_flag": True}
+    assert "badge" not in built.render_signature.output_fields
+    assert built.plan.find_field("output", "badge").hidden
+    hooks = [p for p in built.plan.parsers if isinstance(p, ThirdPartyNativeParserHook)]
+    assert len(hooks) == 1 and hooks[0].annotation is _BadgeNative and hooks[0].destination == "badge"
+
+
+def test_third_party_both_ways_equivalent_plans():
+    """The same custom type via the legacy hook (auto-wrap) and via direct
+    strategy registration: identical plan effects, distinct trace names."""
+    from dspy.adapters._engine.strategies import register_field_strategy, unregister_field_strategy
+
+    adapter = ChatAdapter(native_response_types=[_BadgeNative])
+
+    # Way 1: unregistered -> auto-wrapped legacy hook.
+    legacy_kwargs = {}
+    legacy_built = build_plan(adapter, _lm(), legacy_kwargs, _BadgeSig, {"question": "Q?"})
+    _badge_plan_effects(legacy_built, legacy_kwargs)
+    legacy_trace = [t for t in legacy_built.plan.strategy_trace if t.field == "badge"]
+    assert len(legacy_trace) == 1
+    assert legacy_trace[0].strategy == "type_hook:_BadgeNative"
+    assert legacy_trace[0].decision == "selected"
+    assert legacy_trace[0].reason == "third-party adapt_to_native_lm_feature"
+
+    # Way 2: registered proper strategy.
+    register_field_strategy(_BadgeNative, _BadgeStrategy())
+    try:
+        registered_kwargs = {}
+        registered_built = build_plan(adapter, _lm(), registered_kwargs, _BadgeSig, {"question": "Q?"})
+        _badge_plan_effects(registered_built, registered_kwargs)
+        registered_trace = [t for t in registered_built.plan.strategy_trace if t.field == "badge"]
+        assert len(registered_trace) == 1
+        assert registered_trace[0].strategy == "badge.native"
+        assert registered_trace[0].decision == "selected"
+        assert registered_trace[0].reason == "applies"
+
+        # Same hidden-field transforms either way.
+        assert [type(t).__name__ for t in legacy_built.plan.field_transforms] == [
+            type(t).__name__ for t in registered_built.plan.field_transforms
+        ]
+    finally:
+        unregister_field_strategy(_BadgeNative)
+
+
+def test_unregister_restores_the_auto_wrap():
+    from dspy.adapters._engine.strategies import (
+        LegacyTypeHookStrategy,
+        field_strategy_for,
+        register_field_strategy,
+        unregister_field_strategy,
+    )
+
+    register_field_strategy(_BadgeNative, _BadgeStrategy())
+    assert isinstance(field_strategy_for(_BadgeNative), _BadgeStrategy)
+    unregister_field_strategy(_BadgeNative)
+    assert isinstance(field_strategy_for(_BadgeNative), LegacyTypeHookStrategy)
+
+
+def test_builtins_resolve_through_the_uniform_path():
+    from dspy.adapters._engine.strategies import field_strategy_for
+
+    assert isinstance(field_strategy_for(Reasoning), NativeReasoningStrategy)
+    assert isinstance(field_strategy_for(Citations), NativeCitationsStrategy)
+
+
+def test_legacy_wrapper_no_effects_reports_skipped():
+    """A hook that does nothing must trace 'skipped' — the observed-effects
+    decision rule, byte-identical to the inline block it replaced."""
+
+    class _InertNative(dspy.Type):
+        content: str = "x"
+
+        @classmethod
+        def adapt_to_native_lm_feature(cls, signature, field_name, lm, lm_kwargs):
+            return signature
+
+        @classmethod
+        def description(cls):
+            return "inert"
+
+    class Sig(dspy.Signature):
+        question: str = dspy.InputField()
+        inert: _InertNative = dspy.OutputField()
+
+    adapter = ChatAdapter(native_response_types=[_InertNative])
+    built = build_plan(adapter, _lm(), {}, Sig, {"question": "Q?"})
+    trace = [t for t in built.plan.strategy_trace if t.strategy == "type_hook:_InertNative"]
+    assert len(trace) == 1 and trace[0].decision == "skipped"
+    assert "inert" in built.render_signature.output_fields
