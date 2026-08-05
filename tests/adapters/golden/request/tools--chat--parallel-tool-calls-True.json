@@ -29,8 +29,7 @@
                       }
                     },
                     "required": [
-                      "query",
-                      "k"
+                      "query"
                     ],
                     "type": "object"
                   }
@@ -95,8 +94,7 @@
                       }
                     },
                     "required": [
-                      "query",
-                      "k"
+                      "query"
                     ],
                     "type": "object"
                   }

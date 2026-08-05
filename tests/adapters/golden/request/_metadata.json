@@ -5,7 +5,7 @@
     "request": 143
   },
   "versions": {
-    "dspy": "3.3.0b1",
+    "dspy": "3.3.0",
     "json_repair": "0.54.2",
     "litellm": "1.68.0",
     "pydantic": "2.12.4",
