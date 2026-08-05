@@ -94,10 +94,28 @@ class Flex(Module, Parameter):
             "lm": self.lm.dump_state() if self.lm else None,
         }
 
-    def load_state(self, state: dict[str, Any], *, allow_unsafe_lm_state: bool = False) -> None:
+    def load_state(
+        self, state: dict[str, Any], *, allow_unsafe_lm_state: bool = False, lm: BaseLM | None = None
+    ) -> None:
+        """Load saved state.
+
+        Args:
+            state: State produced by `dump_state`.
+            allow_unsafe_lm_state: If True, preserves endpoint configuration from serialized LM
+                state and allows importing custom LM classes. Enable only for trusted files.
+            lm: If provided, use this LM instead of reconstructing one from the saved state. A
+                Flex has no named predictors, so only a single `dspy.BaseLM` is accepted here,
+                never a per-predictor mapping.
+        """
+        if lm is not None and not isinstance(lm, BaseLM):
+            raise ValueError(f"lm must be an instance of `dspy.BaseLM`, not {type(lm)}.")
+
         module_src = state.get("module_src")
         if module_src:
             self._bind_code(module_src)
+        if lm is not None:
+            self.lm = lm
+            return
         lm_state = state.get("lm")
         if lm_state:
             sanitized = _sanitize_lm_state(lm_state, allow_unsafe_lm_state)
