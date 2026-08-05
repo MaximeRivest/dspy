@@ -1,16 +1,28 @@
+import warnings
+
 from dspy.primitives.example import Example
 
 
 class Prediction(Example):
     """A prediction object that contains the output of a DSPy module.
-    
+
     Prediction inherits from Example.
-    
+
+    A Prediction's fields are exactly the output fields declared in the
+    module's signature. Mechanism exhaust — run artifacts a module produces
+    that the user never declared, such as ReAct's trajectory or
+    ChainOfThought's reasoning — lives in the `_trajectory` channel, a dict
+    keyed by artifact name. Read it directly (`prediction._trajectory`)
+    for debugging and instrumentation; it is observability metadata, not
+    part of the prediction contract, and is never serialized as program
+    state. Reading an exhaust key as a regular attribute
+    (`prediction.trajectory`) still works but emits a DeprecationWarning.
+
     To allow feedback-augmented scores, Prediction supports comparison operations
     (<, >, <=, >=) for Predictions with a `score` field. The comparison operations
     compare the 'score' values as floats. For equality comparison, Predictions are equal
     if their underlying data stores are equal (inherited from Example).
-    
+
     Arithmetic operations (+, /, etc.) are also supported for Predictions with a 'score'
     field, operating on the score value.
     """
@@ -23,6 +35,25 @@ class Prediction(Example):
 
         self._completions = None
         self._lm_usage = None
+        self._trajectory = {}
+
+    def __getattr__(self, key):
+        if key.startswith("_"):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{key}'")
+        try:
+            return super().__getattr__(key)
+        except AttributeError:
+            trajectory = self.__dict__.get("_trajectory")
+            if trajectory and key in trajectory:
+                warnings.warn(
+                    f"Reading '{key}' as a Prediction attribute is deprecated: it is mechanism "
+                    f"exhaust, not a declared output field. Use `prediction._trajectory[{key!r}]` "
+                    "instead, or declare the field in your signature if you depend on it.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                return trajectory[key]
+            raise
 
     def get_lm_usage(self):
         return self._lm_usage
