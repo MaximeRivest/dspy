@@ -24,7 +24,6 @@ from dspy.adapters._engine.formats import Format
 from dspy.adapters._engine.parse import parse_fields, parse_labeled_sections
 from dspy.adapters.types.tool import ToolCalls
 from dspy.adapters.utils import (
-    format_field_value,
     get_annotation_name,
     get_field_description_string,
     translate_field_type,
@@ -40,7 +39,7 @@ class ChatFormat(Format):
 
     def parse(self, signature, completion: str) -> dict[str, Any]:
         sections = parse_labeled_sections(completion, self.field_header_pattern)
-        return parse_fields(sections, signature, completion, self.parse_error_adapter_name)
+        return parse_fields(sections, signature, completion, self.parse_error_adapter_name, codec=self.output_codec)
 
     def render_field_description(self, signature) -> str:
         return (
@@ -84,7 +83,7 @@ class ChatFormat(Format):
         for k, v in signature.input_fields.items():
             if k in inputs:
                 value = inputs.get(k)
-                formatted_field_value = format_field_value(field_info=v, value=value)
+                formatted_field_value = self.input_codec.render_value(value, v)
                 messages.append(f"[[ ## {k} ## ]]\n{formatted_field_value}")
 
         if main_request:
@@ -116,15 +115,18 @@ class ChatFormat(Format):
         assistant_message_content += "\n\n[[ ## completed ## ]]\n"
         return assistant_message_content
 
-    def render_fields_with_values(self, fields_with_values: dict[str, tuple]) -> str:
+    def render_fields_with_values(self, fields_with_values: dict[str, tuple], codec=None) -> str:
         """Field blocks: ``[[ ## name ## ]]\\nvalue`` joined by blank lines.
 
         Takes ``{name: (field_info, value)}`` — the engine-internal shape of
         legacy ``format_field_with_value``'s ``FieldInfoWithName`` mapping.
+        ``codec`` selects the value syntax; defaults to the output binding
+        (this method's main callers render assistant/demo output blocks).
         """
+        codec = codec or self.output_codec
         output = []
         for name, (field_info, field_value) in fields_with_values.items():
-            formatted_field_value = format_field_value(field_info=field_info, value=field_value)
+            formatted_field_value = codec.render_value(field_value, field_info)
             output.append(f"[[ ## {name} ## ]]\n{formatted_field_value}")
 
         return "\n\n".join(output).strip()

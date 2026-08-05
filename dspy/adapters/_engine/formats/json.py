@@ -25,9 +25,7 @@ import regex
 from dspy.adapters._engine.formats.chat import ChatFormat
 from dspy.adapters.types.tool import ToolCalls
 from dspy.adapters.utils import (
-    format_field_value,
     get_annotation_name,
-    parse_value,
     serialize_for_json,
     translate_field_type,
 )
@@ -108,7 +106,7 @@ class JSONFormat(ChatFormat):
         # see module docstring.
         for k, v in fields.items():
             if k in signature.output_fields:
-                fields[k] = parse_value(v, signature.output_fields[k].annotation)
+                fields[k] = self.output_codec.parse_value(v, signature.output_fields[k].annotation)
 
         if fields.keys() != signature.output_fields.keys():
             raise AdapterParseError(
@@ -120,6 +118,6 @@ class JSONFormat(ChatFormat):
 
         return fields
 
-    # format_field_value is reused via ChatFormat for the user side; keep the
-    # import referenced for grep-ability of the shared dependency.
-    _shared_value_renderer = staticmethod(format_field_value)
+    # The user side inherits ChatFormat's input_codec routing; the JSON
+    # object rendering above is format-owned structure (whole-object
+    # serialization), not per-value codec territory.

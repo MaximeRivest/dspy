@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 from dspy.adapters._engine.formats.chat import ChatFormat
-from dspy.adapters.utils import format_field_value, parse_value, translate_field_type
+from dspy.adapters.utils import translate_field_type
 from dspy.utils.exceptions import AdapterParseError
 
 
@@ -24,10 +24,11 @@ class XMLFormat(ChatFormat):
     field_pattern = re.compile(r"<(?P<name>\w+)>((?P<content>.*?))</\1>", re.DOTALL)
     parse_error_adapter_name = "XMLAdapter"
 
-    def render_fields_with_values(self, fields_with_values: dict[str, tuple]) -> str:
+    def render_fields_with_values(self, fields_with_values: dict[str, tuple], codec=None) -> str:
+        codec = codec or self.output_codec
         output = []
         for name, (field_info, field_value) in fields_with_values.items():
-            formatted = format_field_value(field_info=field_info, value=field_value)
+            formatted = codec.render_value(field_value, field_info)
             output.append(f"<{name}>\n{formatted}\n</{name}>")
         return "\n\n".join(output).strip()
 
@@ -59,7 +60,8 @@ class XMLFormat(ChatFormat):
 
         messages.append(
             self.render_fields_with_values(
-                {k: (v, inputs.get(k)) for k, v in signature.input_fields.items() if k in inputs}
+                {k: (v, inputs.get(k)) for k, v in signature.input_fields.items() if k in inputs},
+                codec=self.input_codec,
             )
         )
 
@@ -102,7 +104,7 @@ class XMLFormat(ChatFormat):
 
     def _parse_field_value(self, field_info, raw, completion, signature):
         try:
-            return parse_value(raw, field_info.annotation)
+            return self.output_codec.parse_value(raw, field_info.annotation)
         except Exception as e:
             # Legacy quirk preserved: the message interpolates the FieldInfo
             # repr, not the field name.

@@ -1,28 +1,33 @@
 """BAMLFormat: BAMLAdapter's two overridden surfaces, frozen.
 
-Layered on JSONFormat exactly as BAMLAdapter subclasses JSONAdapter. Only
-the schema section ({name} placeholders plus simplified-type lines, joined
-with single newlines) and the user content (pydantic inputs rendered as
-``model_dump_json(indent=2, by_alias=True)``, with the empty-segment
-filter) differ; parsing and the assistant side are inherited from
-JSONFormat.
+Layered on JSONFormat exactly as BAMLAdapter subclasses JSONAdapter — and
+under the codec factoring, BAML decomposes visibly: it is JSONFormat plus
+an **input codec preference** (``PydanticJSONCodec`` — models as indented
+JSON) plus a schema-prose structure section. The empty-segment filter in
+user content is the one genuine format-level difference on that side;
+parsing and the assistant side are inherited from JSONFormat.
 
 The simplified-schema helpers are deliberately IMPORTED from
 ``dspy.adapters.baml_adapter`` rather than duplicated: they are pure
 module-level functions and the single source of those strings; the
-consolidation PR decides their final home.
+consolidation PR decides their final home. Schema prose is codec-adjacent
+(it describes what syntax is requested back) but stays a format literal
+until the codec pool exists — see roadmap/epic-B-shapes-codecs.md
+non-goals.
 """
 
 from typing import Any
 
-from pydantic import BaseModel
-
 from dspy.adapters._engine.formats.json import JSONFormat
 from dspy.adapters.baml_adapter import _render_type_str
-from dspy.adapters.utils import format_field_value
 
 
 class BAMLFormat(JSONFormat):
+    @property
+    def input_codec(self):
+        from dspy.adapters._engine.codecs import PYDANTIC_JSON
+
+        return PYDANTIC_JSON
     def render_field_structure(self, signature) -> str:
         sections = []
 
@@ -58,11 +63,7 @@ class BAMLFormat(JSONFormat):
         for key, field_info in signature.input_fields.items():
             if key in inputs:
                 value = inputs.get(key)
-                if isinstance(value, BaseModel):
-                    formatted_value = value.model_dump_json(indent=2, by_alias=True)
-                else:
-                    formatted_value = format_field_value(field_info=field_info, value=value)
-
+                formatted_value = self.input_codec.render_value(value, field_info)
                 messages.append(f"[[ ## {key} ## ]]\n{formatted_value}")
 
         if main_request:

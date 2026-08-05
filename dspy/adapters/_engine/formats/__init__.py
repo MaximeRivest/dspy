@@ -26,11 +26,28 @@ class Format:
     The pipeline-level demo strings live here (shared by every format
     today) so the renderer holds no literals at all; a format may override
     them.
+
+    Value syntax is delegated to codec bindings (``codecs.py``): a format
+    owns the structure of the exchange, its codecs own the wire syntax of
+    each value. The bindings are directional and independent — BAML proves
+    it by overriding only ``input_codec``.
     """
 
     incomplete_demo_prefix = "This is an example of the task, though some input or output fields are not supplied."
     incomplete_demo_missing_field_message = "Not supplied for this particular example. "
     complete_demo_missing_field_message = "Not supplied for this conversation history message. "
+
+    @property
+    def input_codec(self):
+        from dspy.adapters._engine.codecs import TEXT_PYTHONISH
+
+        return TEXT_PYTHONISH
+
+    @property
+    def output_codec(self):
+        from dspy.adapters._engine.codecs import TEXT_PYTHONISH
+
+        return TEXT_PYTHONISH
 
     def render_field_description(self, signature) -> str:
         raise NotImplementedError

@@ -9,13 +9,13 @@ whitespace); first occurrence of a header wins; the strict
 ``AdapterParseError`` shapes (per-field failure message, ``parsed_result``
 on incompleteness).
 
-Value coercion stays in ``dspy.adapters.utils.parse_value`` — the engine
-deliberately reuses it unchanged.
+Value coercion is delegated to the format's output codec
+(``codecs.ValueCodec.parse_value``); the default codec wraps
+``dspy.adapters.utils.parse_value`` unchanged.
 """
 
 from typing import Any
 
-from dspy.adapters.utils import parse_value
 from dspy.utils.exceptions import AdapterParseError
 
 
@@ -40,13 +40,18 @@ def parse_fields(
     signature,
     completion: str,
     adapter_name: str,
+    codec=None,
 ) -> dict[str, Any]:
     """Extract and coerce output fields from parsed sections."""
+    if codec is None:
+        from dspy.adapters._engine.codecs import TEXT_PYTHONISH
+
+        codec = TEXT_PYTHONISH
     fields = {}
     for k, v in sections:
         if (k not in fields) and (k in signature.output_fields):
             try:
-                fields[k] = parse_value(v, signature.output_fields[k].annotation)
+                fields[k] = codec.parse_value(v, signature.output_fields[k].annotation)
             except Exception as e:
                 raise AdapterParseError(
                     adapter_name=adapter_name,
