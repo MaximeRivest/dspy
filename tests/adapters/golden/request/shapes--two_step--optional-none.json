@@ -1,0 +1,76 @@
+{
+  "adapter": "two_step",
+  "adapter_kwargs": {},
+  "case_id": "shapes--two_step--optional-none",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `question` (str): \n2. `context` (UnionType[str, NoneType]):\nYour outputs must contain:\n1. `answer` (UnionType[str, NoneType]):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Answer if possible.",
+              "role": "system"
+            },
+            {
+              "content": "This is an example of the task, though some input or output fields are not supplied.\n\nquestion: Unknowable?\n\ncontext: None",
+              "role": "user"
+            },
+            {
+              "content": "answer: None",
+              "role": "assistant"
+            },
+            {
+              "content": "question: What is the capital of France?\n\ncontext: None",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `question` (str): \n2. `context` (UnionType[str, NoneType]):\nYour outputs must contain:\n1. `answer` (UnionType[str, NoneType]):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Answer if possible.",
+              "role": "system"
+            },
+            {
+              "content": "This is an example of the task, though some input or output fields are not supplied.\n\nquestion: Unknowable?\n\ncontext: None",
+              "role": "user"
+            },
+            {
+              "content": "answer: None",
+              "role": "assistant"
+            },
+            {
+              "content": "question: What is the capital of France?\n\ncontext: None",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:shapes"
+  ]
+}

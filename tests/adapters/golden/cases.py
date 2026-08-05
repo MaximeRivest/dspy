@@ -21,6 +21,7 @@ pipelines), ``history`` (tool-call replay), ``misc`` (n, logprobs,
 tool_choice passthrough), ``sink`` (kitchen-sink composites).
 """
 
+import enum
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any, Callable, Literal
@@ -79,6 +80,16 @@ class GoldenProfile(pydantic.BaseModel):
 class GoldenAnswerCard(pydantic.BaseModel):
     answer: str
     sources: list[str]
+
+
+class GoldenPriority(enum.Enum):
+    LOW = "low"
+    HIGH = "high"
+
+
+class GoldenTag(pydantic.BaseModel):
+    label: str
+    weight: float
 
 
 class GoldenEvent(dspy.Type):
@@ -447,6 +458,88 @@ def citations_payload():
     }
 
 
+def list_of_models_payload():
+    class GoldenTagging(dspy.Signature):
+        """Tag the document."""
+
+        document: str = InputField()
+        prior_tags: list[GoldenTag] = InputField()
+        tags: list[GoldenTag] = OutputField()
+
+    return {
+        "signature": GoldenTagging,
+        "demos": [
+            {
+                "document": "Old doc.",
+                "prior_tags": [GoldenTag(label="stale", weight=0.1)],
+                "tags": [GoldenTag(label="archive", weight=0.9), GoldenTag(label="dusty", weight=0.4)],
+            }
+        ],
+        "inputs": {
+            "document": "Fresh doc about compilers.",
+            "prior_tags": [GoldenTag(label="draft", weight=0.5)],
+        },
+    }
+
+
+def dict_field_payload():
+    class GoldenConfig(dspy.Signature):
+        """Extract settings."""
+
+        text: str = InputField()
+        overrides: dict[str, int] = InputField()
+        settings: dict[str, str] = OutputField()
+
+    return {
+        "signature": GoldenConfig,
+        "demos": [],
+        "inputs": {"text": "Use dark mode.", "overrides": {"retries": 3, "depth": 2}},
+    }
+
+
+def optional_none_payload():
+    class GoldenMaybe(dspy.Signature):
+        """Answer if possible."""
+
+        question: str = InputField()
+        context: str | None = InputField()
+        answer: str | None = OutputField()
+
+    return {
+        "signature": GoldenMaybe,
+        "demos": [{"question": "Unknowable?", "context": None, "answer": None}],
+        "inputs": {"question": "What is the capital of France?", "context": None},
+    }
+
+
+def unicode_payload():
+    class GoldenTranslate(dspy.Signature):
+        """Translate."""
+
+        text: str = InputField()
+        translation: str = OutputField()
+
+    return {
+        "signature": GoldenTranslate,
+        "demos": [{"text": "petit déjeuner", "translation": "早ご飯 — «breakfast» ✓"}],
+        "inputs": {"text": "cœur brisé 💔 naïve"},
+    }
+
+
+def enum_field_payload():
+    class GoldenTriage(dspy.Signature):
+        """Triage the ticket."""
+
+        ticket: str = InputField()
+        priority: GoldenPriority = OutputField()
+
+    return {
+        "signature": GoldenTriage,
+        "demos": [{"ticket": "Typo on docs page.", "priority": GoldenPriority.LOW}],
+        "inputs": {"ticket": "Prod is down."},
+    }
+
+
 def open_ended_payload():
     class GoldenExtract(dspy.Signature):
         """Extract everything."""
@@ -636,6 +729,28 @@ def build_registry() -> dict[str, Case]:
                     adapter=adapter,
                     payload=builder,
                     tags=("family:types",),
+                )
+            )
+
+    # -- value-encoding shapes through every adapter (Epic B pins) ------------
+    shape_payloads = {
+        "list-of-models": list_of_models_payload,
+        "dict-field": dict_field_payload,
+        "optional-none": optional_none_payload,
+        "unicode": unicode_payload,
+        "enum": enum_field_payload,
+    }
+    for adapter in ADAPTER_CLASSES:
+        for slug, builder in shape_payloads.items():
+            cases.append(
+                Case(
+                    id=f"shapes--{adapter}--{slug}",
+                    adapter=adapter,
+                    payload=builder,
+                    # Optional/union JSON schemas render differently on newer
+                    # CPython minors; the pinned parity job is the authority.
+                    python_sensitive=(slug == "optional-none"),
+                    tags=("family:shapes",),
                 )
             )
 

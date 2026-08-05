@@ -1,0 +1,60 @@
+{
+  "adapter": "two_step",
+  "adapter_kwargs": {},
+  "case_id": "shapes--two_step--dict-field",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `text` (str): \n2. `overrides` (dict[str, int]):\nYour outputs must contain:\n1. `settings` (dict[str, str]):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Extract settings.",
+              "role": "system"
+            },
+            {
+              "content": "text: Use dark mode.\n\noverrides: {'retries': 3, 'depth': 2}",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "You are a helpful assistant that can solve tasks based on user input.\nAs input, you will be provided with:\n1. `text` (str): \n2. `overrides` (dict[str, int]):\nYour outputs must contain:\n1. `settings` (dict[str, str]):\nYou should lay out your outputs in detail so that your answer can be understood by another agent\nSpecific instructions: Extract settings.",
+              "role": "system"
+            },
+            {
+              "content": "text: Use dark mode.\n\noverrides: {'retries': 3, 'depth': 2}",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:shapes"
+  ]
+}

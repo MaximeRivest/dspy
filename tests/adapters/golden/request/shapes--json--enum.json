@@ -1,0 +1,76 @@
+{
+  "adapter": "json",
+  "adapter_kwargs": {},
+  "case_id": "shapes--json--enum",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `ticket` (str):\nYour output fields are:\n1. `priority` (GoldenPriority):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## ticket ## ]]\n{ticket}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"priority\": \"{priority}        # note: the value you produce must be one of: low; high\"\n}\nIn adhering to this structure, your objective is: \n        Triage the ticket.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## ticket ## ]]\nTypo on docs page.",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"priority\": \"low\"\n}",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## ticket ## ]]\nProd is down.\n\nRespond with a JSON object in the following order of fields: `priority` (must be formatted as a valid Python GoldenPriority).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `ticket` (str):\nYour output fields are:\n1. `priority` (GoldenPriority):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\nInputs will have the following structure:\n\n[[ ## ticket ## ]]\n{ticket}\n\nOutputs will be a JSON object with the following fields.\n\n{\n  \"priority\": \"{priority}        # note: the value you produce must be one of: low; high\"\n}\nIn adhering to this structure, your objective is: \n        Triage the ticket.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## ticket ## ]]\nTypo on docs page.",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"priority\": \"low\"\n}",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## ticket ## ]]\nProd is down.\n\nRespond with a JSON object in the following order of fields: `priority` (must be formatted as a valid Python GoldenPriority).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:shapes"
+  ]
+}

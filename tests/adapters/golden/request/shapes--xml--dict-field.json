@@ -1,0 +1,60 @@
+{
+  "adapter": "xml",
+  "adapter_kwargs": {},
+  "case_id": "shapes--xml--dict-field",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str): \n2. `overrides` (dict[str, int]):\nYour output fields are:\n1. `settings` (dict[str, str]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n<text>\n{text}\n</text>\n\n<overrides>\n{overrides}\n</overrides>\n\n<settings>\n{settings}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"object\", \"additionalProperties\": {\"type\": \"string\"}}\n</settings>\nIn adhering to this structure, your objective is: \n        Extract settings.",
+              "role": "system"
+            },
+            {
+              "content": "<text>\nUse dark mode.\n</text>\n\n<overrides>\n{\"retries\": 3, \"depth\": 2}\n</overrides>\n\nRespond with the corresponding output fields wrapped in XML tags `<settings>`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str): \n2. `overrides` (dict[str, int]):\nYour output fields are:\n1. `settings` (dict[str, str]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n<text>\n{text}\n</text>\n\n<overrides>\n{overrides}\n</overrides>\n\n<settings>\n{settings}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"object\", \"additionalProperties\": {\"type\": \"string\"}}\n</settings>\nIn adhering to this structure, your objective is: \n        Extract settings.",
+              "role": "system"
+            },
+            {
+              "content": "<text>\nUse dark mode.\n</text>\n\n<overrides>\n{\"retries\": 3, \"depth\": 2}\n</overrides>\n\nRespond with the corresponding output fields wrapped in XML tags `<settings>`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:shapes"
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "adapter": "baml",
+  "adapter_kwargs": {},
+  "case_id": "shapes--baml--optional-none",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str): \n2. `context` (UnionType[str, NoneType]):\nYour output fields are:\n1. `answer` (UnionType[str, NoneType]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## context ## ]]\n{context}\n\n[[ ## answer ## ]]\nOutput field `answer` should be of type: string or null\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer if possible.",
+              "role": "system"
+            },
+            {
+              "content": "This is an example of the task, though some input or output fields are not supplied.\n\n[[ ## question ## ]]\nUnknowable?\n\n[[ ## context ## ]]\nNone",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"answer\": null\n}",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## question ## ]]\nWhat is the capital of France?\n\n[[ ## context ## ]]\nNone\n\nRespond with a JSON object in the following order of fields: `answer` (must be formatted as a valid Python UnionType[str, NoneType]).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str): \n2. `context` (UnionType[str, NoneType]):\nYour output fields are:\n1. `answer` (UnionType[str, NoneType]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## context ## ]]\n{context}\n\n[[ ## answer ## ]]\nOutput field `answer` should be of type: string or null\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer if possible.",
+              "role": "system"
+            },
+            {
+              "content": "This is an example of the task, though some input or output fields are not supplied.\n\n[[ ## question ## ]]\nUnknowable?\n\n[[ ## context ## ]]\nNone",
+              "role": "user"
+            },
+            {
+              "content": "{\n  \"answer\": null\n}",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## question ## ]]\nWhat is the capital of France?\n\n[[ ## context ## ]]\nNone\n\nRespond with a JSON object in the following order of fields: `answer` (must be formatted as a valid Python UnionType[str, NoneType]).",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:shapes"
+  ]
+}

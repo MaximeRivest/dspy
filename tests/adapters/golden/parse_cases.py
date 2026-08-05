@@ -31,10 +31,14 @@ from .cases import (
     STRUCTURED_LM,
     citations_payload,
     code_output_payload,
+    enum_field_payload,
+    list_of_models_payload,
     multifield_payload,
+    optional_none_payload,
     pydantic_io_payload,
     qa_payload,
     tools_payload,
+    unicode_payload,
 )
 from .harness import (
     CallbackProbe,
@@ -196,6 +200,77 @@ def build_parse_registry() -> dict[str, ParseCase]:
             tags=("family:parse", "coercion"),
         )
     )
+    # -- value-encoding shape coercion (Epic B pins) --------------------------
+    tags_chat = (
+        "[[ ## tags ## ]]\n"
+        '[{"label": "compilers", "weight": 0.8}, {"label": "systems", "weight": 0.3}]\n\n'
+        "[[ ## completed ## ]]"
+    )
+    cases.append(
+        ParseCase(
+            id="parse--chat--list-of-models",
+            adapter="chat",
+            adapter_kwargs={"use_json_adapter_fallback": False},
+            payload=list_of_models_payload,
+            responses=[[tags_chat]],
+            runners=("call", "parse"),
+            parse_text=tags_chat,
+            tags=("family:parse", "coercion", "shapes"),
+        )
+    )
+    tags_json = '{"tags": [{"label": "compilers", "weight": 0.8}, {"label": "systems", "weight": 0.3}]}'
+    cases.append(
+        ParseCase(
+            id="parse--json--list-of-models",
+            adapter="json",
+            payload=list_of_models_payload,
+            responses=[[tags_json]],
+            runners=("call", "parse"),
+            parse_text=tags_json,
+            tags=("family:parse", "coercion", "shapes"),
+        )
+    )
+    enum_chat = "[[ ## priority ## ]]\nhigh\n\n[[ ## completed ## ]]"
+    cases.append(
+        ParseCase(
+            id="parse--chat--enum-by-value",
+            adapter="chat",
+            adapter_kwargs={"use_json_adapter_fallback": False},
+            payload=enum_field_payload,
+            responses=[[enum_chat]],
+            runners=("call", "parse"),
+            parse_text=enum_chat,
+            tags=("family:parse", "coercion", "shapes"),
+        )
+    )
+    optional_chat = "[[ ## answer ## ]]\nnull\n\n[[ ## completed ## ]]"
+    cases.append(
+        ParseCase(
+            id="parse--chat--optional-null",
+            adapter="chat",
+            adapter_kwargs={"use_json_adapter_fallback": False},
+            payload=optional_none_payload,
+            responses=[[optional_chat]],
+            runners=("call", "parse"),
+            parse_text=optional_chat,
+            python_sensitive=True,
+            tags=("family:parse", "coercion", "shapes"),
+        )
+    )
+    unicode_chat = "[[ ## translation ## ]]\ncœur brisé 💔 — «naïve» ✓\n\n[[ ## completed ## ]]"
+    cases.append(
+        ParseCase(
+            id="parse--chat--unicode-passthrough",
+            adapter="chat",
+            adapter_kwargs={"use_json_adapter_fallback": False},
+            payload=unicode_payload,
+            responses=[[unicode_chat]],
+            runners=("call", "parse"),
+            parse_text=unicode_chat,
+            tags=("family:parse", "coercion", "shapes"),
+        )
+    )
+
     fenced_code = "[[ ## code ## ]]\n```python\nprint(1)\n```\n\n[[ ## completed ## ]]"
     cases.append(
         ParseCase(

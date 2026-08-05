@@ -1,0 +1,67 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {
+    "use_json_adapter_fallback": false
+  },
+  "case_id": "parse--chat--unicode-passthrough",
+  "expected": {
+    "call": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `text` (str):\nYour output fields are:\n1. `translation` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## text ## ]]\n{text}\n\n[[ ## translation ## ]]\n{translation}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Translate.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## text ## ]]\npetit déjeuner",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## translation ## ]]\n早ご飯 — «breakfast» ✓\n\n[[ ## completed ## ]]\n",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## text ## ]]\ncœur brisé 💔 naïve\n\nRespond with the corresponding output fields, starting with the field `[[ ## translation ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "translation": "cœur brisé 💔 — «naïve» ✓"
+        }
+      ]
+    },
+    "parse": {
+      "outcome": "completed",
+      "values": {
+        "translation": "cœur brisé 💔 — «naïve» ✓"
+      }
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "parse_text": "[[ ## translation ## ]]\ncœur brisé 💔 — «naïve» ✓\n\n[[ ## completed ## ]]",
+  "postprocess_output": null,
+  "responses": [
+    [
+      "[[ ## translation ## ]]\ncœur brisé 💔 — «naïve» ✓\n\n[[ ## completed ## ]]"
+    ]
+  ],
+  "runners": [
+    "call",
+    "parse"
+  ],
+  "tags": [
+    "family:parse",
+    "coercion",
+    "shapes"
+  ]
+}

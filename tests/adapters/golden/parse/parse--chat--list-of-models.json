@@ -1,0 +1,97 @@
+{
+  "adapter": "chat",
+  "adapter_kwargs": {
+    "use_json_adapter_fallback": false
+  },
+  "case_id": "parse--chat--list-of-models",
+  "expected": {
+    "call": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `document` (str): \n2. `prior_tags` (list[GoldenTag]):\nYour output fields are:\n1. `tags` (list[GoldenTag]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## document ## ]]\n{document}\n\n[[ ## prior_tags ## ]]\n{prior_tags}\n\n[[ ## tags ## ]]\n{tags}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"array\", \"$defs\": {\"GoldenTag\": {\"type\": \"object\", \"properties\": {\"label\": {\"type\": \"string\", \"title\": \"Label\"}, \"weight\": {\"type\": \"number\", \"title\": \"Weight\"}}, \"required\": [\"label\", \"weight\"], \"title\": \"GoldenTag\"}}, \"items\": {\"$ref\": \"#/$defs/GoldenTag\"}}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Tag the document.",
+              "role": "system"
+            },
+            {
+              "content": "[[ ## document ## ]]\nOld doc.\n\n[[ ## prior_tags ## ]]\n[{\"label\": \"stale\", \"weight\": 0.1}]",
+              "role": "user"
+            },
+            {
+              "content": "[[ ## tags ## ]]\n[{\"label\": \"archive\", \"weight\": 0.9}, {\"label\": \"dusty\", \"weight\": 0.4}]\n\n[[ ## completed ## ]]\n",
+              "role": "assistant"
+            },
+            {
+              "content": "[[ ## document ## ]]\nFresh doc about compilers.\n\n[[ ## prior_tags ## ]]\n[{\"label\": \"draft\", \"weight\": 0.5}]\n\nRespond with the corresponding output fields, starting with the field `[[ ## tags ## ]]` (must be formatted as a valid Python list[GoldenTag]), and then ending with the marker for `[[ ## completed ## ]]`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "completed",
+      "values": [
+        {
+          "tags": [
+            {
+              "__pydantic_instance__": "GoldenTag",
+              "value": {
+                "label": "compilers",
+                "weight": 0.8
+              }
+            },
+            {
+              "__pydantic_instance__": "GoldenTag",
+              "value": {
+                "label": "systems",
+                "weight": 0.3
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "parse": {
+      "outcome": "completed",
+      "values": {
+        "tags": [
+          {
+            "__pydantic_instance__": "GoldenTag",
+            "value": {
+              "label": "compilers",
+              "weight": 0.8
+            }
+          },
+          {
+            "__pydantic_instance__": "GoldenTag",
+            "value": {
+              "label": "systems",
+              "weight": 0.3
+            }
+          }
+        ]
+      }
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "parse_text": "[[ ## tags ## ]]\n[{\"label\": \"compilers\", \"weight\": 0.8}, {\"label\": \"systems\", \"weight\": 0.3}]\n\n[[ ## completed ## ]]",
+  "postprocess_output": null,
+  "responses": [
+    [
+      "[[ ## tags ## ]]\n[{\"label\": \"compilers\", \"weight\": 0.8}, {\"label\": \"systems\", \"weight\": 0.3}]\n\n[[ ## completed ## ]]"
+    ]
+  ],
+  "runners": [
+    "call",
+    "parse"
+  ],
+  "tags": [
+    "family:parse",
+    "coercion",
+    "shapes"
+  ]
+}

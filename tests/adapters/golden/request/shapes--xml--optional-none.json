@@ -1,0 +1,76 @@
+{
+  "adapter": "xml",
+  "adapter_kwargs": {},
+  "case_id": "shapes--xml--optional-none",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str): \n2. `context` (UnionType[str, NoneType]):\nYour output fields are:\n1. `answer` (UnionType[str, NoneType]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n<question>\n{question}\n</question>\n\n<context>\n{context}\n</context>\n\n<answer>\n{answer}        # note: the value you produce must adhere to the JSON schema: {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}]}\n</answer>\nIn adhering to this structure, your objective is: \n        Answer if possible.",
+              "role": "system"
+            },
+            {
+              "content": "This is an example of the task, though some input or output fields are not supplied.\n\n<question>\nUnknowable?\n</question>\n\n<context>\nNone\n</context>",
+              "role": "user"
+            },
+            {
+              "content": "<answer>\nNone\n</answer>",
+              "role": "assistant"
+            },
+            {
+              "content": "<question>\nWhat is the capital of France?\n</question>\n\n<context>\nNone\n</context>\n\nRespond with the corresponding output fields wrapped in XML tags `<answer>`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `question` (str): \n2. `context` (UnionType[str, NoneType]):\nYour output fields are:\n1. `answer` (UnionType[str, NoneType]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n<question>\n{question}\n</question>\n\n<context>\n{context}\n</context>\n\n<answer>\n{answer}        # note: the value you produce must adhere to the JSON schema: {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}]}\n</answer>\nIn adhering to this structure, your objective is: \n        Answer if possible.",
+              "role": "system"
+            },
+            {
+              "content": "This is an example of the task, though some input or output fields are not supplied.\n\n<question>\nUnknowable?\n</question>\n\n<context>\nNone\n</context>",
+              "role": "user"
+            },
+            {
+              "content": "<answer>\nNone\n</answer>",
+              "role": "assistant"
+            },
+            {
+              "content": "<question>\nWhat is the capital of France?\n</question>\n\n<context>\nNone\n</context>\n\nRespond with the corresponding output fields wrapped in XML tags `<answer>`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:shapes"
+  ]
+}

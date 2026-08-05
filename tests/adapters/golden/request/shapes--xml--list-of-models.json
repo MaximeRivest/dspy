@@ -1,0 +1,76 @@
+{
+  "adapter": "xml",
+  "adapter_kwargs": {},
+  "case_id": "shapes--xml--list-of-models",
+  "expected": {
+    "async": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `document` (str): \n2. `prior_tags` (list[GoldenTag]):\nYour output fields are:\n1. `tags` (list[GoldenTag]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n<document>\n{document}\n</document>\n\n<prior_tags>\n{prior_tags}\n</prior_tags>\n\n<tags>\n{tags}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"array\", \"$defs\": {\"GoldenTag\": {\"type\": \"object\", \"properties\": {\"label\": {\"type\": \"string\", \"title\": \"Label\"}, \"weight\": {\"type\": \"number\", \"title\": \"Weight\"}}, \"required\": [\"label\", \"weight\"], \"title\": \"GoldenTag\"}}, \"items\": {\"$ref\": \"#/$defs/GoldenTag\"}}\n</tags>\nIn adhering to this structure, your objective is: \n        Tag the document.",
+              "role": "system"
+            },
+            {
+              "content": "<document>\nOld doc.\n</document>\n\n<prior_tags>\n[{\"label\": \"stale\", \"weight\": 0.1}]\n</prior_tags>",
+              "role": "user"
+            },
+            {
+              "content": "<tags>\n[{\"label\": \"archive\", \"weight\": 0.9}, {\"label\": \"dusty\", \"weight\": 0.4}]\n</tags>",
+              "role": "assistant"
+            },
+            {
+              "content": "<document>\nFresh doc about compilers.\n</document>\n\n<prior_tags>\n[{\"label\": \"draft\", \"weight\": 0.5}]\n</prior_tags>\n\nRespond with the corresponding output fields wrapped in XML tags `<tags>`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    },
+    "sync": {
+      "call_count": 1,
+      "calls": [
+        {
+          "kwargs": {},
+          "lm": "main",
+          "messages": [
+            {
+              "content": "Your input fields are:\n1. `document` (str): \n2. `prior_tags` (list[GoldenTag]):\nYour output fields are:\n1. `tags` (list[GoldenTag]):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n<document>\n{document}\n</document>\n\n<prior_tags>\n{prior_tags}\n</prior_tags>\n\n<tags>\n{tags}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"array\", \"$defs\": {\"GoldenTag\": {\"type\": \"object\", \"properties\": {\"label\": {\"type\": \"string\", \"title\": \"Label\"}, \"weight\": {\"type\": \"number\", \"title\": \"Weight\"}}, \"required\": [\"label\", \"weight\"], \"title\": \"GoldenTag\"}}, \"items\": {\"$ref\": \"#/$defs/GoldenTag\"}}\n</tags>\nIn adhering to this structure, your objective is: \n        Tag the document.",
+              "role": "system"
+            },
+            {
+              "content": "<document>\nOld doc.\n</document>\n\n<prior_tags>\n[{\"label\": \"stale\", \"weight\": 0.1}]\n</prior_tags>",
+              "role": "user"
+            },
+            {
+              "content": "<tags>\n[{\"label\": \"archive\", \"weight\": 0.9}, {\"label\": \"dusty\", \"weight\": 0.4}]\n</tags>",
+              "role": "assistant"
+            },
+            {
+              "content": "<document>\nFresh doc about compilers.\n</document>\n\n<prior_tags>\n[{\"label\": \"draft\", \"weight\": 0.5}]\n</prior_tags>\n\nRespond with the corresponding output fields wrapped in XML tags `<tags>`.",
+              "role": "user"
+            }
+          ]
+        }
+      ],
+      "outcome": "stopped"
+    }
+  },
+  "extraction_lm": {},
+  "lm": {},
+  "lm_kwargs": {},
+  "modes": [
+    "sync",
+    "async"
+  ],
+  "responses": [],
+  "stop_after": null,
+  "surfaces": [],
+  "tags": [
+    "family:shapes"
+  ]
+}
