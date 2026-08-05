@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 #replace_package_name_marker
 name="dspy"
 #replace_package_version_marker
-version="3.3.0"
+version="3.3.0b1"
 description = "DSPy"
 readme = "README.md"
 authors = [{ name = "Omar Khattab", email = "okhattab@stanford.edu" }]
@@ -49,7 +49,6 @@ dev = [
     "pytest>=6.2.5",
     "pytest-mock>=3.12.0",
     "pytest-asyncio>=0.26.0",
-    "pytest-xdist>=3.5.0",
     "ruff>=0.3.0",
     "pre-commit>=3.7.0",
     "pillow>=10.1.0",

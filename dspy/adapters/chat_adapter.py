@@ -73,17 +73,6 @@ class ChatAdapter(Adapter):
             parallel_tool_calls=self.parallel_tool_calls,
         )
 
-    def _should_reraise_instead_of_fallback(self, error: Exception) -> bool:
-        """The fallback guard, implemented once for the sync and async paths.
-
-        On LM errors, when already a JSONAdapter, or when the fallback is
-        disabled, the ORIGINAL error propagates instead of retrying with a
-        different adapter.
-        """
-        from dspy.adapters.json_adapter import JSONAdapter
-
-        return isinstance(error, LMError) or isinstance(self, JSONAdapter) or not self.use_json_adapter_fallback
-
     def __call__(
         self,
         lm: BaseLM,
@@ -95,7 +84,12 @@ class ChatAdapter(Adapter):
         try:
             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
         except Exception as e:
-            if self._should_reraise_instead_of_fallback(e):
+            # fallback to JSONAdapter
+            from dspy.adapters.json_adapter import JSONAdapter
+
+            if isinstance(e, LMError) or isinstance(self, JSONAdapter) or not self.use_json_adapter_fallback:
+                # On LM errors, already using JSONAdapter, or use_json_adapter_fallback is False, we don't want to
+                # retry with a different adapter. Raise the original error instead of the fallback error.
                 raise
             return self._make_json_adapter_fallback()(lm, lm_kwargs, signature, demos, inputs)
 
@@ -110,7 +104,12 @@ class ChatAdapter(Adapter):
         try:
             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
         except Exception as e:
-            if self._should_reraise_instead_of_fallback(e):
+            # fallback to JSONAdapter
+            from dspy.adapters.json_adapter import JSONAdapter
+
+            if isinstance(e, LMError) or isinstance(self, JSONAdapter) or not self.use_json_adapter_fallback:
+                # On LM errors, already using JSONAdapter, or use_json_adapter_fallback is False, we don't want to
+                # retry with a different adapter. Raise the original error instead of the fallback error.
                 raise
             return await self._make_json_adapter_fallback().acall(lm, lm_kwargs, signature, demos, inputs)
 
@@ -217,19 +216,6 @@ class ChatAdapter(Adapter):
         return assistant_message_content
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
-        from dspy.adapters._engine.overrides import resolve_override_verdict
-
-        # Engine-backed classes parse via the resolved Format — the SAME
-        # object that rendered the request, so format and parse share one
-        # source of truth. Override-routed instances keep the legacy body.
-        # The branch lives inside parse() so callback dispatch is identical.
-        if resolve_override_verdict(self).engine_eligible:
-            from dspy.adapters._engine.formats import resolve_format
-
-            fmt = resolve_format(self)
-            if fmt is not None:
-                return fmt.parse(signature, completion)
-
         sections = [(None, [])]
 
         for line in completion.splitlines():

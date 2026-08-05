@@ -87,22 +87,52 @@ class Adapter:
         signature: type[Signature],
         inputs: dict[str, Any],
     ) -> type[Signature]:
-        """Thin compatibility wrapper over the engine's plan builder.
+        # TODO(adapters-plan): This remains the pre-normalized planning hook. It
+        # mutates `lm_kwargs` and returns only the render signature, which loses
+        # information we will need for plan-driven rendering/parsing. The next
+        # stacked PR should replace this with an explicit `_AdapterPlan` that
+        # records deleted fields, native tools, native output fields, inserted
+        # messages/parts, and LM config patches.
+        if not self.use_native_function_calling:
+            for key in ("tools", "tool_choice", "parallel_tool_calls"):
+                lm_kwargs.pop(key, None)
+        else:
+            tool_call_input_field_name = self._get_tool_call_input_field_name(signature)
+            tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
 
-        The planning logic lives in ``dspy.adapters._engine.builder`` (the
-        explicit plan promised by the former TODO here): it performs the same
-        ``lm_kwargs`` mutations and signature derivation while also recording
-        the decisions onto an ``AdapterPlan``. This wrapper preserves the
-        legacy contract (mutate kwargs, return the render signature) for
-        direct callers.
+            if tool_call_output_field_name and tool_call_input_field_name is None:
+                raise ValueError(
+                    f"You provided an output field {tool_call_output_field_name} to receive the tool calls information, "
+                    "but did not provide any tools as the input. Please provide a list of tools as the input by adding an "
+                    "input field with type `list[dspy.Tool]`."
+                )
 
-        TODO(adapters-plan): Built-in/native response planning still flows
-        through ``Type.adapt_to_native_lm_feature()`` inside the builder; a
-        later PR moves it into adapter-owned planning strategies.
-        """
-        from dspy.adapters._engine.builder import build_plan
+            if tool_call_output_field_name and lm.supports_function_calling:
+                tools = inputs[tool_call_input_field_name]
+                tools = tools if isinstance(tools, list) else [tools]
 
-        return build_plan(self, lm, lm_kwargs, signature, inputs).render_signature
+                lm_tools = [tool.format_as_litellm_function_call() for tool in tools]
+
+                lm_kwargs["tools"] = lm_tools
+                if self.parallel_tool_calls is not None and lm_kwargs.get("parallel_tool_calls") is None:
+                    lm_kwargs["parallel_tool_calls"] = self.parallel_tool_calls
+
+                signature = signature.delete(tool_call_output_field_name)
+                signature = signature.delete(tool_call_input_field_name)
+
+        # TODO(adapters-plan): Built-in/native response planning should move out
+        # of `Type.adapt_to_native_lm_feature()` and into adapter-owned planning
+        # renderers. Keep this compatibility hook for this boundary-only PR.
+        # Handle custom types that use native LM features, e.g., reasoning, citations, etc.
+        for name, field in signature.output_fields.items():
+            if (
+                isinstance(field.annotation, type)
+                and field.annotation in self.native_response_types
+                and issubclass(field.annotation, Type)
+            ):
+                signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)
+
+        return signature
 
     def _call_postprocess(
         self,
@@ -111,34 +141,15 @@ class Adapter:
         outputs: list[dict[str, Any] | str],
         lm: BaseLM,
         lm_kwargs: dict[str, Any],
-        *,
-        plan=None,
-        response=None,
     ) -> list[dict[str, Any]]:
-        if response is not None and plan is not None:
-            # Engine path: typed LMResponse in, plan parsers out — see
-            # dspy/adapters/_engine/postprocess.py.
-            from dspy.adapters._engine.postprocess import run_engine_postprocess
-
-            return run_engine_postprocess(self, processed_signature, original_signature, response, lm, plan)
-
-        #
-        # When a plan is provided (the engine call path), the semantic output
-        # keys and the ToolCalls destination are read from the plan's render
-        # fields; both derivations are equivalent to the legacy signature
-        # lookups by construction (the plan mirrors the original signature),
-        # and the golden corpus pins the equivalence.
+        # TODO(adapters-plan): This still parses legacy adapter output objects.
+        # PR1 normalizes the LM boundary, then immediately converts back to this
+        # shape to avoid changing parser semantics. A later PR should parse
+        # `LMResponse` directly and merge text-parsed fields with explicit
+        # native fields from `_AdapterPlan`.
         values = []
 
-        if plan is not None:
-            backfill_field_names = [field.destination_name for field in plan.output_fields]
-            tool_call_output_field_name = next(
-                (field.destination_name for field in plan.output_fields if field.annotation == ToolCalls),
-                None,
-            )
-        else:
-            backfill_field_names = list(original_signature.output_fields)
-            tool_call_output_field_name = self._get_tool_call_output_field_name(original_signature)
+        tool_call_output_field_name = self._get_tool_call_output_field_name(original_signature)
 
         for output in outputs:
             output_logprobs = None
@@ -146,7 +157,7 @@ class Adapter:
             text = output
 
             if isinstance(output, dict):
-                text = output.get("text")
+                text = output["text"]
                 output_logprobs = output.get("logprobs")
                 tool_calls = output.get("tool_calls")
 
@@ -166,7 +177,7 @@ class Adapter:
                 )
 
             # Fields removed for native features are absent from the processed parse.
-            for field_name in backfill_field_names:
+            for field_name in original_signature.output_fields:
                 value.setdefault(field_name, None)
 
             if tool_calls and tool_call_output_field_name:
@@ -199,20 +210,13 @@ class Adapter:
         lm: BaseLM,
         lm_kwargs: dict[str, Any],
         messages: list[LMMessage | dict[str, Any]],
-        *,
-        plan=None,
     ) -> LMRequest:
         """Build the normalized LM request for the current adapter call path.
 
-        The plan is threaded through so planned message/part insertions can
-        be applied here once the engine renderer lands. Until then, plans
-        carry no request content — enforced by a tripwire so nothing can be
-        silently dropped.
+        TODO(adapters-plan): This currently receives already-rendered messages.
+        Once planning lands, this should render from `_AdapterPlan` and apply
+        planned message/part insertions before creating `LMRequest`.
         """
-        if plan is not None:
-            from dspy.adapters._engine.builder import assert_unrendered
-
-            assert_unrendered(plan)
         return LMRequest.from_call(
             model=lm.model,
             messages=self._coerce_lm_messages(messages),
@@ -331,27 +335,16 @@ class Adapter:
             List of dictionaries representing parsed LM responses. Each dictionary contains keys matching the
             signature's output field names. For multiple generations (n > 1), returns multiple dictionaries.
         """
-        from dspy.adapters._engine.builder import build_plan
-        from dspy.adapters._engine.overrides import resolve_override_verdict
-
-        # Consulted now, acted on once renderer cutovers register classes:
-        # with the registry empty every instance is legacy, so this PR is
-        # byte-identical by construction.
-        resolve_override_verdict(self)
-
-        built = build_plan(self, lm, lm_kwargs, signature, inputs)
-        processed_signature = built.render_signature
+        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
         messages = self.format(processed_signature, demos, inputs)
-        request = self._render_request(lm, lm_kwargs, messages, plan=built.plan)
+        request = self._render_request(lm, lm_kwargs, messages)
         response = self._call_lm(lm, request)
-        if resolve_override_verdict(self).engine_eligible:
-            # Engine path: parse the typed LMResponse directly via the plan's
-            # parsers (the facade swap that closes the old TODO #3).
-            return self._call_postprocess(
-                processed_signature, signature, [], lm, lm_kwargs, plan=built.plan, response=response
-            )
+        # TODO(adapters-response): We normalize at the LM boundary, but still
+        # convert back to legacy postprocess dictionaries here to keep this PR
+        # behavior-preserving. Replace with direct `LMResponse` parsing once the
+        # explicit adapter plan exists.
         outputs = legacy_outputs_from_lm_response(response)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs, plan=built.plan)
+        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
 
     async def acall(
         self,
@@ -361,22 +354,14 @@ class Adapter:
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        from dspy.adapters._engine.builder import build_plan
-        from dspy.adapters._engine.overrides import resolve_override_verdict
-
-        resolve_override_verdict(self)
-
-        built = build_plan(self, lm, lm_kwargs, signature, inputs)
-        processed_signature = built.render_signature
+        processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
         messages = self.format(processed_signature, demos, inputs)
-        request = self._render_request(lm, lm_kwargs, messages, plan=built.plan)
+        request = self._render_request(lm, lm_kwargs, messages)
         response = await self._acall_lm(lm, request)
-        if resolve_override_verdict(self).engine_eligible:
-            return self._call_postprocess(
-                processed_signature, signature, [], lm, lm_kwargs, plan=built.plan, response=response
-            )
+        # TODO(adapters-response): Keep in sync with `__call__()` until both use
+        # direct `LMResponse` parsing.
         outputs = legacy_outputs_from_lm_response(response)
-        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs, plan=built.plan)
+        return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
 
     def format(
         self,
@@ -423,22 +408,6 @@ class Adapter:
         Returns:
             A list of multiturn messages as expected by the LM.
         """
-        from dspy.adapters._engine.overrides import resolve_override_verdict
-
-        # Engine-backed classes render via the engine (plan -> renderer ->
-        # Format). The branch lives INSIDE format() so with_callbacks
-        # wrapping and callback dispatch fire identically on both paths.
-        # Instances that override any render/parse hook — and core adapter
-        # classes not yet migrated — fall through to the byte-untouched
-        # legacy body below.
-        if resolve_override_verdict(self).engine_eligible:
-            from dspy.adapters._engine.formats import resolve_format
-            from dspy.adapters._engine.render import render_messages
-
-            fmt = resolve_format(self)
-            if fmt is not None:
-                return render_messages(self, fmt, signature, demos, inputs)
-
         inputs_copy = dict(inputs)
 
         # If the signature and inputs have conversation history, we need to format the conversation history and
@@ -764,9 +733,7 @@ def _provider_value(value: Any, key: str, default: Any = None) -> Any:
 
 def _provider_tool_call_to_tool_call_dict(tool_call: Any) -> dict[str, Any]:
     function = _provider_value(tool_call, "function", {}) or {}
-    # Responses API tool calls carry `arguments` at the top level rather than
-    # under `function`.
-    arguments = _provider_value(function, "arguments", None) or _provider_value(tool_call, "arguments", {})
+    arguments = _provider_value(function, "arguments", {})
     if isinstance(arguments, str):
         parsed_arguments = json_repair.loads(arguments)
     elif isinstance(arguments, dict):
@@ -775,9 +742,7 @@ def _provider_tool_call_to_tool_call_dict(tool_call: Any) -> dict[str, Any]:
         parsed_arguments = {}
 
     return {
-        # Responses API items carry both an item `id` ("fc_...") and the
-        # `call_id` that tool results must reference; prefer `call_id`.
-        "id": _provider_value(tool_call, "call_id") or _provider_value(tool_call, "id"),
+        "id": _provider_value(tool_call, "id") or _provider_value(tool_call, "call_id"),
         "name": _provider_value(function, "name") or _provider_value(tool_call, "name"),
         "args": parsed_arguments,
     }

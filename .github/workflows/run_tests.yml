@@ -9,10 +9,6 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   workflow-lint:
     name: Lint GitHub Actions Workflows
@@ -103,51 +99,17 @@ jobs:
         run: |
           uv sync --dev -p .venv --extra dev
           uv pip list
+      - name: Run lint with tests
+        uses: chartboost/ruff-action@e18ae971ccee1b2d7bbef113930f00c670b78da4 # v1
+        with:
+          args: check --fix-only
       - name: Run tests with pytest
-        run: uv run -p .venv pytest -vv -n auto --dist worksteal tests/
+        run: uv run -p .venv pytest -vv tests/
       - name: Install optional dependencies
         run: uv sync -p .venv --extra dev --extra test_extras
       - name: Run extra and deno tests
-        run: uv run -p .venv pytest tests/ -m 'extra or deno' --extra --deno -n auto --dist worksteal
-
-  adapter_golden_parity:
-    # Byte-level authority for the adapter golden corpus: schema-derived
-    # strings (pydantic JSON schemas) can drift across library versions, so
-    # this job pins the versions recorded in the corpus metadata while the
-    # floating matrix above only warns on drift.
-    # See tests/adapters/golden/README.md.
-    name: Adapter Golden Parity (pinned)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.13"
-      - name: Install uv with caching
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: |
-            **/pyproject.toml
-            **/uv.lock
-      - name: Create and activate virtual environment
-        run: |
-          uv venv .venv
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
-      - name: Install dependencies with pinned parity constraints
-        run: |
-          uv sync --dev -p .venv --extra dev
-          uv pip install -p .venv -r tests/adapters/golden/parity-constraints.txt
-          uv pip list
-      - name: Check fixture regeneration is byte-identical
-        run: uv run -p .venv python tests/adapters/golden/generate_fixtures.py --check
-      - name: Run golden parity tests
-        run: uv run -p .venv pytest -vv tests/adapters/test_golden_parity.py
-
+        run: uv run -p .venv pytest tests/ -m 'extra or deno' --extra --deno
+  
   llm_call_test:
     name: Run Tests with Real LM
     runs-on: ubuntu-latest
@@ -188,12 +150,6 @@ jobs:
             -p 11434:11434 \
             -v "$GITHUB_WORKSPACE/ollama-data:/root/.ollama" \
             ollama/ollama:0.31.2
-          # Some GitHub runners are Sapphire-Rapids-class machines with AMX. llama.cpp's
-          # AMX-repacked weight path segfaults there during model load (llama-server dies
-          # with SIGSEGV in warm-up), while all non-AMX runners pass. Removing the AMX
-          # backend variant makes ggml's autodetection fall back to the icelake kernels
-          # that every other runner already uses.
-          docker exec ollama rm /usr/lib/ollama/libggml-cpu-sapphirerapids.so
           timeout 60 bash -c 'until curl -f http://localhost:11434/api/version; do sleep 2; done'
       - name: Pull LLM
         if: steps.cache-ollama.outputs.cache-hit != 'true'
@@ -245,11 +201,15 @@ jobs:
           cache-dependency-glob: |
             **/pyproject.toml
             **/uv.lock
-      - name: Build
-        run: uv build
-      - name: Install built package
+      - name: Create and activate virtual environment
         run: |
           uv venv .venv
-          uv pip install dist/*.whl -p .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - name: Install dependencies
+        run: uv sync --dev -p .venv --extra dev
+      - name: Build
+        run: uv run -p .venv python -m build
+      - name: Install built package
+        run: uv pip install dist/*.whl -p .venv
       - name: Test import dspy
-        run: .venv/bin/python -c "import dspy"
+        run: uv run -p .venv python -c "import dspy"

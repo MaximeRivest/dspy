@@ -58,11 +58,7 @@ class JSONAdapter(ChatAdapter):
 
         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())
 
-        if (
-            _has_open_ended_mapping(signature)
-            or (not self.use_native_function_calling and has_tool_calls)
-            or not lm.supports_response_schema
-        ):
+        if _has_open_ended_mapping(signature) or (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:
             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.
             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.
             lm_kwargs["response_format"] = {"type": "json_object"}
@@ -169,18 +165,6 @@ class JSONAdapter(ChatAdapter):
         return self.format_field_with_value(fields_with_values, role="assistant")
 
     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
-        from dspy.adapters._engine.overrides import resolve_override_verdict
-
-        # Engine-backed instances parse via the resolved Format (the same
-        # object that rendered the request); override-routed instances —
-        # including BAMLAdapter until it migrates — keep the legacy body.
-        if resolve_override_verdict(self).engine_eligible:
-            from dspy.adapters._engine.formats import resolve_format
-
-            fmt = resolve_format(self)
-            if fmt is not None:
-                return fmt.parse(signature, completion)
-
         fields = json_repair.loads(completion)
 
         if not isinstance(fields, dict):
