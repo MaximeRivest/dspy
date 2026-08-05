@@ -105,3 +105,20 @@ def test_parse_value_json_repair():
     malformed = "not json or literal"
     with pytest.raises(Exception):
         parse_value(malformed, dict)
+
+
+def test_unserializable_annotation_refused_loudly():
+    """Hints with no JSON-schema meaning name the field and point at tools."""
+    from typing import Callable
+
+    import pytest
+
+    import dspy
+    from dspy.utils.exceptions import UnserializableTypeError
+
+    class BadSig(dspy.Signature):
+        question: str = dspy.InputField()
+        handler: Callable[[int], int] = dspy.OutputField()
+
+    with pytest.raises(UnserializableTypeError, match=r"Field `handler`.*dspy\.Tool"):
+        dspy.ChatAdapter().format(BadSig, [], {"question": "hi"})

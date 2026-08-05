@@ -255,6 +255,18 @@ def format_error_for_lm(error: BaseException, *, traceback_frames: int = 0) -> s
     ).strip()
 
 
+class UnserializableTypeError(DSPyError):
+    """Raised when a signature field's annotation has no JSON-schema meaning.
+
+    Signature fields carry data shapes the model can render and emit;
+    annotations like `Callable` or `type` describe behavior, not data, and
+    cannot cross the wire. The message names the offending field and points
+    at tools as the home for invokable capabilities.
+    """
+
+    default_code = "unserializable_type"
+
+
 class AdapterParseError(DSPyError):
     """Raised when an adapter cannot parse an LM response into signature outputs.
 

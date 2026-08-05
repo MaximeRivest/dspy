@@ -112,7 +112,18 @@ def translate_field_type(field_name, field_info):
         # Code has a rich type description already; avoid duplicating its large schema block.
         desc = ""
     else:
-        desc = f"must adhere to the JSON schema: {json.dumps(_get_json_schema(field_type), ensure_ascii=False)}"
+        try:
+            schema = _get_json_schema(field_type)
+        except pydantic.errors.PydanticInvalidForJsonSchema as e:
+            from dspy.utils.exceptions import UnserializableTypeError
+
+            raise UnserializableTypeError(
+                f"Field `{field_name}` is annotated with `{get_annotation_name(field_type)}`, which has no "
+                "JSON-schema meaning, so it cannot be rendered to or parsed from the LM. Signature fields "
+                "carry data shapes; if you meant to give the model an invokable capability, pass it as a "
+                "tool (`dspy.Tool`) instead of a field annotation."
+            ) from e
+        desc = f"must adhere to the JSON schema: {json.dumps(schema, ensure_ascii=False)}"
 
     desc = (" " * 8) + f"# note: the value you produce {desc}" if desc else ""
     return f"{{{field_name}}}{desc}"
