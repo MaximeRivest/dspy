@@ -94,7 +94,7 @@ grammar — the limit-case kind, §e2).
 | 5 | **forward (restricted-Python AST)** | per module: the `forward` AST restricted to a whitelist of node kinds (`if`/`for`/`while`/`try`/`raise`/assign) whose `Call`s resolve to declared typed leaves (Predict / sub-module / tool / interpreter); recurses via sub-module leaves (§d) | JSON (AST) | frozen | bake |
 | 6 | **tools** | per tool: identity `{name, parameters(arg JSON schema)}` = `LMToolSpec` (`types.py:292`) **plus net-new** `return_schema` + `source` (Python source) + `deps[]` + a `placement` block (§e0: rung 0 = in-process source → local service → **MCP**/remote microservice) (see §Tool-notes) | JSON identity + Python source string | frozen (identity) / **authored-code** (body) | bake at rung 0 / declare beyond |
 | 7 | **interpreter** | `{kind, module_name}` + a baked **identity profile** — the semantics the program's scores are claims about: `{language+version, namespace_policy, packages[], resource_limits, result_convention}` (§e0-binding: the interpreter is the third instance of identity-vs-binding) — + a `placement` block (§e0). Rung 0 = generated code in an isolated namespace / synthetic module in the *same* process (**no Deno declared**); outward rungs = same-sandbox subprocess → separate sandbox → remote pool. Placement is the receiver's; the profile is not — changing it is a recorded deviation. Fully net-new (see §Interpreter-notes) | JSON | frozen | bake at rung 0 / declare beyond |
-| 8a | **LM contract + class + engine** | a **pool of named entries** (§b-pools) — predictors bind an entry by name, and *sharing an entry is semantic, not cosmetic*: bindings declare which forwards run (and train) the same model. Each entry: `forward_contract = "typed_lm"` (`base_lm.py:69,163`): `forward(LMRequest)->LMResponse` (`types.py:623,808`); an `lm.class` block `{identity, origin: packaged\|authored, source?, deps[]}` (see §e0-class); **plus an `engine` field** `{transformers \| vllm-offline \| …}` — the in-process implementation, orthogonal to placement rung and class origin (see §e0-engine). A **declared** (past-rung-0) LM additionally bakes `weights_identity` — the canonical weight identity its scores are claims about — plus a `served_aliases[]` evidence hint; the endpoint and served name are receiver bindings, not baked values (§e0-binding). Builtin `dspy.LM` needs no class block | JSON marker (+ Python source if authored) | frozen (contract) / **authored-code** (if authored) | **declare** (packaged) / **bake** (authored) |
+| 8a | **LM contract + class + engine** | a **pool of named entries** (§b-pools) — predictors bind an entry by name, and *sharing an entry is semantic, not cosmetic*: bindings declare which forwards run (and train) the same model. Each entry: `forward_contract = "typed_lm"` (`base_lm.py:69,163`): `forward(LMRequest)->LMResponse` (`types.py:623,808`) — *canonical contract ratified 2026-08-05: adopt **lm15** (`Request`/`Response`/`StreamEvent`, lm15-contract governed) as the substrate, retiring the parallel in-repo types over the deprecation arc; see §Adapter-semantics grounding note*; an `lm.class` block `{identity, origin: packaged\|authored, source?, deps[]}` (see §e0-class); **plus an `engine` field** `{transformers \| vllm-offline \| …}` — the in-process implementation, orthogonal to placement rung and class origin (see §e0-engine). A **declared** (past-rung-0) LM additionally bakes `weights_identity` — the canonical weight identity its scores are claims about — plus a `served_aliases[]` evidence hint; the endpoint and served name are receiver bindings, not baked values (§e0-binding). Builtin `dspy.LM` needs no class block | JSON marker (+ Python source if authored) | frozen (contract) / **authored-code** (if authored) | **declare** (packaged) / **bake** (authored) |
 | 8b | **LM weights slot** | per LM-pool entry: safetensors tensor bytes (binary sidecar) + rebuild config + tokenizer files + tied-tensor policy + `device` + a `placement` block (§e0: rung 0 = weights baked in-process → local RPC → HTTP local → HTTP remote provider) — see §Weights-slot; proven on Baguettotron (321M). A predictor's *effective* weights are the entry's **base ⊕ its binding's optional `delta`** (§b-pools) — the delta is a small per-binding blob (LoRA-style), itself a `weight-ref` field | safetensors + JSON | **weight-ref** (base and/or delta; either may be tagged frozen) | bake at rung 0 / declare beyond |
 | 9 | **environment manifest** | a **PEP 723 inline-metadata block** (`# /// script … ///`) on the program's entry/loader file — `dependencies`, `requires-python`, `[[tool.uv.index]]`, optional `exclude-newer` — plus the `uv lock --script`-produced `<entry>.lock`; `system_deps[]` for non-Python needs. Receiver runs `uv run --script` (or `uv sync` from the lock). See §Env-manifest | PEP 723 comment block + `.lock` | frozen | bake (deps) / declare (system) |
 | 10 | **credentials** | declared only: `{name, scope}` records of what the target must supply; **NEVER a value** | JSON (names only) | n/a | **credential** |
@@ -549,6 +549,59 @@ the sacred line (§d-sacred):
   the exact provider-hack disease the engine's strategies evicted from the
   semantic types; the typed contract is the neutral middle layer providers
   negotiate with via capability declarations.
+
+  **Empirical confirmation, and the canonical contract (ratified
+  2026-08-05): lm15.** The `lm15` project (`~/Projects/lm15-dev/`,
+  lm15-contract governed) built the typed LM contract from the provider
+  wire inward — frozen dataclasses, canonical JSON serde, zero deps, a
+  cross-language fixture corpus (304 machine-checked conformance checks)
+  — and its part vocabulary (`Text, Thinking, ToolCall, ToolResult,
+  Citation, Image, Audio, Video, Document, Binary, Refusal`) converged
+  independently on this role list, which is the strongest evidence the
+  projection claim has: two designs, months apart, from opposite ends
+  (wire-up vs intent-down), same vocabulary. **Decision: lm15 is adopted
+  as the engine's LM substrate** — the ProgramIR's component 8a contract
+  becomes a veneer over (or direct adoption of) lm15's
+  `Request`/`Response`/`StreamEvent` types, retiring the parallel in-repo
+  contract over the deprecation arc; provider adapters, canonical serde,
+  and the Rust/Go/TS conformance story come with it, making the
+  "adopt-à-la-carte in another language" claim concrete for the LM layer.
+  Two lm15 concepts patch known holes here: (1) **`refusal`** is an
+  anticipated role — a provider-emitted channel that escapes the token
+  stream, admissible by this section's own rule the day dspy declares an
+  intent for it; (2) **`ContinuationState`** (opaque provider state
+  traveling *with the message it describes*, e.g. thinking-block replay
+  signatures) is the `history` role's missing replay mechanism — history
+  strategies must carry continuation state through render, never strip
+  it. And one lm15 principle is adopted as adapter-config law: the
+  `extensions` (user-supplied, request-bound) vs `provider_data`
+  (provider-returned, response-bound) **direction-of-ownership
+  asymmetry** — echoing provider-returned data back as user-supplied
+  passthrough is a bug, and the adapter `config`/provenance blocks keep
+  the two directions as distinct named things for the same reason.
+
+  **Streaming is role-typed (reference behavior: lm15).** The IR's
+  streaming story falls out of the projection: lm15's stream grammar is
+  four events (`start | delta | end | error`) whose deltas are **typed
+  per part kind** (`TextDelta, ThinkingDelta, ToolCallDelta,
+  CitationDelta, AudioDelta, ImageDelta, ContinuationDelta`) — and since
+  parts ≈ roles, **a stream is a sequence of role-tagged deltas and the
+  role machinery routes them**: deltas for a declared `reasoning[str]`
+  field stream to the consumer as that field's partial value; deltas for
+  *undeclared* reasoning stream into the observability channel
+  (§d-sacred, live — exhaust is exhaust even mid-flight); `ToolCallDelta`
+  and `CitationDelta` accumulate under their role's bound strategy, whose
+  parser owns the fold. The plan makes streaming *predictable*: the
+  engine knows from the `AdapterPlan` which roles are in flight, hence
+  which delta types to expect and where each lands — a textual strategy's
+  stream is `TextDelta`s that the format's section-parser splits
+  (today's marker-matching StreamListener, recognized as the token-space
+  polyfill of this design), a native strategy's stream arrives
+  pre-typed. Buffered replay is the degenerate case (fold the events,
+  then parse as unstreamed — lm15's `Result` assembler is that fold), so
+  streamed and unstreamed execution share one parsing contract, and a
+  program's stream behavior is derivable from its baked plan rather than
+  being a separate runtime feature.
 - **Strategy is mechanism → component 4**, the `strategies` block: per role,
   a named strategy binding — `reasoning: native_channel | textual_field |
   prefill`; `tools: native_fc | textual_json | xml_dispatch`; `citations:
