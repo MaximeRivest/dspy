@@ -25,37 +25,85 @@ textual JSON). If a candidate only changes what the value *is*, it is a shape
 because images are bytes. Extending the vocabulary is a versioned act on this
 table, never a per-call-site invention.
 
-## 2. User-facing syntax: `role=` kwarg, types as derivation compat
+## 2. User-facing syntax: `Annotated` markers are the primitive; four spellings, one object
 
-**Recommendation: the explicit kwarg is the canonical syntax; the semantic
-types become derivation shorthand and eventually just shapes.**
+**Ratified: role markers as `Annotated` metadata are the cross-surface
+primitive; every other spelling is sugar over them.** One role vocabulary,
+one marker object per role (`dspy.signatures.roles`, internal-first), four
+spellings that all resolve to the same registry entries:
 
-```python
-answer: str = dspy.OutputField(role="citations", desc="cited answer")
-thinking: str = dspy.OutputField(role="reasoning")
-```
+1. **`Annotated[str, citations]`** — canonical, type-checker-transparent:
+   mypy/pyright see `str`; dspy sees the marker. Works in every surface that
+   accepts a Python annotation, including string signatures via the
+   type-resolution namespace (verified: `custom_types={"Annotated":
+   Annotated, "m": marker}` resolves today with the marker landing on
+   `FieldInfo.metadata`).
+2. **`citations[str]`** — subscriptable-marker sugar: each marker's
+   `__getitem__(shape)` returns `Annotated[shape, marker]`, nothing else.
+   Nests meaningfully: `list[citations[str]]` (per-item) vs
+   `citations[list[str]]` (whole value) — both declare the field's
+   *participation* in the role (role territory); the per-item/whole
+   distinction is reserved for strategies (mechanism territory) and MUST NOT
+   fork the role vocabulary.
+3. **`"answer: str @citations"`** — string-signature shorthand (§2a, spec'd
+   below, implementation deferred to the next PR).
+4. **`OutputField(role="citations")`** — the kwarg spelling (shipped).
 
-Rationale, in order of force:
+Why the marker is the primitive and not the kwarg:
 
-1. **The role must be able to vary independently of the shape.** That is the
-   entire point (§Adapter-semantics: swapping strategy must not mutate the
-   signature). Typed markers can't do this: `Reasoning` pins shape `str`; a
-   `role=` kwarg composes with *any* annotation.
-2. **It matches the field-metadata precedent.** `desc`, `prefix` already ride
-   `json_schema_extra` through `move_kwargs`; `role` is the same kind of
-   declaration, and `InputField`/`OutputField` are the natural validation
-   point (unknown role → immediate `ValueError`, not a deep engine failure).
-3. **Typed markers stay working through derivation** (§4): annotating
-   `Reasoning` means `shape str + role reasoning`, forever during the arc.
-   Nothing breaks; the kwarg is strictly more expressive.
+1. **The role must vary independently of the shape** (§Adapter-semantics:
+   swapping strategy must never mutate the signature). Markers compose with
+   *any* annotation; the legacy types can't (`Reasoning` pins `str`).
+2. **Cross-surface universality.** Class signatures, string signatures, and
+   plain function signatures (FunctAI, §2b) all accept annotations; only
+   dspy's field factories accept kwargs. One primitive, every surface.
+3. **Type-checker transparency** — `Annotated` is the standard mechanism for
+   exactly this: metadata that tools may ignore and frameworks may consume.
 
-Kwarg name is `role=` (the spec's own example syntax); stored internally as
-`json_schema_extra["semantic_role"]` because `role` already means
-input/output *direction* on `RenderField` (the spec renames that key
-`direction` in component 2; dspy code will follow suit only in the cutover
-epic). Explicit `role=` **wins over derivation**; a conflict (e.g.
-`Reasoning`-annotated field with `role="citations"`) is a `ValueError` at
-signature build — declaring both and disagreeing is a bug, not a preference.
+Conflict rule, uniform across all spellings: any two role declarations on
+one field that disagree (marker vs kwarg, marker vs marker, either vs a
+non-`plain` legacy-type derivation) → loud `ValueError` at signature/plan
+build. Agreement is permitted; redundancy is not an error. **Legacy types
+are documented as the fused spelling**: `Reasoning` ≡ `Annotated[str,
+reasoning]` — shape and role in one name, which is precisely the coupling
+the markers dissolve.
+
+The kwarg stores as `json_schema_extra["semantic_role"]` because `role`
+already means input/output *direction* on `RenderField` (the IR spec renames
+that key `direction`; dspy follows suit only in the cutover epic).
+
+### 2a. The `@role` string-signature shorthand (spec'd, deferred)
+
+Grammar: `field_name[: type] @role` — the `@role` token comes after the
+annotation if one is present, after the name otherwise. `@reasoning` with no
+type defaults the shape to `str` (matching legacy `Reasoning`); an unknown
+`@role` errors eagerly, listing the vocabulary. `Annotated` markers in
+string signatures already work via the namespace (spelling 1); `@` is pure
+ergonomics.
+
+Deferred from this epic **because it is not cleanly containable in the
+current parser**: `_parse_field_string` feeds the whole field string to
+`ast.parse(f"def f({field_string}): pass")`, and `@word` is a syntax error
+inside an argument list. Implementation therefore needs a pre-tokenization
+pass with two known hazards, recorded here for the implementing PR: comma
+splitting must be subscript-depth-aware (`dict[str, int] @plain`), and the
+untyped form (`answer @reasoning`) must inject the defaulted annotation
+before `ast.parse` sees the string. Recommended shape: depth-aware field
+split → per-field `@(\w+)` extraction with eager vocabulary validation →
+rewrite as `Annotated[<type-or-str>, <marker>]` in the parse namespace.
+Zero change to signatures not using `@`.
+
+### 2b. Context: FunctAI as a third signature surface
+
+FunctAI (`~/Projects/functai`) exposes plain Python function signatures via
+`@ai` and consumes the markers natively — `def f(docs: media[list[Document]])
+-> citations[str]` — with no dspy field factories in sight, which is exactly
+why the primitive must live in the annotation, not the kwarg. Doctrine
+mapping for its intermediate fields, consistent with §7: body-assigned
+intermediates (`reasoning: str = _ai[...]`) are DECLARED (contractual
+outputs of the inner program); auto-inserted CoT with no body assignment is
+mechanism → `_trajectory`. Name-based derivation from variable names is a
+warned convenience there; `Annotated` is truth.
 
 ## 3. Validity rules
 
@@ -105,7 +153,13 @@ Shipped now (derive-and-record):
 - `semantic_role_for(annotation)` — pure derivation, engine-private
   (`_engine/roles.py`); vocabulary constant lives in `dspy/signatures/field.py`
   (roles are signature-level intent; adapters already import signatures, so
-  the layering is acyclic).
+  the layering is acyclic). Marker objects live in `dspy/signatures/roles.py`
+  (internal-first: importable as `from dspy.signatures.roles import
+  citations`, not exported from `dspy/__init__.py` until the cutover epic
+  publishes the syntax). Resolution scans, in declaration strength: the
+  `role=` kwarg, `FieldInfo.metadata` (where pydantic hoists a top-level
+  `Annotated`'s metadata), and markers nested anywhere in the annotation
+  tree — all must agree.
 - `AdapterPlan.from_signature` resolves each field's role (explicit
   `semantic_role` in `json_schema_extra` wins, else derived) into
   `RenderField.metadata["semantic_role"]`. Metadata is consulted by nothing
@@ -167,6 +221,9 @@ role marker *improves* the CoT check:
 ## 9. PR stack for the cutover epic (future)
 
 1. `role=`-aware validation rules (§3) behind the explicit kwarg only.
+1b. `@role` string-signature shorthand per §2a (depth-aware pre-tokenizer,
+    eager vocabulary validation, `Annotated` rewrite) + marker export
+    decision (`dspy.roles` public path).
 2. Double-keyed strategy registry + trace attribution (bridge stage 2).
 3. Role-based CoT/_trajectory check (name-based check retired).
 4. Per-role `strategies` block on adapters (component 4 shape) + capability

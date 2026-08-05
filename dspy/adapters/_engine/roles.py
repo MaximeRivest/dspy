@@ -14,7 +14,9 @@ resolution stays annotation-keyed until the cutover epic
 """
 
 from types import UnionType
-from typing import Any, Union, get_args, get_origin
+from typing import Annotated, Any, Union, get_args, get_origin
+
+from dspy.signatures.roles import SemanticRole
 
 _DERIVED: dict[Any, str] | None = None
 
@@ -48,7 +50,7 @@ def _derivation_table() -> dict[Any, str]:
 
 
 def _core_annotations(annotation: Any) -> list[Any]:
-    """Unwrap ``Optional``/unions and ``list`` down to candidate core types."""
+    """Unwrap ``Optional``/unions, ``list``, and ``Annotated`` down to core types."""
     origin = get_origin(annotation)
     if origin in (Union, UnionType):
         cores: list[Any] = []
@@ -60,7 +62,30 @@ def _core_annotations(annotation: Any) -> list[Any]:
     if origin is list:
         args = get_args(annotation)
         return _core_annotations(args[0]) if args else []
+    if origin is Annotated:
+        return _core_annotations(get_args(annotation)[0])
     return [annotation]
+
+
+def _marker_roles(annotation: Any) -> set[str]:
+    """Collect role-marker declarations anywhere in the annotation tree.
+
+    ``citations[list[str]]`` and ``list[citations[str]]`` both declare the
+    field's participation in the citations role (per-item vs whole-value is
+    strategy territory, not role territory — see the epic doc).
+    """
+    roles: set[str] = set()
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        args = get_args(annotation)
+        roles.update(meta.name for meta in args[1:] if isinstance(meta, SemanticRole))
+        roles.update(_marker_roles(args[0]))
+        return roles
+    if origin in (Union, UnionType) or origin is list:
+        for arg in get_args(annotation):
+            if arg is not type(None):
+                roles.update(_marker_roles(arg))
+    return roles
 
 
 def semantic_role_for(annotation: Any) -> str:
@@ -86,19 +111,35 @@ def semantic_role_for(annotation: Any) -> str:
 
 
 def resolve_semantic_role(field_info: Any) -> str:
-    """A field's effective role: explicit ``role=`` declaration wins, else derived.
+    """A field's effective role: explicit declarations win, else derived.
 
-    An explicit role that contradicts a non-``plain`` derived role is a
-    declaration bug and raises.
+    Explicit declarations are the ``role=`` kwarg and ``Annotated`` role
+    markers (pydantic hoists a top-level ``Annotated``'s metadata onto
+    ``FieldInfo.metadata``; nested markers stay in the annotation tree). Any
+    two declarations that disagree — marker vs kwarg, or either vs a
+    non-``plain`` legacy-type derivation — are a declaration bug and raise.
     """
+    declared: set[str] = set()
     extra = getattr(field_info, "json_schema_extra", None) or {}
-    declared = extra.get("semantic_role") if isinstance(extra, dict) else None
-    derived = semantic_role_for(field_info.annotation)
-    if declared is None:
-        return derived
-    if derived != "plain" and declared != derived:
+    if isinstance(extra, dict) and extra.get("semantic_role") is not None:
+        declared.add(extra["semantic_role"])
+    for meta in getattr(field_info, "metadata", None) or []:
+        if isinstance(meta, SemanticRole):
+            declared.add(meta.name)
+    declared.update(_marker_roles(field_info.annotation))
+
+    if len(declared) > 1:
         raise ValueError(
-            f"Field declares role={declared!r} but its annotation implies role={derived!r}; "
+            f"Field declares conflicting semantic roles {sorted(declared)}; declare exactly one."
+        )
+
+    derived = semantic_role_for(field_info.annotation)
+    if not declared:
+        return derived
+    (role,) = declared
+    if derived != "plain" and role != derived:
+        raise ValueError(
+            f"Field declares role={role!r} but its annotation implies role={derived!r}; "
             "drop one of the two declarations."
         )
-    return declared
+    return role
