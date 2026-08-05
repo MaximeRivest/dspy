@@ -86,11 +86,11 @@ grammar — the limit-case kind, §e2).
 | # | component | representation | plain-data format | optimizable-kind | tier |
 |---|---|---|---|---|---|
 | 1 | **module tree** | ordered tree of nodes, each `{kind, name, children, forward_ref}`; the tree *is* the recursion — a parent's forward calls child modules as leaves, bottoming out at Predict/UDF (§d). Each Predict leaf additionally carries **bindings** `{adapter: pool-ref, lm: pool-ref, delta?: blob-ref}` naming its entries in the component pools (§b-pools) | JSON | frozen (structure) | bake |
-| 2 | **signature** | per predictor: ordered `fields[]` each `{name, role(input/output), prefix, description, annotation}`. **Instructions are NOT stored here** — they live once in 3a (see note) | JSON (mirrors `Signature.dump_state()`, `signature.py:495`, minus instructions) | frozen | bake |
+| 2 | **signature** | per predictor: ordered `fields[]` each `{name, direction(input/output), prefix, description, shape, semantic_role}` — `direction` is the renamed old `role` key; **`shape`** is the field's data type as JSON schema (*arbitrary* Python/pydantic typing — no blessed type list; hints with no JSON-schema meaning, e.g. `Callable`, refuse loudly: those are tools, not data); **`semantic_role`** is the field's relationship to the exchange, a closed versioned vocabulary (`plain \| reasoning \| tools \| tool_calls \| citations \| history \| media \| code`) — intent, hence frozen: "I want cited answers" defines the task; *how* citations are obtained is a component-4 strategy (§Adapter-semantics). **Instructions are NOT stored here** — they live once in 3a (see note) | JSON (mirrors `Signature.dump_state()`, `signature.py:495`, minus instructions) | frozen | bake |
 | 3a | **instructions** | the signature instruction text, resolved — the **single canonical home** for instructions; component 2 does not duplicate it | JSON string | **text** | bake |
 | 3b | **demos** | `list[demo]`, each carrying its field values **and** its input/label designation (`_input_keys`) as an explicit `input_keys[]` list — the fix for §8 | JSON | **demos** | bake |
 | 3c | **predictor config** | resolved `{temperature, n, max_tokens, top_p, stop, …}` — the `Predict.config` dict (`predict.py:61`) that `dump_state` drops; baked here as an `LMConfig` (`types.py:469`) | JSON | **choice** | bake |
-| 4 | **adapter** | a **pool of named entries** (§b-pools) — predictors bind an entry by name; a one-adapter program is a one-entry pool. Each entry: reified `AdapterPlan` (`_engine/ir.py:41`): `RenderField[]` input/output layer, `field_transforms[]` (Hide/Rename/Add × Input/Output, `transforms.py`), `parsers[]` (ParserHook identities, `parser_hook.py:76`), `format_identity` + `literal_table` (**fixed key vocabulary**, §Adapter-notes), and an optional `config` block for resolved capability-checked flags (JSONAdapter's `response_format_routing` etc.). Format layer is **required but not yet in this branch** | JSON (operator refs + fixed literal table + config) | frozen (plan/transforms/parsers) / **choice** (`output_structure`; binding's entry selection) / **text** (literal-table values) — see §Adapter-notes tag split | bake |
+| 4 | **adapter** | a **pool of named entries** (§b-pools) — predictors bind an entry by name; a one-adapter program is a one-entry pool. Each entry: reified `AdapterPlan` (`_engine/ir.py:41`): `RenderField[]` input/output layer, `field_transforms[]` (Hide/Rename/Add × Input/Output, `transforms.py`), `parsers[]` (ParserHook identities, `parser_hook.py:76`), `format_identity` + `literal_table` (**fixed key vocabulary**, §Adapter-notes), and an optional `config` block for resolved capability-checked flags (JSONAdapter's `response_format_routing` etc.), a **`strategies` block** (per semantic role, a named strategy binding — capability-checked at bake, provenance-traced; §Adapter-semantics), and **codec bindings** (`input_codec`/`output_codec` per field shape, drawn from a named **codec pool**; §Adapter-semantics). Format layer is **required but not yet in this branch** | JSON (operator refs + fixed literal table + strategies + codecs + config) | frozen (plan/transforms/parsers) / **choice** (`output_structure`; binding's entry selection; strategy + codec bindings) / **text** (literal-table values) — see §Adapter-notes tag split | bake |
 | 5 | **forward (restricted-Python AST)** | per module: the `forward` AST restricted to a whitelist of node kinds (`if`/`for`/`while`/`try`/`raise`/assign) whose `Call`s resolve to declared typed leaves (Predict / sub-module / tool / interpreter); recurses via sub-module leaves (§d) | JSON (AST) | frozen | bake |
 | 6 | **tools** | per tool: identity `{name, parameters(arg JSON schema)}` = `LMToolSpec` (`types.py:292`) **plus net-new** `return_schema` + `source` (Python source) + `deps[]` + a `placement` block (§e0: rung 0 = in-process source → local service → **MCP**/remote microservice) (see §Tool-notes) | JSON identity + Python source string | frozen (identity) / **authored-code** (body) | bake at rung 0 / declare beyond |
 | 7 | **interpreter** | `{kind, module_name}` + a baked **identity profile** — the semantics the program's scores are claims about: `{language+version, namespace_policy, packages[], resource_limits, result_convention}` (§e0-binding: the interpreter is the third instance of identity-vs-binding) — + a `placement` block (§e0). Rung 0 = generated code in an isolated namespace / synthetic module in the *same* process (**no Deno declared**); outward rungs = same-sandbox subprocess → separate sandbox → remote pool. Placement is the receiver's; the profile is not — changing it is a recorded deviation. Fully net-new (see §Interpreter-notes) | JSON | frozen | bake at rung 0 / declare beyond |
@@ -494,6 +494,96 @@ baked component it stores the *resolved decision* (e.g. `"resolved":
 "plain_messages"` when the LM lacks `response_format`), verified at load and
 refused loudly on mismatch — the same declare-don't-discover rule. Adapters with
 no such flags simply omit the block.
+
+<a name="adapter-semantics"></a>**§Adapter-semantics — roles, strategies, and
+codecs: what "adapter types" always were.** dspy's semantic types
+(`Reasoning`, `Tool`, `ToolCalls`, `Citations`, `Image`, `History`, …) each
+conflate two things: a **shape** (what the value *is* — a string, bytes, a
+list of specs; plain data, pydantic territory) and a **role** (what the field
+*means to the inference* — "the model's thinking channel", "invokable
+capabilities", "answers grounded in those documents"). The conflation is why
+dspy simultaneously *reinvents typing* (the shape half — a parallel type
+universe built only because the role had nowhere else to live) and *cannot be
+asked to drop the types* (the role half is genuine invention: nothing in
+Python's type system says "grounded citation"). The IR separates them along
+the sacred line (§d-sacred):
+
+- **Role is intent → component 2**, the frozen `semantic_role` slot. The
+  swap test that defines the line: change the reasoning strategy from
+  textual to native and the task did not change — same signature, same
+  metric. Governance note: the vocabulary is closed and versioned like the
+  literal-table keys, and there will be pressure to add roles that are
+  really shapes — the test for admission is *does it change how the exchange
+  is conducted?* If not, it is a shape, not a role.
+- **Strategy is mechanism → component 4**, the `strategies` block: per role,
+  a named strategy binding — `reasoning: native_channel | textual_field |
+  prefill`; `tools: native_fc | textual_json | xml_dispatch`; `citations:
+  anthropic_native | span_markers | quote_extraction`. Each is
+  capability-checked against the LM's declared capabilities at bake (the
+  `adapter.config` resolved-decision pattern; an inadmissible strategy costs
+  zero LM spend to rule out), records selection in provenance (the engine's
+  `strategy_trace`, already shipped in `_engine/strategies/`), and carries
+  its parser (the `AdapterPatch` discipline, already law). **Third-party
+  custom types become authored strategies**: a declared role + a
+  source-baked strategy entry with `deps[]` and identity verification — the
+  §e0-class treatment — replacing the legacy `adapt_to_native_lm_feature`
+  hook the engine still honors (its `base.py:99` TODO closes here).
+- **Codec is mechanism one level further down → component 4**, the codec
+  pool: per-shape **render/parse pairs** deciding the wire syntax of a
+  *value* — shown to the model as, and requested back as, BAML-style schema
+  prose, JSON, XML, a Python literal. Codecs are **directional and
+  independent**: `input_codec` (how my object is rendered into the prompt)
+  and `output_codec` (what syntax the model is asked to emit, and parsed
+  from) need not match — show a compact Python literal, ask for JSON back.
+  They are **shape-generic by law**: a codec works for any schema; a "codec"
+  that only works for one field is literal-table text and belongs to that
+  axis. Today's adapters decompose under this factoring — BAMLAdapter was
+  never a format but a *codec preference* (schema-prose rendering) riding
+  the chat format — and previously inexpressible mixes become one binding:
+  chat markers + BAML-rendered inputs + JSON-emitted outputs, per field.
+
+**The four-layer mechanism taxonomy.** With codecs the mechanism side is
+complete, each layer scoped one level down, stratified by the single-shot
+law (a strategy may never add a call — that would make it a lowering; a
+format may never touch structure; a strategy may never own literal strings —
+that seam belongs to formats, the zero-diff boundary QC-08 proved):
+
+| layer | operates on | scope | example choice |
+|---|---|---|---|
+| **lowering** (§d-lowering) | the tree | across exchanges | TwoStep, retry, fallback |
+| **format** | the whole exchange | one exchange | chat markers vs JSON body vs XML |
+| **strategy** | one field's role | within one exchange | reasoning native vs textual; tools native-FC vs textual |
+| **codec** | one value's shape | one value on the wire | BAML vs JSON vs XML vs Python literal |
+
+One intent layer (the signature: shape + role), four mechanism layers — and
+the taxonomy re-explains the historical misfilings: `Reasoning`'s provider
+hacks were a *strategy* trapped inside a *type*; TwoStep was a *lowering*
+trapped inside an *adapter*. Every misfiling found on the way here was
+something living exactly one layer below its true home.
+
+**Optimizability.** Strategy and codec bindings are `choice` fields joining
+the §e2 surface, with the cheapest gates in the system: strategies are
+pruned statically by capability; codecs carry the strongest oracle of any
+axis — pure code→code round-trip with **probes generated from the schema
+itself** (the shape's JSON schema is a free adversarial probe generator:
+nesting depth, unicode, empty collections, nulls) — so only the genuinely
+empirical question, *which encoding this model handles best*, ever costs LM
+spend. That question has a known nonzero answer (models measurably differ on
+JSON vs XML vs schema-prose fidelity; textual tool-calling beats native FC
+on some models), which is exactly why it must be a recorded, searchable
+binding — "qa.tools: native_fc→textual_json, devset 0.71→0.76" as an
+ordinary View-3 diff — rather than a human rewrite.
+
+**The reasoning role, completed.** §d-sacred settled *undeclared* reasoning
+(exhaust → observability channel). The role/strategy split settles the
+*declared* case: `semantic_role: reasoning` states the intent once, and the
+strategy decides where the content comes from — native channel, textual
+field, per-model choice. The declaration is stable across every strategy
+swap; that stability is the entire point of the marker, and it is what the
+type-based design could not give — swapping strategy meant swapping the
+field's *type*, which mutates the signature: the sacred thing. Migration
+compat: legacy type annotations imply default roles (`Reasoning` ⇒ shape
+`str` + `semantic_role: reasoning`) for the deprecation arc.
 
 <a name="tool-notes"></a>**§Tool-notes — two net-new pieces.** dspy has tool
 *identity* (`LMToolSpec`: `name` + `parameters`) but (1) **zero tool-body
@@ -1096,10 +1186,12 @@ joins the search space beside the adapter axes (§Adapter-notes). The
 optimizer's mutable surface then spans, uniformly: instructions/demos (`text`/
 `demos`, metric-only oracle), literal-table render/parse pairs (`text`,
 round-trip oracle), format family and adapter binding (`choice`, round-trip
-on probes), lowering application (`choice`, interface-preservation check),
-and weights/deltas (`weight-ref`, loss). One trajectory abstraction, one
-`checkpoint = save` machinery, five axes — the middle three exist only
-because representation became data and the in-between layer got reified. An
+on probes), strategy and codec bindings (`choice`, capability pruning +
+schema-generated round-trip probes; §Adapter-semantics), lowering application
+(`choice`, interface-preservation check), and weights/deltas (`weight-ref`,
+loss). One trajectory abstraction, one `checkpoint = save` machinery — and
+every axis between text and weights exists only because representation
+became data and the in-between layer got reified. An
 optimizer can now legitimately *discover* "this predictor scores better as
 TwoStep-over-a-cheap-extractor with XML markers" — today a human
 architectural decision made once, ambiently, and never revisited; under the
