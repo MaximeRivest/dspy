@@ -608,6 +608,36 @@ on some models), which is exactly why it must be a recorded, searchable
 binding — "qa.tools: native_fc→textual_json, devset 0.71→0.76" as an
 ordinary View-3 diff — rather than a human rewrite.
 
+**Inside a strategy — the continuous space.** A strategy entry is not an
+atom; it decomposes into parts that already have optimizable-kinds, so
+"choose among strategies" and "rewrite a strategy" are one trajectory at two
+granularities: (1) its **prompt literals** (the instruction a textual
+strategy renders — "wrap quoted spans in cite markers…") are a per-strategy
+literal table, `text` kind, metric-gated — the genuinely continuous part,
+and today frozen inside adapter code where no optimizer can reach it; (2)
+its **wire grammar** is a render/parse *pair* under the joint-mutation rule
+and round-trip oracle, `choice`/`text`, exactly the adapter literal-table
+machinery scoped to one role; (3) its **parser code** is `authored-code`
+under the §e2 seed regimes, with the fidelity oracle manufactured
+mechanically — record the current strategy's parses over a probe corpus
+(the golden-corpus discipline, per-strategy) and demand agreement for
+`semantics-fixed`, or open to `metric-driven` under the strictest gates;
+(4) **whole-strategy synthesis** is a pool *fork* — a new named entry,
+born free (§c1), provenance carrying seed, mutation chain, and
+`authored_by: optimizer`; a synthesized winner is thereby a shareable
+artifact any program can bind. Three invariants keep the space honest:
+every mutant is **statically bounded by the single-shot law** (a strategy
+that adds an LM call is a lowering wearing the wrong coat — refuse, by the
+§d census machinery); every mutant must **still be a strategy**
+(`applies`/`contribute` + carried parser, patches mergeable, and
+capability declarations *re-verified* after mutation — a rewrite that
+sneaks a native-only request param re-passes the gate or dies); and
+**provenance is non-negotiable** — strategy code runs on every exchange,
+so authorship and mutation chain survive into the pool entry for the
+receiver's audit. The cost gradient orders the ladder naturally: literals
+first, grammar second, parser third, synthesis last — mechanically, with
+receipts, what a skilled prompt engineer does by hand today.
+
 **The reasoning role, completed.** §d-sacred settled *undeclared* reasoning
 (exhaust → observability channel). The role/strategy split settles the
 *declared* case: `semantic_role: reasoning` states the intent once, and the
