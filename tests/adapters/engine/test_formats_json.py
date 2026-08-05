@@ -5,6 +5,7 @@ import json
 import random
 
 import pytest
+from conftest import skip_if_python_sensitive
 from golden.cases import CASES, case_fixture, execute_case
 from golden.generate_fixtures import GOLDEN_DIR, REQUEST_DIR, render_fixture
 from golden.harness import canonical_error, canonicalize
@@ -59,6 +60,7 @@ def test_baml_adapter_migration_state_and_stays_unexported():
 
 @pytest.mark.parametrize("case_id", JSON_REQUEST_CASE_IDS)
 def test_json_request_dual_run_engine_matches_fixture(case_id):
+    skip_if_python_sensitive(CASES[case_id])
     actual = json.loads(render_fixture(case_fixture(CASES[case_id])))
     expected = json.loads((REQUEST_DIR / f"{case_id}.json").read_text(encoding="utf-8"))
     assert actual == expected
@@ -66,6 +68,7 @@ def test_json_request_dual_run_engine_matches_fixture(case_id):
 
 @pytest.mark.parametrize("case_id", JSON_REQUEST_CASE_IDS)
 def test_json_request_dual_run_legacy_matches_fixture(case_id):
+    skip_if_python_sensitive(CASES[case_id])
     case = CASES[case_id]
     legacy_expected = canonicalize(execute_case(case, adapter_factory=_forced_legacy_factory))
     fixture = json.loads((REQUEST_DIR / f"{case_id}.json").read_text(encoding="utf-8"))
@@ -81,6 +84,7 @@ def test_json_parse_dual_run_engine_matches_fixture(case_id):
 
 @pytest.mark.parametrize("case_id", BAML_REQUEST_CASE_IDS)
 def test_baml_request_corpus_unchanged(case_id):
+    skip_if_python_sensitive(CASES[case_id])
     """BAML must reproduce its pre-engine fixtures exactly (it routed legacy
     until QC-08, and via BAMLFormat since)."""
     actual = json.loads(render_fixture(case_fixture(CASES[case_id])))

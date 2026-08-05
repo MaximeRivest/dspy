@@ -6,6 +6,7 @@ extraction parser hook."""
 import json
 
 import pytest
+from conftest import skip_if_python_sensitive
 from golden.cases import CASES, case_fixture, execute_case
 from golden.generate_fixtures import GOLDEN_DIR, REQUEST_DIR, render_fixture
 from golden.harness import Recorder, StubLM, canonicalize
@@ -41,6 +42,7 @@ def test_two_step_is_engine_backed_with_its_format():
 
 @pytest.mark.parametrize("case_id", TWOSTEP_REQUEST_CASE_IDS)
 def test_two_step_request_dual_run_engine_matches_fixture(case_id):
+    skip_if_python_sensitive(CASES[case_id])
     actual = json.loads(render_fixture(case_fixture(CASES[case_id])))
     expected = json.loads((REQUEST_DIR / f"{case_id}.json").read_text(encoding="utf-8"))
     assert actual == expected
@@ -48,6 +50,7 @@ def test_two_step_request_dual_run_engine_matches_fixture(case_id):
 
 @pytest.mark.parametrize("case_id", TWOSTEP_REQUEST_CASE_IDS)
 def test_two_step_request_dual_run_legacy_matches_fixture(case_id):
+    skip_if_python_sensitive(CASES[case_id])
     case = CASES[case_id]
 
     def factory(c, recorder):

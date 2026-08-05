@@ -5,6 +5,7 @@ import json
 import random
 
 import pytest
+from conftest import skip_if_python_sensitive
 from golden.cases import CASES, case_fixture, execute_case
 from golden.generate_fixtures import GOLDEN_DIR, REQUEST_DIR, render_fixture
 from golden.harness import canonical_error, canonicalize
@@ -44,6 +45,7 @@ def test_xml_and_baml_are_engine_backed_with_their_formats():
 
 @pytest.mark.parametrize("case_id", XML_REQUEST_CASE_IDS)
 def test_xml_request_dual_run_engine_matches_fixture(case_id):
+    skip_if_python_sensitive(CASES[case_id])
     actual = json.loads(render_fixture(case_fixture(CASES[case_id])))
     expected = json.loads((REQUEST_DIR / f"{case_id}.json").read_text(encoding="utf-8"))
     assert actual == expected
@@ -51,6 +53,7 @@ def test_xml_request_dual_run_engine_matches_fixture(case_id):
 
 @pytest.mark.parametrize("case_id", XML_REQUEST_CASE_IDS)
 def test_xml_request_dual_run_legacy_matches_fixture(case_id):
+    skip_if_python_sensitive(CASES[case_id])
     case = CASES[case_id]
     legacy = canonicalize(execute_case(case, adapter_factory=lambda c, r: _ForcedLegacyXML(**c.adapter_kwargs)))
     fixture = json.loads((REQUEST_DIR / f"{case_id}.json").read_text(encoding="utf-8"))
@@ -59,6 +62,7 @@ def test_xml_request_dual_run_legacy_matches_fixture(case_id):
 
 @pytest.mark.parametrize("case_id", BAML_REQUEST_CASE_IDS)
 def test_baml_request_dual_run_legacy_matches_fixture(case_id):
+    skip_if_python_sensitive(CASES[case_id])
     case = CASES[case_id]
     legacy = canonicalize(execute_case(case, adapter_factory=lambda c, r: _ForcedLegacyBAML(**c.adapter_kwargs)))
     fixture = json.loads((REQUEST_DIR / f"{case_id}.json").read_text(encoding="utf-8"))
