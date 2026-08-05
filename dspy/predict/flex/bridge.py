@@ -122,6 +122,11 @@ def prediction_to_fields(pred: Any) -> dict[str, Any]:
                 f"A bridged predictor must return a dspy.Prediction; got {type(pred).__name__}"
             )
     fields = {k: _jsonable(v) for k, v in dict(store).items()}
+    # Mechanism exhaust (e.g. ChainOfThought's reasoning) lives on the
+    # prediction's _trajectory channel; sandboxed programs consume it as
+    # ordinary fields, so merge it in without shadowing declared outputs.
+    for k, v in (getattr(pred, "_trajectory", None) or {}).items():
+        fields.setdefault(k, _jsonable(v))
     try:
         json.dumps(fields)
     except TypeError as e:

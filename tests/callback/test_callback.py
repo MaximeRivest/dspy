@@ -186,7 +186,7 @@ def test_callback_complex_module():
     cot = dspy.ChainOfThought("question -> answer", n=3)
     result = cot(question="How are you?")
     assert result["answer"] == "test output"
-    assert result["reasoning"] == "No more responses"
+    assert result._trajectory["reasoning"] == "No more responses"
 
     assert len(callback.calls) == 14
     assert [call["handler"] for call in callback.calls] == [
@@ -217,7 +217,7 @@ async def test_callback_async_module():
         cot = dspy.ChainOfThought("question -> answer", n=3)
         result = await cot.acall(question="How are you?")
     assert result["answer"] == "test output"
-    assert result["reasoning"] == "No more responses"
+    assert result._trajectory["reasoning"] == "No more responses"
 
     assert len(callback.calls) == 14
     assert [call["handler"] for call in callback.calls] == [
