@@ -79,6 +79,8 @@ class AdapterPlan:
         The signature itself is never mutated by planning; all edits to the
         model-facing view happen through field transforms.
         """
+        from dspy.adapters._engine.roles import resolve_semantic_role
+
         inputs = inputs or {}
         plan = cls()
         for name, field_info in signature.input_fields.items():
@@ -89,6 +91,7 @@ class AdapterPlan:
                     role="input",
                     annotation=field_info.annotation,
                     value=inputs.get(name),
+                    metadata={"semantic_role": resolve_semantic_role(field_info)},
                 )
             )
         for name, field_info in signature.output_fields.items():
@@ -98,6 +101,7 @@ class AdapterPlan:
                     original_name=name,
                     role="output",
                     annotation=field_info.annotation,
+                    metadata={"semantic_role": resolve_semantic_role(field_info)},
                 )
             )
         return plan

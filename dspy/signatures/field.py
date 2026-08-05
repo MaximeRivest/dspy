@@ -7,7 +7,15 @@ from dspy.utils.constants import IS_TYPE_UNDEFINED
 # The following arguments can be used in DSPy InputField and OutputField in addition
 # to the standard pydantic.Field arguments. We just hope pydanitc doesn't add these,
 # as it would give a name clash.
-DSPY_FIELD_ARG_NAMES = ["desc", "prefix", "format", "parser", "__dspy_field_type", IS_TYPE_UNDEFINED]
+DSPY_FIELD_ARG_NAMES = ["desc", "prefix", "format", "parser", "role", "__dspy_field_type", IS_TYPE_UNDEFINED]
+
+# The closed vocabulary of semantic roles a field may declare: the field's
+# relationship to the LM exchange, separate from its data shape. Roles are
+# signature-level intent; the inference strategy answering a role is an
+# adapter/engine concern. See roadmap/epic-C-semantic-roles.md.
+SEMANTIC_ROLES = frozenset(
+    ["plain", "reasoning", "tools", "tool_calls", "citations", "history", "media", "code"]
+)
 
 _DEPRECATED_FIELD_ARGS = {
     "prefix": (
@@ -52,6 +60,16 @@ def move_kwargs(**kwargs):
     # Also copy over the pydantic "description" if no dspy "desc" is given.
     if "description" in kwargs and "desc" not in json_schema_extra:
         json_schema_extra["desc"] = kwargs["description"]
+    # An explicit semantic role is validated eagerly and stored under
+    # "semantic_role" ("role" alone would collide with the render-field
+    # input/output direction key).
+    if "role" in json_schema_extra:
+        role = json_schema_extra.pop("role")
+        if role not in SEMANTIC_ROLES:
+            raise ValueError(
+                f"Unknown semantic role {role!r}. Valid roles: {sorted(SEMANTIC_ROLES)}."
+            )
+        json_schema_extra["semantic_role"] = role
     constraints = _translate_pydantic_field_constraints(**kwargs)
     if constraints:
         json_schema_extra["constraints"] = constraints
