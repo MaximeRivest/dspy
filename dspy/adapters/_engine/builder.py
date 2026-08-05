@@ -2,13 +2,15 @@
 
 This closes TODO #1 (the explicit plan) and TODO #2 (provider-specific
 planning out of semantic types): native function calling runs as a
-call-level :class:`PlanStep`, and built-in native response types
-(Reasoning, Citations) run as per-field :class:`TypeStrategy` objects whose
-gates live in shared predicates inside the type modules — the legacy hooks
-import the SAME predicates, so the two paths cannot drift. Third-party
-types in ``native_response_types`` keep flowing through their documented
-``Type.adapt_to_native_lm_feature`` hook, silently honored (deprecation is
-a future registry epic's decision).
+call-level :class:`PlanStep`, and every native response type runs through
+ONE uniform per-field :class:`TypeStrategy` loop. Built-ins (Reasoning,
+Citations) resolve from the strategy registry, with gates in shared
+predicates inside the type modules — the legacy hooks import the SAME
+predicates, so the two paths cannot drift. Third-party types resolve to a
+registered strategy when one exists, else to their documented
+``Type.adapt_to_native_lm_feature`` hook auto-wrapped in
+:class:`LegacyTypeHookStrategy` — silently honored (deprecation is a future
+exposure epic's decision), with effects captured onto the plan either way.
 
 Behavior parity is structural: identical ``lm_kwargs`` mutations in
 identical order (step first, then the snapshot loop over output fields),
@@ -45,7 +47,7 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     # level (importing dspy must not load the engine), so the dependency
     # points this way only.
     from dspy.adapters import base as adapter_base
-    from dspy.adapters._engine.strategies import NativeFunctionCallingStep, builtin_field_strategy_for
+    from dspy.adapters._engine.strategies import NativeFunctionCallingStep, field_strategy_for
     from dspy.adapters._engine.strategy import CallContext, FieldContext
     from dspy.adapters.types import Type
 
@@ -76,55 +78,34 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
         ):
             continue
 
-        strategy = builtin_field_strategy_for(field.annotation)
-        if strategy is not None:
-            render_field = plan.find_field("output", name)
-            ctx = FieldContext(
-                adapter=adapter,
-                plan=plan,
-                field=render_field,
-                role="output",
-                lm=lm,
-                lm_kwargs=lm_kwargs,
-                signature=render_signature,
-            )
-            if strategy.applies(ctx):
-                kwargs_before = dict(lm_kwargs)
-                patch = strategy.contribute(ctx)
-                render_signature = _apply_patch(plan, patch, render_signature, strategy.name)
-                _record_kwargs_delta(plan, field.annotation.__name__, kwargs_before, lm_kwargs)
+        strategy = field_strategy_for(field.annotation)
+        render_field = plan.find_field("output", name)
+        ctx = FieldContext(
+            adapter=adapter,
+            plan=plan,
+            field=render_field,
+            role="output",
+            lm=lm,
+            lm_kwargs=lm_kwargs,
+            signature=render_signature,
+        )
+        if strategy.applies(ctx):
+            kwargs_before = dict(lm_kwargs)
+            patch = strategy.contribute(ctx)
+            self_traced = bool(patch.strategy_trace)
+            render_signature = _apply_patch(plan, patch, render_signature, strategy.name)
+            _record_kwargs_delta(plan, field.annotation.__name__, kwargs_before, lm_kwargs)
+            # A strategy may self-report its trace via the patch (the legacy
+            # wrapper does: its decision depends on observed effects); the
+            # builder records the standard applies-based entry otherwise.
+            if not self_traced:
                 plan.strategy_trace.append(
                     StrategyTrace(strategy=strategy.name, field=name, decision="selected", reason="applies")
                 )
-            else:
-                plan.strategy_trace.append(
-                    StrategyTrace(strategy=strategy.name, field=name, decision="skipped", reason="applies=False")
-                )
-            continue
-
-        # Third-party compatibility step: the documented Type hook, silently
-        # honored, with its effects captured onto the plan.
-        kwargs_before = dict(lm_kwargs)
-        fields_before = set(render_signature.output_fields)
-        render_signature = field.annotation.adapt_to_native_lm_feature(render_signature, name, lm, lm_kwargs)
-
-        from dspy.adapters._engine.parser_hook import ThirdPartyNativeParserHook
-        from dspy.adapters._engine.transforms import HideOutputField
-
-        deleted = sorted(fields_before - set(render_signature.output_fields))
-        plan.field_transforms.extend(
-            HideOutputField(deleted_name, reason=f"native:{field.annotation.__name__}") for deleted_name in deleted
-        )
-        plan.parsers.append(ThirdPartyNativeParserHook(field.annotation, name))
-        _record_kwargs_delta(plan, field.annotation.__name__, kwargs_before, lm_kwargs)
-        plan.strategy_trace.append(
-            StrategyTrace(
-                strategy=f"type_hook:{field.annotation.__name__}",
-                field=name,
-                decision="selected" if deleted or kwargs_before != lm_kwargs else "skipped",
-                reason="third-party adapt_to_native_lm_feature",
+        else:
+            plan.strategy_trace.append(
+                StrategyTrace(strategy=strategy.name, field=name, decision="skipped", reason="applies=False")
             )
-        )
 
     plan.input_fields, plan.output_fields, transform_warnings = apply_field_transforms(
         plan.input_fields, plan.output_fields, plan.field_transforms
@@ -141,6 +122,13 @@ def _apply_patch(plan: AdapterPlan, patch, render_signature, source_name: str):
     render-signature deletions from its hide/delete channels: a field hidden
     by the engine is a field deleted from the signature format() receives."""
     from dspy.adapters._engine.transforms import HideInputField, HideOutputField
+
+    if patch.replace_render_signature is not None:
+        # Legacy-hook channel: the hook already returned the rewritten
+        # signature (deletions applied, and possibly richer edits a
+        # delete-only reconstruction would drop). Use it wholesale.
+        patch.merge_into(plan)
+        return patch.replace_render_signature
 
     for transform in patch.field_transforms:
         if isinstance(transform, (HideInputField, HideOutputField)):

@@ -96,9 +96,12 @@ class Adapter:
         legacy contract (mutate kwargs, return the render signature) for
         direct callers.
 
-        TODO(adapters-plan): Built-in/native response planning still flows
-        through ``Type.adapt_to_native_lm_feature()`` inside the builder; a
-        later PR moves it into adapter-owned planning strategies.
+        All native response planning flows through the engine's uniform
+        strategy loop: built-ins resolve from the strategy registry, and
+        third-party types resolve to a registered strategy or to their
+        documented ``Type.adapt_to_native_lm_feature()`` hook auto-wrapped
+        as one (``_engine/strategies``) — the last ``adapters-plan`` seam,
+        closed.
         """
         from dspy.adapters._engine.builder import build_plan
 

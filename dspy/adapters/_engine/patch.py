@@ -51,7 +51,14 @@ class PatchMergeError(ValueError):
 
 @dataclass
 class AdapterPatch:
-    """One composable contribution to a plan."""
+    """One composable contribution to a plan.
+
+    ``replace_render_signature`` is a legacy-compat channel used only by the
+    auto-wrapped third-party type hook (``LegacyTypeHookStrategy``): the
+    documented hook contract returns a whole rewritten signature, which a
+    delete-only reconstruction could silently truncate. The builder consumes
+    it in place of transform-derived deletions; it never lands on the plan.
+    """
 
     request: LMRequestPatch = field(default_factory=LMRequestPatch)
     field_transforms: list[Any] = field(default_factory=list)
@@ -59,9 +66,12 @@ class AdapterPatch:
     debug_links: list[DebugLink] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     strategy_trace: list[StrategyTrace] = field(default_factory=list)
+    replace_render_signature: Any = None
 
     def merge(self, other: "AdapterPatch") -> "AdapterPatch":
         """Return a new patch equal to this patch followed by ``other``."""
+        if self.replace_render_signature is not None and other.replace_render_signature is not None:
+            raise PatchMergeError("Two contributions both replace the render signature")
         return AdapterPatch(
             request=self.request.merge(other.request),
             field_transforms=[*self.field_transforms, *other.field_transforms],
@@ -69,6 +79,7 @@ class AdapterPatch:
             debug_links=[*self.debug_links, *other.debug_links],
             warnings=[*self.warnings, *other.warnings],
             strategy_trace=[*self.strategy_trace, *other.strategy_trace],
+            replace_render_signature=self.replace_render_signature or other.replace_render_signature,
         )
 
     def merge_into(self, plan: AdapterPlan) -> None:
