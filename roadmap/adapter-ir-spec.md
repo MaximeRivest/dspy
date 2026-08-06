@@ -149,16 +149,23 @@ directive. Content strings may use:
   verbatim, and always emit. (The asymmetry is the legacy pipeline's,
   carried as declared semantics, not renderer accident.)
 - **Reserved names:** `instruction`, `inputs`, `outputs`, `demos`,
-  `history`, and `fragments` are the language's reserved slot names; the
-  call forms (`{instruction(...)}`, `{inputs(...)}`, …) always denote the
-  reserved construct. A signature may declare a field carrying a reserved
-  name — loops and aggregates render it like any other field — but such a
-  field has no bare value-slot spelling: the bare aggregate/fragments
-  spellings refuse at parse naming the possible collision, and a bare
-  `{instruction}` rendered against a signature that declares a field named
-  `instruction` refuses at render naming the collision
-  (`{instruction(style='raw')}` is the unambiguous spelling of the
-  signature instructions). Reserved-name shadowing is never silent.
+  `history`, `fragments`, and `field` are the language's reserved slot
+  names; the call forms (`{instruction(...)}`, `{inputs(...)}`, …) always
+  denote the reserved construct. A signature may declare a field carrying
+  a reserved name — loops and aggregates render it like any other field —
+  but such a field has no bare value-slot spelling: the bare
+  aggregate/fragments/field spellings refuse at parse naming the possible
+  collision, and a bare `{instruction}` rendered against a signature that
+  declares a field named `instruction` refuses at render naming the
+  collision (`{instruction(style='raw')}` is the unambiguous spelling of
+  the signature instructions). Reserved-name shadowing is never silent.
+- **The `{field('name')}` escape spelling:** the quoted-name value-slot
+  call form denotes the signature field `name` unambiguously, whatever the
+  name — it is the ONLY value-slot spelling for a field carrying a
+  reserved name (`{field('inputs')}`, `{field('instruction')}`), and every
+  reserved-collision refusal names it as the way out. For non-reserved
+  names it is equivalent to the bare spelling. `field` itself is reserved:
+  a bare `{field}` refuses at parse naming the call form.
 - **Fragment slots (positional):** `{fragments('system')}` and
   `{fragments('user')}` — placed once per preset; a textual strategy's
   fragment names the slot it targets. Empty slots render as nothing — a
