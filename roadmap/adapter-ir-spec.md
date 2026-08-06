@@ -85,7 +85,11 @@ Consequences, all normative:
   carry the slots its fragments fill.
 - **Declared capacity:** a template statically declares which roles it can
   host textually — derivable by analyzing its slots (this is why the
-  template language is closed). Bake checks the triple (signature roles ×
+  template language is closed). Capacity separates the live-call lane
+  (content messages) from the example lane (demos/history directive
+  patterns), and media/tools hosting is a per-field question — an input
+  field lands textually only where an inputs iteration or its own named
+  slot places it. Bake checks the triple (signature roles ×
   LM capabilities × template capacity) and refuses loudly naming all three
   when no lane exists (ADP-006).
 - An explicit slot reference to a natively-served field is a bake-time
@@ -112,13 +116,42 @@ directive. Content strings may use:
   chat_type_hint`. The bare `strip` flag applies `str.strip()` to the
   joined result — the historical join-then-strip section shape, carried as
   declared data (D-2 proved byte parity is unreachable without it).
+- **Section blocks:** `{% section strip %} … {% endsection %}` — the
+  enclosed content renders and the joined result is `str.strip()`'d: the
+  historical join-then-strip *region* shape, which is what lets a trailing
+  subsection that renders empty collapse together with its literal
+  separators (the xml preset's structure region with zero output fields is
+  unreachable without it). Sections may contain loops and slots; they do
+  not nest, may not appear inside loop bodies, and carry no fragment
+  slots.
 - **Value-presence semantics (normative, corpus-pinned):** in valued
   positions, `inputs` loops iterate only fields present in the values
   dict (the historical skip of absent inputs), while `outputs` loops
   iterate every visible field — assistant positions render absent values
   through the missing-field message, user positions render schema-side
   (the output-requirements enumeration names every field). Schema
-  positions iterate everything and refuse `{f.value}`.
+  positions render without call values: they iterate everything and refuse
+  `{f.value}` — and every rendering surface, `preview()` included, applies
+  the same schema-position context, so preview bytes are engine bytes.
+- **User-turn assembly (normative, corpus-pinned):** a rendered user
+  message assembles through the historical join-then-strip — prefix, body,
+  and suffix join on blank lines, parts that render empty contribute no
+  join element, and the joined result is `str.strip()`'d; a user message
+  whose assembled content is empty is omitted from the message list
+  entirely. System and assistant messages emit their rendered bytes
+  verbatim, and always emit. (The asymmetry is the legacy pipeline's,
+  carried as declared semantics, not renderer accident.)
+- **Reserved names:** `instruction`, `inputs`, `outputs`, `demos`,
+  `history`, and `fragments` are the language's reserved slot names; the
+  call forms (`{instruction(...)}`, `{inputs(...)}`, …) always denote the
+  reserved construct. A signature may declare a field carrying a reserved
+  name — loops and aggregates render it like any other field — but such a
+  field has no bare value-slot spelling: the bare aggregate/fragments
+  spellings refuse at parse naming the possible collision, and a bare
+  `{instruction}` rendered against a signature that declares a field named
+  `instruction` refuses at render naming the collision
+  (`{instruction(style='raw')}` is the unambiguous spelling of the
+  signature instructions). Reserved-name shadowing is never silent.
 - **Fragment slots (positional):** `{fragments('system')}` and
   `{fragments('user')}` — placed once per preset; a textual strategy's
   fragment names the slot it targets. Empty slots render as nothing — a
@@ -131,6 +164,16 @@ Directive messages expand at render time: `{"role": "demos"}` → user/
 assistant pairs per demo (assistant format follows the parser binding);
 `{"role": "history"}` → prior turns. Directives are role-named on purpose —
 they are the textual strategies of the `history` and demo machinery.
+A directive carrying no `user=`/`assistant=` pair falls back, in order: a
+history directive inherits the demos directive's patterns when the
+template carries one; otherwise the directive expands through the
+language's **default turn patterns** — user
+`{% for f in inputs separator='\n\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}`
+and the same shape over `outputs` with `strip` for the assistant turn (the
+marker pair, mirroring the reference implementation's format-by-default
+behavior). Zero demos and zero history turns expand to nothing.
+Consequently every template that parses can render: eager validation
+admits exactly the renderable set.
 
 **Deliberately NOT in the language:** general Jinja, arbitrary expressions,
 user-defined control flow. Analyzability (capacity derivation, diffing,
