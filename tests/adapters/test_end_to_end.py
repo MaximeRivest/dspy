@@ -5,9 +5,9 @@ semantics: typed predictions out, role declarations honored, the sacred
 signature contract, legacy-type compatibility, and codec-visible rendering.
 Byte-level parity is the golden corpus's job, not this file's.
 
-The `test_epic_d_*` tests are strict xfails encoding Epic D's ratified
-surface (roadmap/epic-D-adapter-serializer.md): they fail today and flip
-loudly when the serializer epic lands.
+The `test_epic_d_*` tests encode Epic D's ratified surface
+(roadmap/epic-D-adapter-serializer.md). They began life as strict xfails;
+the epic landed and all five flipped green — they are the acceptance suite.
 """
 
 import warnings
@@ -282,7 +282,7 @@ def test_baml_renders_pydantic_inputs_indented_chat_renders_compact():
 
 
 # ---------------------------------------------------------------------------
-# Epic D contracts (strict xfail: these flip when the serializer lands)
+# Epic D contracts (former strict xfails — all flipped green as the epic landed)
 # ---------------------------------------------------------------------------
 
 LITERAL_TABLE_KEYS = {
