@@ -15,6 +15,7 @@ fails, so the list can only shrink.
 """
 
 import ast
+import importlib.util
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -69,16 +70,33 @@ def _is_submodule(module: str, name: str) -> bool:
     return (base / f"{name}.py").exists() or (base / name / "__init__.py").exists()
 
 
-def _import_targets(tree: ast.AST) -> set[str]:
-    """Every dspy module targeted by an import statement in ``tree``."""
+def _module_package(path: Path) -> str:
+    """The package context ``path``'s relative imports resolve against.
+
+    A module's ``__package__`` is its containing package — for
+    ``__init__.py`` that is the directory itself, for ``module.py`` the
+    parent directory — so both drop the final path component.
+    """
+    parts = path.relative_to(REPO_ROOT).with_suffix("").parts
+    return ".".join(parts[:-1])
+
+
+def _import_targets(tree: ast.AST, package: str) -> set[str]:
+    """Every dspy module targeted by an import statement in ``tree``.
+
+    Relative imports resolve to their absolute targets: ``from ..base``
+    at the engine root is ``dspy.adapters.base`` — a back-edge the boundary
+    must see regardless of spelling.
+    """
     targets = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             targets.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            if node.level:  # relative: stays inside the engine package
-                continue
-            module = node.module or ""
+            if node.level:
+                module = importlib.util.resolve_name("." * node.level + (node.module or ""), package)
+            else:
+                module = node.module or ""
             for alias in node.names:
                 if _is_submodule(module, alias.name):
                     targets.add(f"{module}.{alias.name}")
@@ -98,7 +116,7 @@ def _scan_engine() -> set[tuple[str, str]]:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         relative = path.relative_to(ENGINE_ROOT).as_posix()
-        for target in _import_targets(tree):
+        for target in _import_targets(tree, _module_package(path)):
             if not _allowed(target):
                 violations.add((relative, target))
     return violations
@@ -120,6 +138,32 @@ def test_engine_import_boundary():
         f"stale KNOWN_BACK_EDGES entries (the back-edge is gone — delete "
         f"the pin so the allowlist shrinks): {sorted(stale_pins)}"
     )
+
+
+def test_relative_imports_resolve_to_their_absolute_targets():
+    """The scanner sees a back-edge whatever its spelling: ``from ..base``
+    at the engine root is dspy.adapters.base, ``from ...teleprompt`` is a
+    banned root — both were invisible while relative imports were skipped."""
+    tree = ast.parse(
+        "from ..base import Adapter\n"
+        "from ...teleprompt import X\n"
+        "from ...dsp.utils.settings import settings\n"
+        "from . import codecs\n"
+    )
+    targets = _import_targets(tree, package="dspy.adapters._engine")
+    assert "dspy.adapters.base" in targets
+    assert "dspy.teleprompt" in targets
+    assert "dspy.dsp.utils.settings" in targets
+    assert "dspy.adapters._engine.codecs" in targets
+    assert not _allowed("dspy.adapters.base")
+    assert not _allowed("dspy.teleprompt")
+    assert _allowed("dspy.adapters._engine.codecs")
+
+
+def test_module_package_matches_python_package_semantics():
+    assert _module_package(ENGINE_ROOT / "presets.py") == "dspy.adapters._engine"
+    assert _module_package(ENGINE_ROOT / "__init__.py") == "dspy.adapters._engine"
+    assert _module_package(ENGINE_ROOT / "template" / "parser.py") == "dspy.adapters._engine.template"
 
 
 def test_engine_never_imports_banned_layers_even_via_pins():
