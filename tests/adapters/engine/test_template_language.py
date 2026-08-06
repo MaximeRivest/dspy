@@ -27,7 +27,7 @@ from dspy.adapters._engine.template.parser import (
     Text,
 )
 from dspy.adapters._engine.template.renderer import RenderContext
-from dspy.adapters._engine.template.vocabulary import spell_out
+from dspy.adapters._engine.template.vocabulary import RESERVED_SLOT_NAMES, spell_out
 
 
 class QA(dspy.Signature):
@@ -224,6 +224,37 @@ def test_wrong_loop_variable_name_refuses():
 def test_bare_aggregate_slot_teaches_the_call_form():
     with pytest.raises(TemplateError, match=r"\{inputs\(style='...'\)\}"):
         parse_content("{inputs}")
+
+
+def test_bare_aggregate_and_fragments_errors_name_the_reserved_collision():
+    """A field named after a reserved slot is unreferenceable as a bare
+    value slot — the parse refusal names the collision, not just the call
+    form (spec section 3, reserved names)."""
+    for spelling in ("{outputs}", "{demos}", "{history}", "{inputs}", "{fragments}"):
+        with pytest.raises(TemplateError, match="reserved name") as excinfo:
+            parse_content(spelling)
+        assert spell_out(RESERVED_SLOT_NAMES) in str(excinfo.value)
+
+
+def test_bare_instruction_refuses_when_a_field_is_named_instruction():
+    """Alpaca-shape signatures: bare {instruction} must not silently render
+    the docstring where the author plausibly meant the field."""
+    sig = dspy.Signature("instruction -> response", "Follow the instruction.")
+    with pytest.raises(TemplateRenderError, match="field named 'instruction'") as excinfo:
+        preview([{"role": "user", "content": "{instruction}"}], sig, inputs={"instruction": "Write a haiku."})
+    assert spell_out(RESERVED_SLOT_NAMES) in str(excinfo.value)
+
+
+def test_instruction_call_form_stays_unambiguous_under_collision():
+    sig = dspy.Signature("instruction -> response", "Follow the instruction.")
+    messages = preview(
+        [{"role": "user", "content": "{instruction(style='raw')}"}], sig, inputs={"instruction": "Write a haiku."}
+    )
+    assert messages == [{"role": "user", "content": "Follow the instruction."}]
+
+
+def test_bare_instruction_renders_the_docstring_without_a_collision():
+    assert render("{instruction}") == "Answer the question briefly."
 
 
 def test_fragments_requires_quoted_target():

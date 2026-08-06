@@ -114,7 +114,7 @@ def _render_node(node, ctx: RenderContext) -> str:
     if isinstance(node, Text):
         return node.text
     if isinstance(node, InstructionSlot):
-        return _render_instruction(node.style, ctx)
+        return _render_instruction(node, ctx)
     if isinstance(node, ValueSlot):
         return _render_value_slot(node.name, ctx)
     if isinstance(node, Loop):
@@ -128,9 +128,20 @@ def _render_node(node, ctx: RenderContext) -> str:
     raise TemplateRenderError(f"unrenderable node {node!r}")  # pragma: no cover - parser prevents
 
 
-def _render_instruction(style: str, ctx: RenderContext) -> str:
+def _render_instruction(node: InstructionSlot, ctx: RenderContext) -> str:
+    if not node.explicit and (
+        "instruction" in ctx.signature.input_fields or "instruction" in ctx.signature.output_fields
+    ):
+        from dspy.adapters._engine.template.vocabulary import RESERVED_SLOT_NAMES
+
+        raise TemplateRenderError(
+            "{instruction} is reserved for the signature instructions, but this signature also declares "
+            "a field named 'instruction' — write {instruction(style='raw')} for the instructions; a field "
+            "carrying a reserved name has no bare value-slot spelling "
+            f"(reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
+        )
     instructions = ctx.signature.instructions or ""
-    if style == "raw":
+    if node.style == "raw":
         return instructions
     # style == "indented": the historical ChatAdapter objective block.
     dedented = textwrap.dedent(instructions)

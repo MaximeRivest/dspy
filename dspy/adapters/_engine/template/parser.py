@@ -16,7 +16,7 @@ no user control flow.
 import re
 from dataclasses import dataclass
 
-from dspy.adapters._engine.template.vocabulary import VOCABULARY, spell_out
+from dspy.adapters._engine.template.vocabulary import RESERVED_SLOT_NAMES, VOCABULARY, spell_out
 
 
 class TemplateError(ValueError):
@@ -42,7 +42,17 @@ class ValueSlot:
 
 @dataclass(frozen=True)
 class InstructionSlot:
+    """``{instruction}`` / ``{instruction(style=…)}`` — the signature
+    instructions.
+
+    ``explicit`` records the call-form spelling: the call form always
+    denotes the instructions, while the bare form refuses at render when
+    the signature also declares a field named ``instruction`` (spec
+    section 3, reserved names — shadowing is never silent).
+    """
+
     style: str = "raw"
+    explicit: bool = False
 
 
 @dataclass(frozen=True)
@@ -315,13 +325,16 @@ def _parse_slot(text: str, i: int, loop_var, allow_fragments: bool, fragment_tar
         if name == "fragments":
             targets = VOCABULARY["fragment_targets"]
             raise TemplateError(
-                f"{{fragments}} requires a target: {{fragments('system')}} — valid targets: {spell_out(targets)}"
+                f"{{fragments}} requires a target: {{fragments('system')}} — valid targets: {spell_out(targets)}; "
+                f"'fragments' is a reserved name — a signature field named 'fragments' has no bare value-slot "
+                f"spelling (reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
             )
         if name in VOCABULARY["aggregate_slots"]:
             styles = VOCABULARY["aggregate_styles"][name]
             raise TemplateError(
                 f"{{{name}}} is an aggregate slot and is called: {{{name}(style='...')}} — "
-                f"valid styles: {spell_out(styles)}"
+                f"valid styles: {spell_out(styles)}; {name!r} is a reserved name — a signature field "
+                f"named {name!r} has no bare value-slot spelling (reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
             )
         return ValueSlot(name), j + 1
 
@@ -414,7 +427,7 @@ def _build_call_slot(name, args_raw, text, start, end, allow_fragments, fragment
         style = kwargs.get("style", "raw")
         if style not in styles:
             raise TemplateError(f"unknown instruction style {style!r} — valid styles: {spell_out(styles)}")
-        return InstructionSlot(style)
+        return InstructionSlot(style, explicit=True)
 
     if name in VOCABULARY["aggregate_slots"]:
         styles = VOCABULARY["aggregate_styles"][name]
@@ -428,8 +441,9 @@ def _build_call_slot(name, args_raw, text, start, end, allow_fragments, fragment
             raise TemplateError(f"wrap= is only meaningful with style='xml' (got style={style!r})")
         return AggregateSlot(kind=name, style=style, wrap=wrap)
 
-    valid = ("instruction", *VOCABULARY["aggregate_slots"], "fragments")
-    raise TemplateError(f"unknown slot function {{{name}(...)}} — valid slot functions: {spell_out(valid)}")
+    raise TemplateError(
+        f"unknown slot function {{{name}(...)}} — valid slot functions: {spell_out(RESERVED_SLOT_NAMES)}"
+    )
 
 
 def _parse_loop(text: str, i: int, allow_fragments: bool):

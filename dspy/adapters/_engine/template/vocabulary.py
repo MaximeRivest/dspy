@@ -120,6 +120,13 @@ VOCABULARY: dict = {
 }
 
 
+#: The names the language reserves for its own slots (spec section 3). A
+#: signature field may carry one — loops and aggregates render it like any
+#: other field — but it has no bare value-slot spelling, and shadowing is
+#: never silent: the parser and renderer refuse naming the collision.
+RESERVED_SLOT_NAMES: tuple = ("instruction", *VOCABULARY["aggregate_slots"], "fragments")
+
+
 def describe_template_language() -> dict:
     """The whole template-language vocabulary, as data.
 

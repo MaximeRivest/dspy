@@ -199,6 +199,21 @@ def test_preview_matches_the_engine_adapter_format(fmt_name, payload_name):
     assert previewed == engine
 
 
+@pytest.mark.parametrize("fmt_name", sorted(FORMATS))
+def test_reserved_field_names_render_byte_identical_to_forced_legacy(fmt_name):
+    """The preset templates spell the instructions as {instruction(...)} —
+    the call form — so a signature field named 'instruction' (or any other
+    reserved name) renders exactly as legacy rendered it, no refusal."""
+    import dspy
+
+    signature = dspy.Signature("instruction, outputs -> response", "Follow the instruction.")
+    inputs = {"instruction": "Make it formal.", "outputs": "one paragraph"}
+    engine = ENGINE_ADAPTERS[fmt_name].format(signature, [], dict(inputs))
+    legacy = LEGACY_ADAPTERS[fmt_name].format(signature, [], dict(inputs))
+    assert engine == legacy
+    assert "Make it formal." in engine[-1]["content"]
+
+
 # ---------------------------------------------------------------------------
 # The named byte traps, pinned close to the seam
 # ---------------------------------------------------------------------------
