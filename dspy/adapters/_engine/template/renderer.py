@@ -242,6 +242,17 @@ def _render_aggregate(node: AggregateSlot, ctx: RenderContext) -> str:
     return _render_history_aggregate(node.style, ctx)
 
 
+def _unknown_style(kind: str, style: str) -> TemplateRenderError:
+    """A style the renderer does not cover refuses instead of silently
+    rendering default-style bytes — the vocabulary and the renderer cannot
+    drift apart without a teaching error surfacing it."""
+    from dspy.adapters._engine.template.vocabulary import VOCABULARY
+
+    return TemplateRenderError(
+        f"unknown {kind} style {style!r} — valid styles: {spell_out(VOCABULARY['aggregate_styles'][kind])}"
+    )
+
+
 def _aggregate_input_items(ctx: RenderContext):
     """Input fields for aggregate rendering; History fields render through
     the history directive or ``{history(...)}``, never ``{inputs(...)}``."""
@@ -264,8 +275,9 @@ def _render_inputs_aggregate(style: str, ctx: RenderContext) -> str:
         return "\n".join(f"<{name}>{value}</{name}>" for name, value in items)
     if style == "chat":
         return "\n\n".join(f"[[ ## {name} ## ]]\n{value}" for name, value in items)
-    # default / yaml
-    return "\n".join(f"{name}: {value}" for name, value in items)
+    if style in ("default", "yaml"):
+        return "\n".join(f"{name}: {value}" for name, value in items)
+    raise _unknown_style("inputs", style)
 
 
 def _render_outputs_aggregate(style: str, wrap: str | None, ctx: RenderContext) -> str:
@@ -299,11 +311,14 @@ def _render_outputs_aggregate(style: str, wrap: str | None, ctx: RenderContext) 
         else:
             obj = {name: translate_field_type(name, info) for name, info in output_fields.items()}
         return json.dumps(serialize_for_json(obj), indent=2, ensure_ascii=False)
-    # default
-    return get_field_description_string(output_fields)
+    if style == "default":
+        return get_field_description_string(output_fields)
+    raise _unknown_style("outputs", style)
 
 
 def _render_demos_aggregate(style: str, ctx: RenderContext) -> str:
+    if style not in ("default", "json", "yaml", "xml", "chat"):
+        raise _unknown_style("demos", style)
     if not ctx.demos:
         return ""
     signature = ctx.signature
@@ -335,6 +350,8 @@ def _render_demos_aggregate(style: str, ctx: RenderContext) -> str:
 
 
 def _render_history_aggregate(style: str, ctx: RenderContext) -> str:
+    if style not in ("default", "json", "yaml", "xml", "chat"):
+        raise _unknown_style("history", style)
     turns = list(ctx.history or ())
     if not turns:
         return ""

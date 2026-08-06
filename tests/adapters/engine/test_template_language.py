@@ -418,6 +418,35 @@ def test_history_aggregate_styles():
     )
 
 
+def test_every_declared_aggregate_style_renders():
+    """The renderer covers exactly the vocabulary's declared styles — a
+    style admitted to the data without renderer support must refuse, never
+    silently render default-style bytes."""
+    demos = ({"question": "1+1?", "answer": "2"},)
+    history = ({"question": "hi", "answer": "hello"},)
+    for kind, styles in VOCABULARY["aggregate_styles"].items():
+        for style in styles:
+            render(
+                f"{{{kind}(style='{style}')}}",
+                mode="user_values",
+                values={"question": "hi"},
+                demos=demos,
+                history=history,
+            )
+
+
+def test_unknown_aggregate_style_refuses_at_render_naming_the_valid_set():
+    from dspy.adapters._engine.template.parser import AggregateSlot
+
+    for kind in VOCABULARY["aggregate_styles"]:
+        node = AggregateSlot(kind=kind, style="martian")
+        with pytest.raises(TemplateRenderError) as excinfo:
+            render_nodes((node,), ctx(mode="user_values", values={}, demos=(), history=()))
+        message = str(excinfo.value)
+        assert "'martian'" in message
+        assert spell_out(VOCABULARY["aggregate_styles"][kind]) in message
+
+
 # ---------------------------------------------------------------------------
 # Capacity derivation
 # ---------------------------------------------------------------------------
