@@ -115,7 +115,11 @@ directive. Content strings may use:
   desc, desc_suffix, value, placeholder, typed_placeholder, marker,
   chat_type_hint`. The bare `strip` flag applies `str.strip()` to the
   joined result — the historical join-then-strip section shape, carried as
-  declared data (D-2 proved byte parity is unreachable without it).
+  declared data (D-2 proved byte parity is unreachable without it). Each
+  loop option appears at most once: a duplicate option refuses at parse
+  with a teaching error, matching call-kwargs behavior (ruled 2026-08-06 —
+  last-wins lexing had no external users, and consistency wins before
+  templates serialize verbatim).
   `{f.value}` spells the value through the direction's bound codec;
   `{f.typed_placeholder}` spells the field's *schema* through the same
   binding (the codec's schema spelling — the shared text codec renders the
@@ -181,13 +185,26 @@ they are the textual strategies of the `history` and demo machinery.
 A directive carrying no `user=`/`assistant=` pair falls back, in order: a
 history directive inherits the demos directive's patterns when the
 template carries one; otherwise the directive expands through the
-language's **default turn patterns** — user
-`{% for f in inputs separator='\n\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}`
-and the same shape over `outputs` with `strip` for the assistant turn (the
-marker pair, mirroring the reference implementation's format-by-default
-behavior). Zero demos and zero history turns expand to nothing.
-Consequently every template that parses can render: eager validation
-admits exactly the renderable set.
+language's **default turn patterns**, keyed by the parser binding when the
+template renders through a preset context (ruled 2026-08-06 — an example
+turn must demonstrate the shape the parser reads back, L9):
+
+- `chat` (and any render with no preset context): user
+  `{% for f in inputs separator='\n\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}`
+  and the same shape over `outputs` with `strip` for the assistant turn
+  (the marker pair, mirroring the reference implementation's
+  format-by-default behavior);
+- `json`: the marker-pattern user turn and `{outputs(style='json_object')}`
+  for the assistant turn;
+- `xml`: `{% for f in inputs separator='\n\n' strip %}<{f.name}>\n{f.value}\n</{f.name}>{% endfor %}`
+  and the same shape over `outputs` for the assistant turn;
+- `full_text`: the marker-pattern user turn and the bare value
+  (`{% for f in outputs separator='\n\n' strip %}{f.value}{% endfor %}`)
+  for the assistant turn.
+
+Zero demos and zero history turns expand to nothing. Consequently every
+template that parses can render: eager validation admits exactly the
+renderable set.
 
 **Deliberately NOT in the language:** general Jinja, arbitrary expressions,
 user-defined control flow. Analyzability (capacity derivation, diffing,
