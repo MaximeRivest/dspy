@@ -254,6 +254,80 @@ def test_reserved_field_names_render_byte_identical_to_forced_legacy(fmt_name):
 
 
 # ---------------------------------------------------------------------------
+# The BAML pairing: preset json + baml codecs + the schema-prose arrangement
+# ---------------------------------------------------------------------------
+
+from dspy.adapters._engine.formats import Format
+from dspy.adapters._engine.formats.baml import BAMLFormat
+from dspy.adapters.baml_adapter import BAMLAdapter
+
+
+class _LegacyBAML(BAMLAdapter):
+    def format(self, signature, demos, inputs):
+        return super().format(signature, demos, inputs)
+
+
+@pytest.mark.parametrize("payload_name", sorted(PAYLOADS))
+def test_baml_system_template_matches_the_composed_legacy_body(payload_name):
+    """The pairing's system arrangement (template data + codec schema
+    spelling) diffs against the frozen composed path so the two sources
+    cannot drift."""
+    fmt = BAMLFormat()
+    signature = PAYLOADS[payload_name]()["signature"]
+    assert fmt.render_system(signature) == Format.render_system(fmt, signature)
+
+
+@pytest.mark.parametrize("payload_name", sorted(PAYLOADS))
+def test_baml_delegated_surfaces_match_the_legacy_adapter(payload_name):
+    fmt = BAMLFormat()
+    legacy = _LegacyBAML()
+    payload = PAYLOADS[payload_name]()
+    signature, inputs = payload["signature"], payload["inputs"]
+
+    assert fmt.render_system(signature) == legacy.format_system_message(signature)
+    assert fmt.render_user_content(signature, inputs, main_request=True) == legacy.format_user_message_content(
+        signature, inputs, main_request=True
+    )
+    outputs = payload.get("surface_outputs") or {}
+    assert fmt.render_assistant_content(signature, outputs) == legacy.format_assistant_message_content(
+        signature, outputs
+    )
+
+
+def test_baml_empty_field_sets_render_byte_identical_to_forced_legacy():
+    """The legacy \\n-join collapses empty input/output sections without
+    stray blank lines — a shape the chat preset's structure region does NOT
+    have, which is why the pairing carries its own arrangement."""
+    import dspy
+
+    zero_outputs = dspy.make_signature({"question": (str, dspy.InputField())}, "No outputs.")
+    zero_fields = dspy.make_signature({}, "Nothing.")
+    zero_inputs = dspy.make_signature({"answer": (str, dspy.OutputField())}, "Only outputs.")
+    for signature, inputs in ((zero_outputs, {"question": "hm?"}), (zero_fields, {}), (zero_inputs, {})):
+        engine = BAMLAdapter().format(signature, [], dict(inputs))
+        legacy = _LegacyBAML().format(signature, [], dict(inputs))
+        assert engine == legacy
+
+
+def test_baml_schema_prose_renders_through_the_output_codec_binding():
+    import pydantic
+
+    import dspy
+
+    class Fact(pydantic.BaseModel):
+        claim: str
+        confidence: float
+
+    signature = dspy.make_signature(
+        {"note": (str, dspy.InputField()), "facts": (list[Fact], dspy.OutputField())}, "Extract."
+    )
+    system = BAMLFormat().render_system(signature)
+    assert "[[ ## facts ## ]]\nOutput field `facts` should be of type: [\n" in system
+    assert "claim: string," in system
+    assert "[[ ## completed ## ]]\nIn adhering to this structure" in system
+
+
+# ---------------------------------------------------------------------------
 # The named byte traps, pinned close to the seam
 # ---------------------------------------------------------------------------
 

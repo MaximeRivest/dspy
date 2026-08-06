@@ -70,7 +70,7 @@ def test_round_trip(codec, annotation, value):
 
 
 def test_directional_independence():
-    """BAML overrides only the input side; parsing is the shared chain."""
+    """The pydantic preference is render-side only; parsing is the shared chain."""
     model = Outer(name="x", inner=Inner(label="a", weight=0.5), tags=["t"])
     assert PYDANTIC_JSON.render_value(model, _field(Outer)) == model.model_dump_json(indent=2, by_alias=True)
     assert TEXT_PYTHONISH.render_value(model, _field(Outer)) != PYDANTIC_JSON.render_value(model, _field(Outer))
@@ -83,12 +83,27 @@ def test_directional_independence():
 
 
 def test_format_bindings():
+    """Codec authority is the preset's binding data plus class overrides;
+    the properties resolve names through the registry (D-3)."""
     assert ChatFormat().input_codec is TEXT_PYTHONISH
     assert ChatFormat().output_codec is TEXT_PYTHONISH
     assert XMLFormat().input_codec is TEXT_PYTHONISH
     assert JSONFormat().input_codec is TEXT_PYTHONISH
-    assert BAMLFormat().input_codec is PYDANTIC_JSON
-    assert BAMLFormat().output_codec is TEXT_PYTHONISH
+    assert BAMLFormat().input_codec is BAML
+    assert BAMLFormat().output_codec is BAML
+    assert BAMLFormat().codec_bindings() == {"input": "baml", "output": "baml"}
+    assert ChatFormat().codec_bindings() == {"input": "text_pythonish", "output": "text_pythonish"}
+
+
+def test_instance_codec_binding_overrides_win():
+    """Loaded entries (D-5) bind per-instance; a dangling name refuses."""
+    fmt = ChatFormat()
+    fmt.codec_binding_overrides = {"input": "pydantic_json"}
+    assert fmt.input_codec is PYDANTIC_JSON
+    assert fmt.output_codec is TEXT_PYTHONISH
+    fmt.codec_binding_overrides = {"input": "morse"}
+    with pytest.raises(KeyError, match="registered codecs"):
+        fmt.input_codec  # noqa: B018
 
 
 def test_schema_spelling_defaults_to_the_historical_type_note():

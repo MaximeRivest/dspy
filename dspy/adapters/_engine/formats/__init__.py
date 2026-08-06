@@ -17,7 +17,7 @@ history render PER-MESSAGE content; coarser surfaces cannot reproduce the
 legacy pipeline byte-for-byte.
 """
 
-from typing import Any
+from typing import Any, Mapping
 
 from dspy.adapters._engine.template.renderer import (
     COMPLETE_DEMO_MISSING_FIELD_MESSAGE,
@@ -35,30 +35,59 @@ class Format:
 
     Value syntax is delegated to codec bindings (``codecs.py``): a format
     owns the structure of the exchange, its codecs own the wire syntax of
-    each value. The bindings are directional and independent — BAML proves
-    it by overriding only ``input_codec``.
+    each value. Since D-3 codec AUTHORITY lives in the preset's binding
+    data: ``codec_bindings()`` reads the preset's named codecs, layers the
+    class's declared overrides, and the registry resolves the names — the
+    Format object holds no codec objects of its own.
     """
 
     #: Preset whose template this format's rendered content delegates to;
-    #: None for formats not yet defined as presets (TwoStep, and BAML's
-    #: system section until D-3 reclassifies BAML as a codec binding).
+    #: None for formats not defined as presets (TwoStep).
     preset_name: str | None = None
+
+    #: Named codec-binding overrides layered over the preset's bindings
+    #: (the BAML pairing overrides both directions to the ``baml`` codec);
+    #: None keeps the preset bindings as-is.
+    codec_binding_overrides: Mapping[str, str] | None = None
+
+    #: Parsed system-message template replacing the preset's system message
+    #: (a ``template.ContentMessage``); None renders the preset's own. The
+    #: BAML pairing carries its schema-prose arrangement here (spec
+    #: section 4).
+    system_template_message = None
 
     incomplete_demo_prefix = INCOMPLETE_DEMO_PREFIX
     incomplete_demo_missing_field_message = INCOMPLETE_DEMO_MISSING_FIELD_MESSAGE
     complete_demo_missing_field_message = COMPLETE_DEMO_MISSING_FIELD_MESSAGE
 
+    def codec_bindings(self) -> dict[str, str]:
+        """The named codec bindings this format renders and parses through.
+
+        The preset names the codecs, the class (or an instance, for loaded
+        entries) may override the names, and the registry resolves them.
+        Formats with no preset bind the shared text codec both ways.
+        """
+        if self.preset_name:
+            from dspy.adapters._engine.presets import get_preset
+
+            bindings = dict(get_preset(self.preset_name).codecs)
+        else:
+            bindings = {"input": "text_pythonish", "output": "text_pythonish"}
+        if self.codec_binding_overrides:
+            bindings.update(self.codec_binding_overrides)
+        return bindings
+
     @property
     def input_codec(self):
-        from dspy.adapters._engine.codecs import TEXT_PYTHONISH
+        from dspy.adapters._engine.codecs import resolve_codec
 
-        return TEXT_PYTHONISH
+        return resolve_codec(self.codec_bindings()["input"])
 
     @property
     def output_codec(self):
-        from dspy.adapters._engine.codecs import TEXT_PYTHONISH
+        from dspy.adapters._engine.codecs import resolve_codec
 
-        return TEXT_PYTHONISH
+        return resolve_codec(self.codec_bindings()["output"])
 
     def render_field_description(self, signature) -> str:
         raise NotImplementedError

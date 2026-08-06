@@ -38,6 +38,7 @@ from dspy.adapters._engine.template import (
     ContentMessage,
     ParsedTemplate,
     RenderContext,
+    parse_content,
     parse_message_template,
     render_nodes,
     render_user_content,
@@ -294,6 +295,44 @@ def get_preset(name: str) -> Preset:
 
 
 # ---------------------------------------------------------------------------
+# The BAML pairing (D-019, spec section 4): preset json + the baml codec
+# bindings + this system arrangement. Not a named preset — the codec owns
+# the schema-prose SPELLING ({f.typed_placeholder} through the baml codec),
+# this template owns the ARRANGEMENT. The empty-collapse shape is the
+# legacy "\n".join(sections) exactly: each loop chunk brackets itself in
+# newlines and joins on the empty separator, so an empty field set
+# contributes zero bytes, not stray blank lines.
+# ---------------------------------------------------------------------------
+
+BAML_SYSTEM = """\
+Your input fields are:
+{% for f in inputs strip %}
+{f.i}. `{f.name}` ({f.type}):{f.desc_suffix}
+{% endfor %}
+Your output fields are:
+{% for f in outputs strip %}
+{f.i}. `{f.name}` ({f.type}):{f.desc_suffix}
+{% endfor %}
+All interactions will be structured in the following way, with the appropriate values filled in.
+{% for f in inputs separator='' %}
+
+[[ ## {f.name} ## ]]
+{{{f.name}}}
+
+{% endfor %}{% for f in outputs separator='' %}
+
+[[ ## {f.name} ## ]]
+{f.typed_placeholder}
+
+{% endfor %}
+[[ ## completed ## ]]
+{fragments('system')}
+In adhering to this structure, your objective is: {instruction(style='indented')}"""
+
+BAML_SYSTEM_MESSAGE = ContentMessage(role="system", nodes=parse_content(BAML_SYSTEM), raw=BAML_SYSTEM)
+
+
+# ---------------------------------------------------------------------------
 # Delegation: the Format render surface, executed from preset templates
 # ---------------------------------------------------------------------------
 
@@ -324,8 +363,13 @@ def _context(fmt, signature, mode, values=None, missing=None) -> RenderContext:
 
 
 def render_preset_system(fmt, signature) -> str:
-    """The system message, rendered from the preset template in schema position."""
-    message = _content_message(_preset_for(fmt), "system")
+    """The system message, rendered from template data in schema position.
+
+    A format carrying a ``system_template_message`` (the BAML pairing's
+    schema-prose arrangement) renders that; otherwise the preset's own
+    system message renders.
+    """
+    message = getattr(fmt, "system_template_message", None) or _content_message(_preset_for(fmt), "system")
     return render_nodes(message.nodes, _context(fmt, signature, "schema"))
 
 

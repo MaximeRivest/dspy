@@ -1,38 +1,27 @@
-"""BAMLFormat: BAMLAdapter's two overridden surfaces, frozen.
+"""BAMLFormat: the BAML pairing — preset json + baml codec bindings.
 
-Layered on JSONFormat exactly as BAMLAdapter subclasses JSONAdapter — and
-under the codec factoring, BAML decomposes visibly: it is JSONFormat plus
-an **input codec preference** (``PydanticJSONCodec`` — models as indented
-JSON) plus a schema-prose structure section. The empty-segment filter in
-user content is the one genuine format-level difference on that side;
-parsing and the assistant side are inherited from JSONFormat.
+Layered on JSONFormat exactly as BAMLAdapter subclasses JSONAdapter, and
+since D-3 the class body is the pairing declaration itself: the ``baml``
+codec bound in both directions (indented-pydantic values in, schema-prose
+placeholders, shared text parsing) and the schema-prose system arrangement
+carried as template data (``presets.BAML_SYSTEM_MESSAGE``). User turns,
+demos, the assistant side, and parsing all inherit the json preset's
+delegation; nothing renders from a method body.
 
-Schema prose is the ``baml`` codec's schema spelling (``_engine/codecs.py``,
-D-3 — the Epic-B "format literal until the codec pool exists" deferral is
-over); this module keeps only the arrangement literals, and the composed
-legacy bodies below remain as the frozen reference the parity tests diff
-against.
+``render_field_structure`` below is the frozen legacy composition kept as
+the reference the parity tests diff the template against — it goes with the
+``format_*`` zoo in Epic H.
 """
 
-from typing import Any
-
 from dspy.adapters._engine.codecs import render_schema_prose
-from dspy.adapters._engine.formats import Format
 from dspy.adapters._engine.formats.json import JSONFormat
+from dspy.adapters._engine.presets import BAML_SYSTEM_MESSAGE
 
 
 class BAMLFormat(JSONFormat):
-    @property
-    def input_codec(self):
-        from dspy.adapters._engine.codecs import PYDANTIC_JSON
+    codec_binding_overrides = {"input": "baml", "output": "baml"}
+    system_template_message = BAML_SYSTEM_MESSAGE
 
-        return PYDANTIC_JSON
-
-    def render_system(self, signature) -> str:
-        # BAML keeps the composed legacy system path: its structure section
-        # is this class's body below, not the json preset's template. D-3
-        # reclassifies BAML as codec bindings on preset json.
-        return Format.render_system(self, signature)
     def render_field_structure(self, signature) -> str:
         sections = []
 
@@ -55,26 +44,3 @@ class BAMLFormat(JSONFormat):
         sections.append("[[ ## completed ## ]]")
 
         return "\n".join(sections)
-
-    def render_user_content(
-        self,
-        signature,
-        inputs: dict[str, Any],
-        prefix: str = "",
-        suffix: str = "",
-        main_request: bool = False,
-    ) -> str:
-        messages = [prefix]
-        for key, field_info in signature.input_fields.items():
-            if key in inputs:
-                value = inputs.get(key)
-                formatted_value = self.input_codec.render_value(value, field_info)
-                messages.append(f"[[ ## {key} ## ]]\n{formatted_value}")
-
-        if main_request:
-            output_requirements = self.output_requirements(signature)
-            if output_requirements is not None:
-                messages.append(output_requirements)
-
-        messages.append(suffix)
-        return "\n\n".join(m for m in messages if m).strip()
