@@ -1,6 +1,6 @@
 # State Map
 
-What exists right now and its load-bearing status. **Regenerate this page at the end of every epic.** Last updated: 2026-08-05, after Epics A/B/C.
+What exists right now and its load-bearing status. **Regenerate this page at the end of every epic.** Last updated: 2026-08-06, mid-Epic-D (after fork D-α; adversarial review of the template engine in flight).
 
 ## Shipped on `programir-main`
 
@@ -14,19 +14,27 @@ What exists right now and its load-bearing status. **Regenerate this page at the
 
 **Epic C — semantic roles** (`0240cc738`, `8cc3d37e6`, `c0daccd53`, `9fb957375`, `106a9ad25`): `SEMANTIC_ROLES` vocabulary; validated `role=` kwarg; `dspy/signatures/roles.py` marker objects with `citations[str]` sugar; derivation table (legacy types + `Annotated` unwrapping both nesting orders); roles recorded onto `RenderField.metadata`; design doc `epic-C-semantic-roles.md`.
 
+**Epic D fork D-α — template engine + presets** (`77116604c`, `ef9bf14ac`, `2d1b0837f`, `567ed8a4c`, `19ab69e02`): mechanical engine import-boundary test with pinned back-edges (shrinking allowlist in `tests/adapters/engine/test_import_boundary.py`); the constrained template language in `_engine/template/` (vocabulary-as-data + `describe_template_language()`, eager teaching-error parser, pure renderer, `declared_capacity()`, `preview()`); presets `chat`/`json`/`xml` defined as templates in `_engine/presets.py` with formats rendering every content string through them (`render_template_messages` walker parity-tested against forced-legacy `format()`); codec registry (`CODECS`/`resolve_codec`) in `codecs.py`. Corpus zero-drift; full matrix green; zero public-surface change. Spec §3 grammar refined as-proven (bare `strip` flag, `{instruction}` styles, fragment line-swallow, direction-aware value presence, per-aggregate style vocabulary); epic doc at v3 with as-built + D-β handoff. E2E xfail #4 revised (literal_table = derived summary view, targets D-5).
+
+**Cross-language doctrine** (`d97d3d2ea`, `e5fb3f071`, `d5f0208bf`, Maxime): D-022..D-028 ratified; `roadmap/cross-language.md` question bank; §e0-lang in the program spec. Binding on Epic D: D-024 (versions block in artifact + preset serde) and D-025 (`language` on origin-tagged entries) are byte-shape constraints that MUST precede the exporter — D-5/D-γ serde carries `adapter_ir_version` + vocabulary versions.
+
 **Docs:** `IR-program-spec.md` snapshot (source of truth: docmaker), epic docs A/B/C, this doc set.
 
 ## Recorded but not load-bearing (deliberate)
 
 - **Semantic roles** — on every plan; consulted by nothing. Strategies still resolve by annotation type.
-- **Codecs** — wired per-format; no named pool, no per-field overrides, no public registration.
+- **Codecs** — named registry exists (`CODECS`/`resolve_codec`); codec *authority* in rendering is still the Format object, preset bindings test-asserted equal (authority flips in D-3/D-5). No per-field overrides, no public registration.
 - **Strategy registry** — engine-private; no public exposure, no deprecation signaling on the legacy hook.
+- **Preset `strategies` bindings** — recorded on every preset; consumed by nothing (D-4).
+- **Template capacity + fragments** — `declared_capacity()` computed, `RenderContext.fragments` plumbed to every fragment slot; both unconsumed until D-4's bake-time triple check.
+- **Message-sequence walker** — `render_template_messages` exists and is parity-tested; the engine path still walks `render.py`'s skeleton (content-first delegation). Cutover to the pure walker lands with D-4's fragments.
 
 ## Spec'd but not built
 
-- `@role` string-signature shorthand (parser hazards documented in epic-C doc §2a; assigned to cutover PR 1b with public `dspy.roles` export).
-- Per-role `strategies={...}` adapter binding surface; double-key (role-then-annotation) registry resolution.
-- Adapter serializer / component-4 export (Epic D — no `literal_table`, `format_identity`, or dump/load exists anywhere in `_engine/`).
+- `@role` string-signature shorthand (parser hazards documented in epic-C doc §2a; assigned to D-6 with public `dspy.roles` export).
+- Per-role `strategies={...}` adapter binding surface; double-key (role-then-annotation) registry resolution; strategy awareness in templates (D-4).
+- BAML-as-codec + compat shim (D-3; BAML already inherits the json preset's assistant delegation — only its system section and input codec remain class-owned).
+- Preset dump/load + derived 7-key summary view + loud-refusal loader (D-5; serde must carry `adapter_ir_version` + vocabulary versions per D-024, `language` per D-025).
 - Role-based CoT declared-reasoning check (name-based today; aliasing hole documented).
 - Validity enforcement for role/direction/multiplicity/shape rules.
 
