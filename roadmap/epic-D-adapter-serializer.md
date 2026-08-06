@@ -96,5 +96,16 @@ deleting `format_*` outright (Epic H); `dspy-session` projections from the
 reference README (`outer_history`, `node_memory`, …) — session territory,
 not adapter territory.
 
+**Design contract:** `roadmap/adapter-ir-spec.md` is normative for D — the
+signature core, pipeline (template renders the PLAN, declared capacity,
+bake-time triple check), template grammar, preset shape, vocabularies, and
+ADP invariants. Where implementation disproves the spec, fix the spec first,
+then the code.
+
+**Import boundary (D-021, enforced from D-1):** `_engine/` imports only the
+signature core, the types layer, and (post-E) lm15 — never settings,
+modules, clients, or teleprompt. Add a mechanical boundary test in D-1;
+extraction to the standalone library later must be a move, not a surgery.
+
 **Gates:** L8 corpus discipline throughout; full `dspy-ci` matrix (stage new
 files first); stacked commits; no push/PR without Maxime's word.
