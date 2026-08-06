@@ -42,23 +42,25 @@ A signature field carries two independent things:
 
 The role vocabulary is small and closed: `plain`, `reasoning`, `tools`, `tool_calls`, `citations`, `history`, `media`, `code`. Roles are declared in the signature — they are part of your intent — while the machinery that *serves* a role (a native provider feature, or a textual pattern in the prompt) belongs to the adapter layer and can change without touching your program.
 
-You can declare a role three ways today, all resolving to the same thing:
+You can declare a role four ways, all resolving to the same marker object:
 
 ```python
 from typing import Annotated
-from dspy.signatures.roles import citations
 
 # 1. Canonical — type checkers see `str`, dspy sees the role:
-answer: Annotated[str, citations] = dspy.OutputField()
+answer: Annotated[str, dspy.roles.citations] = dspy.OutputField()
 
 # 2. Subscript sugar — identical to the Annotated form:
-answer: citations[str] = dspy.OutputField()
+answer: dspy.roles.citations[str] = dspy.OutputField()
 
 # 3. Keyword — validated eagerly, unknown roles raise immediately:
 answer: str = dspy.OutputField(role="citations")
+
+# 4. String-signature shorthand — `@role` after the type (or the name):
+sig = dspy.Signature("question -> answer: str @citations")
 ```
 
-The `Annotated` form also works inside string signatures (pass the marker via `custom_types`). Conflicting declarations on one field — say `role="citations"` on a `Reasoning`-typed field — raise immediately rather than guessing.
+The markers are importable as `dspy.roles` (recipe 3). Conflicting declarations on one field — say `role="citations"` on a `Reasoning`-typed field — raise immediately rather than guessing.
 
 The familiar semantic types still work and are not deprecated: `dspy.Reasoning` is exactly the fused spelling of "shape `str` + role `reasoning`", and every legacy type implies its role automatically (`Tool` → `tools`, `Citations` → `citations`, `Image`/`Audio`/`File`/`Document` → `media`, `History` → `history`, `Code` → `code`). The split form exists because roles and shapes vary independently: `citations[list[Quote]]` — structured, grounded quote objects — is expressible in one line, where a fused type would have to pin both halves at once.
 
@@ -82,15 +84,15 @@ For reasoning models that produce free-form text but format unreliably. Stage on
 
 ### 10. How a value is written is a codec, not an adapter — and BAML is a codec
 
-When a field holds an object — a pydantic model, a list, a dict — someone decides how to *write it into* the prompt and what syntax to ask for back. That decision is a **codec**: a render/parse pair for values, separate from the adapter's overall prompt shape.
+When a field holds an object — a pydantic model, a list, a dict — someone decides how to *write it into* the prompt, how to describe its expected shape, and what syntax to ask for back. That decision is a **codec**: a render/parse/schema triple for values, separate from the adapter's overall prompt shape.
 
-BAML is the ratified example: it is **not a peer prompt shape but a codec** — indented, readable pydantic rendering on the input side plus a compact schema presentation the model follows more easily for deeply nested types. The `BAMLAdapter` class is simply today's packaging of "the JSON prompt shape with the BAML codec bound"; as the preset system lands (see *Arriving* below) it becomes a compatibility shim over exactly that pairing. Same exchange structure, different value encoding.
+BAML is the ratified example: it is **not a peer prompt shape but a codec** — indented, readable pydantic rendering on the input side plus a compact schema-prose presentation the model follows more easily for deeply nested types. The `BAMLAdapter` class is exactly that pairing declared as data: the `json` preset with the `baml` codec bound in both directions, plus the schema-prose system arrangement as template data. Same exchange structure, different value encoding.
 
-Today the codec pairing is fixed per adapter. The named concept matters anyway, because it tells you where to look when a rendered value surprises you: the adapter decides the message structure; the codec decides how your object appears inside it.
+Codecs live in a named registry: the builtins are `text_pythonish` (the shared default), `pydantic_json`, and `baml`, and `register_codec` (recipe 16) adds your own — gated by a round-trip probe battery, because every rendering decision must carry the parser that inverts it. Bind them per direction on a template (`codecs={"input": ..., "output": ...}`). The named concept also tells you where to look when a rendered value surprises you: the adapter decides the message structure; the codec decides how your object appears inside it.
 
 ### 11. Field marker format is hard-coded
 
-`[[ ## name ## ]]` is the pattern, chosen for low collision and clean regex. The brackets-plus-hashes shape is unlikely to appear in real text or code, and the symmetry makes the parser simple. There's no config knob to change it. JSONAdapter and XMLAdapter use their own formats; if you want a different prompt shape entirely, that's what templates are for (see *Arriving* below).
+`[[ ## name ## ]]` is the pattern, chosen for low collision and clean regex. The brackets-plus-hashes shape is unlikely to appear in real text or code, and the symmetry makes the parser simple. There's no config knob to change it. JSONAdapter and XMLAdapter use their own formats; if you want a different prompt shape entirely, that's what templates are for (recipe 13).
 
 ### 12. Predictions carry exactly what you declared
 
@@ -120,11 +122,14 @@ Outputs structured JSON. Formatting is similar to ChatAdapter on the input side,
 **`dspy.TwoStepAdapter(extraction_model: BaseLM, **kwargs)`**  
 Two LM calls per inference. Use it when the main LM is a reasoning model that's bad at formatting — the extractor is usually a cheap general-purpose LM with ChatAdapter. Doesn't support finetuning yet.
 
+**`dspy.TemplateAdapter(messages, parse_mode="json", *, name="template", codecs=None, strategies=None, config=None)`**  
+Your messages are the prompt. Author the message list yourself, with interpolation slots from the constrained template language; the adapter renders exactly what you wrote and parses through the bound `parse_mode` (`"json"`, `"chat"`, `"xml"`, or `"full_text"`). See recipe 13; `preview()` renders without an LM call, `dump_entry()` serializes the whole adapter as data.
+
 **`BAMLAdapter`** (import from `dspy.adapters.baml_adapter`)  
-The JSON prompt shape with the BAML *codec* bound: pydantic inputs render as indented JSON, and the output schema is presented in BAML-style commented-Pydantic form. Worth trying when JSONAdapter's raw JSON schema is too verbose for complex nested types. Per decision 10, BAML is a codec, not a prompt shape — this class is the current packaging of that pairing and will become a compatibility shim once codecs are independently bindable.
+The JSON prompt shape with the BAML *codec* bound: pydantic inputs render as indented JSON, and the output schema is presented in BAML-style commented-Pydantic form. Worth trying when JSONAdapter's raw JSON schema is too verbose for complex nested types. Per decision 10, BAML is a codec, not a prompt shape — this class is the compat packaging of "the `json` preset + the `baml` codec bindings", and serializes as exactly that pairing.
 
 **`dspy.Adapter`**  
-The base class every adapter extends. Subclassing it remains possible (implement `format()`, `parse()`, and optionally `format_finetune_data()`), but for new prompt shapes prefer waiting for templates — a subclass hand-maintains what a template declares as data (see *Customizing the prompt* above).
+The base class every adapter extends. Subclassing it remains possible (implement `format()`, `parse()`, and optionally `format_finetune_data()`), but for new prompt shapes prefer a template (recipe 13) — a subclass hand-maintains what a template declares as data.
 
 ### The call path, and customizing the prompt
 
@@ -140,7 +145,7 @@ Extracts typed field values from the LM's response. ChatAdapter regex-matches th
 **`Adapter.format_finetune_data(signature, demos, inputs, outputs)`**  
 Serializes a demo into the LM provider's finetune format. ChatAdapter writes OpenAI message format. Other adapters raise `NotImplementedError`.
 
-**Customizing the prompt.** The intended authoring surface for "I want the messages to look exactly like *this*" is the **template**: your prompt as a literal message list with interpolation slots, arriving with the preset system (see *Arriving* below). Until it lands, know that the built-in adapters compose their prompts from a family of `format_*` helper methods (`format_system_message`, `format_field_description`, `format_demos`, …) that you can technically override in a subclass. They still work and existing subclasses keep working — but this is the legacy customization surface, scheduled for deprecation once presets land, so don't build new prompt customization on it. If you need a different prompt *today* and can't wait, overriding `format()` wholesale is the least entangled option.
+**Customizing the prompt.** The authoring surface for "I want the messages to look exactly like *this*" is the **template**: `dspy.TemplateAdapter` takes your prompt as a literal message list with interpolation slots (recipe 13). The built-in adapters still compose their prompts from a family of `format_*` helper methods (`format_system_message`, `format_field_description`, `format_demos`, …) that you can technically override in a subclass; existing subclasses keep working — but this is the legacy customization surface, headed for deprecation, so don't build new prompt customization on it. New prompt shapes belong in templates.
 
 ### Type coercion
 
@@ -159,7 +164,7 @@ Other helpers in the same file you'll see in tracebacks:
 
 ### Semantic role markers
 
-**`dspy.signatures.roles`** — the role marker objects: `plain`, `reasoning`, `tools`, `tool_calls`, `citations`, `history`, `media`, `code`. Each is usable as `Annotated` metadata or via subscript sugar (`citations[str]` is exactly `Annotated[str, citations]`). Constructing a `SemanticRole` with an unknown name raises immediately, listing the vocabulary. See decision 5 for the three declaration spellings and the conflict rules.
+**`dspy.roles`** — the role marker objects, publicly importable: `plain`, `reasoning`, `tools`, `tool_calls`, `citations`, `history`, `media`, `code`. Each is usable as `Annotated` metadata or via subscript sugar (`dspy.roles.citations[str]` is exactly `Annotated[str, citations]`), and each has an `@role` string-signature spelling (recipe 19). Constructing a `SemanticRole` with an unknown name raises immediately, listing the vocabulary. See decision 5 for the four declaration spellings and the conflict rules.
 
 ### Custom type wrappers
 
@@ -223,17 +228,14 @@ Safe in-memory inputs such as data URIs, bytes, PIL images, audio arrays, and st
 - **`with dspy.context(adapter=dspy.XMLAdapter()): ...`** — scoped override.
 - **No automatic LM-based selection.** ChatAdapter is the default and stays the default until you set otherwise. Some teleprompts (e.g., `BootstrapFinetune`) accept an `adapter` dict keyed by LM, so different LMs in a finetuning loop can use different adapters.
 
-## Arriving: presets and templates
+## Presets and templates
 
-This section describes ratified, in-progress work — none of it is callable today. It is documented here so the direction is public and so the pieces above make sense as parts of a whole.
+**An adapter is a preset** — a named data entry bundling five things: a *template* (the prompt shape), a *parser binding*, *codec bindings* (decision 10), *strategy bindings* (decision 6), and resolved config. The built-in adapters are thin handles over presets named `chat`, `json`, and `xml`, each defined as a template that reproduces the historical prompt byte-for-byte; the classes stay as convenient handles, data is the truth. `adapter.dump_entry()` serializes any engine-backed adapter as one such entry, and `dspy.adapters.load_entry(entry)` links it back into a working adapter that renders identical bytes.
 
-The destination: **an adapter is a preset** — a named data entry bundling five things: a *template* (the prompt shape), a *parser binding*, *codec bindings* (decision 10), *strategy bindings* (decision 6), and resolved config. The built-in adapters become thin constructors over presets named `chat`, `json`, and `xml`; classes stay as the convenient handles, data becomes the truth.
-
-**The template is the piece that changes how you'll customize prompts.** Instead of subclassing and overriding methods, you write your prompt as a literal message list with interpolation slots — the signature stays the I/O contract, the template decides exactly what the model sees:
+**The template is the piece that changes how you customize prompts.** Instead of subclassing and overriding methods, you write your prompt as a literal message list with interpolation slots — the signature stays the I/O contract, the template decides exactly what the model sees:
 
 ```python
-# Arriving — illustrative, not callable today.
-adapter = TemplateAdapter(
+adapter = dspy.TemplateAdapter(
     messages=[
         {"role": "system", "content": "You are a concise assistant. {instruction}"},
         {"role": "user", "content": "Summarize:\n\n{text}"},
@@ -242,20 +244,18 @@ adapter = TemplateAdapter(
 )
 ```
 
-`{instruction}` interpolates the signature docstring, `{text}` the input field, and the full response maps to the output field — nothing added that you didn't write. Richer slots cover the general case: `{inputs(style=...)}` / `{outputs(style=...)}` render field blocks through a codec style, `{demos()}` and `{history()}` expand few-shot examples and conversation turns into real message pairs, and constrained loop blocks iterate fields with their names, types, and markers. The language is deliberately small — slots, loops, directives, not general templating — so a prompt shape stays analyzable, diffable data. The built-in `chat` prompt shape is expressible in it exactly, which is the proof the design rests on.
+`{instruction}` interpolates the signature docstring, `{text}` the input field, and the full response maps to the output field — nothing added that you didn't write. Richer slots cover the general case: `{inputs(style=...)}` / `{outputs(style=...)}` render field blocks through a named style, `{"role": "demos"}` and `{"role": "history"}` directive messages expand few-shot examples and conversation turns into real message pairs, and constrained loop blocks iterate fields with their names, types, and markers. The language is deliberately small — slots, loops, directives, not general templating — so a prompt shape stays analyzable, diffable data that serializes into a program and loads with no exec. The built-in `chat` prompt shape is expressed in it exactly (that proof ships as the `chat` preset itself).
 
-The rest of the arriving surface rides on presets:
+The rest of the surface rides on presets:
 
-- **Per-role strategy bindings.** `strategies={"reasoning": "native_channel", "tools": "textual_json"}` — choose *how each role is served*, with an `"auto"` default resolving against the LM's declared capabilities. Templates are strategy-aware: a natively-served role simply renders no block.
-- **A named codec pool.** Register value codecs and bind them per field, including asymmetric pairs (render inputs as compact Python literals, request outputs as JSON). BAML becomes an ordinary named codec, bindable to any preset.
-- **The `@role` string-signature shorthand.** `"question -> answer: str @citations"` — the fourth spelling of decision 5, plus a public `dspy.roles` import path.
-- **Preset serialization.** A preset dumps to data — template, bindings, config — and reconstructs from that data alone: the foundation for saving programs whose exact prompt behavior travels with them.
+- **Per-role strategy bindings.** `strategies={"reasoning": "textual_field"}` on any adapter constructor — choose *how each role is served*, with an `"auto"` default resolving against the LM's declared capabilities at plan build, the resolution recorded on the plan. Templates are strategy-aware: a natively-served role simply renders no block, and a binding the LM cannot honor refuses loudly.
+- **A named codec pool.** `register_codec` adds value codecs (gated by a round-trip probe battery); bind them per direction, including asymmetric pairs (render inputs one way, parse outputs another). BAML is an ordinary named codec bound by the BAML pairing.
+- **The `@role` string-signature shorthand.** `"question -> answer: str @citations"` — the fourth spelling of decision 5, with the markers importable as `dspy.roles`.
+- **Preset serialization.** A preset dumps to data — template, bindings, versions, config — and reconstructs from that data alone with zero ambient reads: the foundation for saving programs whose exact prompt behavior travels with them. Dangling references refuse loudly at load, naming the reference.
 
 ## How to
 
-One recipe per task. Everything under **Today** runs as written; everything under **Arriving (Epic D)** is the ratified design, illustrative only.
-
-### Today
+One recipe per task. Everything runs as written.
 
 **1. Switch adapters.** Process-wide, scoped, or per-call — the signature never changes.
 
@@ -276,11 +276,11 @@ with dspy.context(adapter=dspy.XMLAdapter()):       # scoped override
 | Reasoning model, unreliable formatting | `TwoStepAdapter` | let it think free-form; a cheap model extracts |
 | Deep nested pydantic outputs | `BAMLAdapter` | friendlier schema presentation (recipe 10) |
 
-**3. Declare a semantic role** — three spellings, one meaning; pick by taste.
+**3. Declare a semantic role** — four spellings, one meaning; pick by taste.
 
 ```python
 from typing import Annotated
-from dspy.signatures.roles import citations
+from dspy.roles import citations
 
 class QA(dspy.Signature):
     question: str = dspy.InputField()
@@ -288,14 +288,11 @@ class QA(dspy.Signature):
     a2: citations[str] = dspy.OutputField()              # subscript sugar
     a3: str = dspy.OutputField(role="citations")         # kwarg
 
-# In string signatures, pass the marker through custom_types:
-sig = dspy.Signature(
-    "question -> answer: Annotated[str, citations]",
-    custom_types={"Annotated": Annotated, "citations": citations},
-)
+# In string signatures, the @role shorthand (recipe 19):
+sig = dspy.Signature("question -> answer: str @citations")
 ```
 
-Unknown roles raise immediately; two spellings disagreeing on one field raise rather than guess.
+Unknown roles raise immediately, listing the vocabulary; two spellings disagreeing on one field raise rather than guess.
 
 **4. Use structured shapes.** Any type with a JSON-schema meaning works — no blessed list.
 
@@ -349,7 +346,7 @@ messages = dspy.ChatAdapter().format(signature, demos=[], inputs={"question": ".
 dspy.inspect_history()
 ```
 
-(An engine-level `preview()` with the same guarantee is part of the arriving contract.)
+Template adapters go one better: `adapter.preview("question -> answer", inputs={"question": "..."})` renders the exact messages with no LM call, and accepts string signatures directly (recipe 18).
 
 **9. Hard errors instead of silent fallback in tests.**
 
@@ -385,14 +382,10 @@ data = dspy.ChatAdapter().format_finetune_data(signature, demos, inputs, outputs
 
 Other adapters raise `NotImplementedError` — stay on ChatAdapter for `BootstrapFinetune`.
 
-### Arriving (Epic D) — illustrative, not callable today
-
-Syntax below matches the ratified contract (`roadmap/adapter-ir-spec.md`); details may still shift as the epic lands.
-
 **13. Author an exact-control template.** Your messages are the prompt — nothing added you didn't write:
 
 ```python
-adapter = TemplateAdapter(
+adapter = dspy.TemplateAdapter(
     messages=[
         {"role": "system", "content": "You are a concise assistant. {instruction}"},
         {"role": "user", "content": "Summarize:\n\n{text}"},
@@ -401,40 +394,45 @@ adapter = TemplateAdapter(
 )
 ```
 
-`{instruction}` interpolates the docstring, `{text}` the input field; the full response maps to your single output field.
+`{instruction}` interpolates the docstring, `{text}` the input field; the full response maps to your single output field. `parse_mode` picks how outputs come back: `"json"` (the default; keys match output fields), `"chat"` (marker format), `"xml"` (tags), `"full_text"` (whole completion, exactly one output field). Add a `{"role": "demos"}` directive where few-shot examples should expand — an optimizer's demos refuse loudly rather than vanish if the template gives them nowhere to render.
 
-**14. Reproduce ChatAdapter declaratively.** The entire built-in chat prompt shape is expressible as one template — loop blocks over fields, demo/history directives, fragment slots — reproducing today's bytes exactly. See the parity template in `roadmap/adapter-ir-examples.md` ("The preset `chat` template"); it's the proof the design rests on, and the starting point to copy-and-modify.
+**14. Reproduce ChatAdapter declaratively.** The entire built-in chat prompt shape is one template — loop blocks over fields, demo/history directives, fragment slots — reproducing today's bytes exactly. It ships as the `chat` preset (`dspy/adapters/_engine/presets.py`), with a walkthrough in `roadmap/adapter-ir-examples.md` ("The preset `chat` template"); `dspy.ChatAdapter().dump_entry()["template"]` hands you the live data, and it's the natural starting point to copy-and-modify.
 
 **15. Choose strategies per role.**
 
 ```python
-adapter = ChatAdapter(strategies={"reasoning": "textual_field", "tools": "native_fc"})
+adapter = dspy.ChatAdapter(strategies={"reasoning": "textual_field"})
 ```
 
-Unset roles default to `"auto"`: resolve against the LM's declared capabilities at bake, record the decision. Same signature, different serving — swap and re-evaluate.
+Unset roles default to `"auto"`: resolve against the LM's declared capabilities at plan build, record the decision on the plan. A binding forces its lane — `"textual_field"` keeps reasoning in the prompt whatever the LM supports; an explicit native binding the LM cannot serve refuses loudly instead of degrading. (A `tools` binding must agree with `use_native_function_calling` until that kwarg retires.) Same signature, different serving — swap and re-evaluate.
 
 **16. Bind codecs, or register your own.**
 
 ```python
-register_codec("compact_yaml", MyYamlCodec())        # admission gate:
-# parse(render(x)) == x over schema-generated adversarial probes, or refused.
+dspy.adapters.register_codec("compact_yaml", MyYamlCodec())   # admission gate:
+# parse_value(render_value(x)) == x over adversarial probes, or refused.
 
-adapter = JSONAdapter(codecs={"input": "compact_yaml", "output": "json"})
+adapter = dspy.TemplateAdapter(
+    messages=[...],
+    parse_mode="json",
+    codecs={"input": "compact_yaml"},        # output stays text_pythonish
+)
 ```
 
-Directional and independent: render inputs one way, request outputs another.
+Directional and independent: render inputs one way, parse outputs another. A codec is a render/parse/schema triple; the battery refuses one whose parser cannot invert its own rendering, naming the failing probe.
 
-**17. Ship a custom preset or codec inside a program.** Templates are pure data — they bake into the saved program as JSON and load with no exec, no flags. Code (codecs, strategies, authored parsers) follows the three-origin rule: `builtin` resolves internally; `packaged` declares an import path + version that the program's env manifest provides; `authored` bakes the source itself, exec'd in an isolated namespace and identity-verified at load, carrying `authored_by` provenance. Dangling references refuse loudly at load, naming the reference.
+**17. Ship a custom preset or codec inside a program.** Templates are pure data — `dump_entry()` bakes them into JSON and `load_entry` reconstructs with no exec, no flags. Code (codecs) follows the three-origin rule: `builtin` resolves internally; `packaged` declares an import path + distribution version that the program's env manifest provides (a mismatch refuses naming both versions); `authored` bakes the source itself, exec'd in an isolated namespace only after its sha256 identity verifies, carrying `authored_by` provenance. Code origins pass the same admission battery at load that `register_codec` runs at registration. Dangling references refuse loudly at load, naming the reference.
 
-**18. Learn the template language interactively.** The language is closed and enumerable, and the contract requires it be discoverable: `describe_template_language()` returns the full vocabulary as data; errors teach (`unknown slot {outpts()} — valid slots: instruction, inputs, outputs, demos, history, fragments`); and `preview()` renders any preset against a signature with no LM call, so the learn-by-looking loop always works.
+**18. Learn the template language interactively.** The language is closed and enumerable, and the contract requires it be discoverable: `dspy.adapters.describe_template_language()` returns the full vocabulary as data; errors teach (`unknown slot function {outpts(...)} — valid slot functions: instruction, inputs, outputs, demos, history, fragments, field`); and `adapter.preview(signature, demos=..., inputs=...)` renders the exact messages with no LM call, so the learn-by-looking loop always works.
 
 **19. The `@role` string shorthand.**
 
 ```python
 sig = dspy.Signature("question -> answer: str @citations")
+sig = dspy.Signature("question -> thoughts @reasoning, answer")   # untyped: str
 ```
 
-The fourth spelling of recipe 3, plus a public `dspy.roles` import path — no `custom_types` plumbing needed.
+The fourth spelling of recipe 3, with the markers importable as `dspy.roles` — no `custom_types` plumbing needed. Unknown roles refuse immediately, listing the vocabulary; commas inside subscripts (`dict[str, int] @plain`) split correctly.
 
 ## Cross-links
 
