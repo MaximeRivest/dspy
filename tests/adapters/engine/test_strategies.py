@@ -327,6 +327,71 @@ def test_double_key_role_first_annotation_fallback():
     assert strategy.name == "type_hook:_BadgeNative"
 
 
+def test_builtin_role_entry_never_shadows_an_admitted_subclass_hook():
+    """A Reasoning SUBCLASS carrying its own adapt_to_native_lm_feature must
+    resolve to its legacy hook exactly as the annotation-keyed path did —
+    the builtin role entry answers only for its native annotation, never
+    for an admitted class that overrides the hook."""
+    from dspy.adapters._engine.strategies import strategy_for
+
+    calls = {}
+
+    class MyReasoning(Reasoning):
+        @classmethod
+        def adapt_to_native_lm_feature(cls, signature, field_name, lm, lm_kwargs):
+            calls["field"] = field_name
+            # This provider's reasoning must NOT be requested through
+            # reasoning_effort; the field stays textual.
+            return signature
+
+    class Sig(dspy.Signature):
+        question: str = dspy.InputField()
+        thought: MyReasoning = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    strategy, resolved_by = strategy_for("reasoning", MyReasoning)
+    assert strategy.name == "type_hook:MyReasoning"
+    assert resolved_by == "annotation"
+
+    lm_kwargs = {}
+    built = build_plan(
+        ChatAdapter(native_response_types=[MyReasoning]),
+        _lm(supports_reasoning=True),
+        lm_kwargs,
+        Sig,
+        {"question": "Q?"},
+    )
+    assert calls == {"field": "thought"}
+    assert lm_kwargs == {}
+    assert built.plan.find_field("output", "thought").hidden is False
+    assert "thought" in built.render_signature.output_fields
+    parser_names = [type(parser).__name__ for parser in built.plan.parsers]
+    assert "ThirdPartyNativeParserHook" in parser_names
+    assert "NativeReasoningParserHook" not in parser_names
+
+
+def test_double_key_resolution_matches_the_annotation_path_wherever_it_answered():
+    """The restoration invariant: for every annotation the annotation-keyed
+    path handled, strategy_for(role, annotation) resolves identically to
+    field_strategy_for(annotation) — the role key only ADDS resolution
+    where the annotation path had nothing."""
+    from dspy.adapters._engine.roles import semantic_role_for
+    from dspy.adapters._engine.strategies import field_strategy_for, strategy_for
+
+    class SubReasoning(Reasoning):
+        pass
+
+    class SubCitations(Citations):
+        pass
+
+    for annotation in (Reasoning, Citations, SubReasoning, SubCitations, str):
+        role = semantic_role_for(annotation)
+        double_key, _ = strategy_for(role, annotation)
+        annotation_only = field_strategy_for(annotation)
+        assert type(double_key) is type(annotation_only)
+        assert double_key.name == annotation_only.name
+
+
 def test_registered_annotation_strategy_still_beats_the_builtin_role_entry():
     """Compat pin: register_field_strategy kept its today-semantics — a
     registered annotation entry outranks built-ins under either key."""

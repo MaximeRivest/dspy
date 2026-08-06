@@ -4,8 +4,12 @@
 (epic-C §6 stage 2): the semantic ROLE is consulted first, the annotation
 type second, and the resolution records which key answered. Built-ins
 register under BOTH keys as the same instances, so resolution is
-byte-identical whichever key hits; a field with no registry entry falls
-back to the annotation's documented ``adapt_to_native_lm_feature`` hook
+byte-identical whichever key hits — and a builtin ROLE entry answers only
+for the exact annotation registered beside it, so the double-key path
+resolves identically to the annotation-only path wherever that path
+answered (an admitted subclass keeps its hook; the role key only adds
+resolution where the annotation path had none). A field with no registry
+entry falls back to the annotation's documented ``adapt_to_native_lm_feature`` hook
 auto-wrapped in :class:`LegacyTypeHookStrategy` — one uniform strategy
 loop, no special-cased third-party branch.
 
@@ -64,7 +68,12 @@ def strategy_for(role, annotation) -> tuple:
     Returns ``(strategy, resolved_by)`` where ``resolved_by`` is ``"role"``
     or ``"annotation"`` — recorded on the strategy trace so resolution is
     always explainable. Byte-identical to the annotation-only path by
-    construction: built-ins are the same instances under both keys.
+    construction: built-ins are the same instances under both keys, and a
+    BUILTIN role entry answers only for the exact annotation that carries
+    it natively — an admitted subclass (whose ``adapt_to_native_lm_feature``
+    override the annotation path always honored) still resolves through the
+    annotation key. The role key only ADDS resolution where the annotation
+    path had nothing.
     """
     field_builtins, role_builtins = _ensure_builtins()
     registered_role = _REGISTERED_ROLE_STRATEGIES.get(role)
@@ -73,10 +82,10 @@ def strategy_for(role, annotation) -> tuple:
     registered_field = _REGISTERED_FIELD_STRATEGIES.get(annotation)
     if registered_field is not None:
         return registered_field, "annotation"
-    builtin_role = role_builtins.get(role)
-    if builtin_role is not None:
-        return builtin_role, "role"
     builtin_field = field_builtins.get(annotation)
+    builtin_role = role_builtins.get(role)
+    if builtin_role is not None and builtin_role is builtin_field:
+        return builtin_role, "role"
     if builtin_field is not None:
         return builtin_field, "annotation"
     return LegacyTypeHookStrategy(annotation), "annotation"
