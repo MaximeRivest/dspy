@@ -218,7 +218,7 @@ flowchart TB
     direction TB
     subgraph BAKE["BAKED · travels in the artifact"]
       direction TB
-      MT["1 · module tree + bindings<br/>{kind, name, children}<br/>leaf → {adapter, lm, delta?}"]
+      MT["1 · module tree + bindings<br/>kind · name · children<br/>leaf binds adapter · lm · delta"]
       SIG["2 · signature<br/>fields[]: shape + semantic_role<br/>(instructions live in 3a only)"]
       LEARN["3a instructions (text)<br/>3b demos +input_keys<br/>3c config (temp, n, …)"]
       ADP["4 · adapter pool<br/>plan · format_identity + literal_table<br/>strategies (per role) · codecs · config"]
@@ -236,7 +236,7 @@ flowchart TB
       SYS["9 · system deps<br/>(if any)"]
     end
     subgraph CRED["CREDENTIAL · name only, never a value"]
-      SEC["10 · credentials<br/>{name, scope}"]
+      SEC["10 · credentials<br/>name + scope only"]
     end
   end
 
@@ -305,12 +305,12 @@ sequenceDiagram
   participant Opt as optimizer / author
   participant IR as ProgramIR (artifact)
   participant Bob as receiver (fresh machine)
-  Opt->>IR: compile()  — resolve + bake everything;<br/>checkpoint == save (one code path)
+  Opt->>IR: compile — resolve + bake everything<br/>(checkpoint = save, one code path)
   Note over IR: manifest.json · weights/ · tools/ · uv.lock<br/>credentials = names only
   IR-->>Bob: ship the directory
   Bob->>Bob: uv sync  (rebuild exact interpreter + deps)
   Bob->>Bob: reconstruct module tree, signatures (shape+role),<br/>instructions, demos, config, forward ASTs
-  Bob->>Bob: rebuild POOLS (adapters, LMs) then LINK every<br/>leaf's bindings — dangling ref = loud link error
+  Bob->>Bob: rebuild pools (adapters, LMs) then link every<br/>binding — dangling ref is a loud link error
   Bob->>Bob: materialize tools (exec source, verify identity)
   Bob->>Bob: load LM weights in-process (honor tying.json,<br/>apply binding deltas over entry bases)
   Bob->>Bob: VERIFY declared tier — refuse loudly on mismatch
@@ -1287,7 +1287,7 @@ structure; a strategy may never own format literals):
 ```mermaid
 flowchart TB
   L["lowering — the TREE, across exchanges<br/>TwoStep · retry · parse-fallback"] --> F["format — one EXCHANGE<br/>chat markers · JSON body · XML"]
-  F --> S["strategy — one field's ROLE<br/>reasoning: native|textual · tools: native_fc|textual_json"]
+  F --> S["strategy — one field's ROLE<br/>reasoning: native or textual · tools: native_fc or textual_json"]
   S --> CD["codec — one value's SHAPE<br/>BAML schema-prose · JSON · Python literal"]
   INTENT["signature (intent)<br/>shapes + semantic roles — frozen"] -.->|"projected into<br/>every layer below"| L
   classDef mech fill:#1b5e20,stroke:#a5d6a7,color:#fff;
