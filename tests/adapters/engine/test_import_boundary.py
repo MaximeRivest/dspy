@@ -48,7 +48,6 @@ KNOWN_BACK_EDGES = frozenset(
         ("migrated.py", "dspy.adapters.json_adapter"),
         ("migrated.py", "dspy.adapters.two_step_adapter"),
         ("migrated.py", "dspy.adapters.xml_adapter"),
-        ("formats/baml.py", "dspy.adapters.baml_adapter"),
         # TwoStep's extraction stage builds a ChatAdapter and calls an LM in
         # parse; dies when TwoStep expands as a lowering (Epic F).
         ("formats/twostep.py", "dspy.adapters.chat_adapter"),

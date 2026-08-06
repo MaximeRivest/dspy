@@ -212,7 +212,9 @@ def _loop_attr(attr: str, ctx: RenderContext) -> str:
     if attr == "placeholder":
         return "{" + name + "}"
     if attr == "typed_placeholder":
-        return translate_field_type(name, info)
+        # The schema spelling is the codec's (spec section 3): the shared
+        # text codec renders the historical placeholder-plus-type-note.
+        return _codec_for(ctx, collection).render_typed_placeholder(name, info)
     if attr == "marker":
         return f"[[ ## {name} ## ]]"
     if attr == "chat_type_hint":

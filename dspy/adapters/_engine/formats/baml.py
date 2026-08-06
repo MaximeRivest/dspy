@@ -7,20 +7,18 @@ JSON) plus a schema-prose structure section. The empty-segment filter in
 user content is the one genuine format-level difference on that side;
 parsing and the assistant side are inherited from JSONFormat.
 
-The simplified-schema helpers are deliberately IMPORTED from
-``dspy.adapters.baml_adapter`` rather than duplicated: they are pure
-module-level functions and the single source of those strings; the
-consolidation PR decides their final home. Schema prose is codec-adjacent
-(it describes what syntax is requested back) but stays a format literal
-until the codec pool exists — see roadmap/epic-B-shapes-codecs.md
-non-goals.
+Schema prose is the ``baml`` codec's schema spelling (``_engine/codecs.py``,
+D-3 — the Epic-B "format literal until the codec pool exists" deferral is
+over); this module keeps only the arrangement literals, and the composed
+legacy bodies below remain as the frozen reference the parity tests diff
+against.
 """
 
 from typing import Any
 
+from dspy.adapters._engine.codecs import render_schema_prose
 from dspy.adapters._engine.formats import Format
 from dspy.adapters._engine.formats.json import JSONFormat
-from dspy.adapters.baml_adapter import _render_type_str
 
 
 class BAMLFormat(JSONFormat):
@@ -52,7 +50,7 @@ class BAMLFormat(JSONFormat):
             for name, field in signature.output_fields.items():
                 field_type = field.annotation
                 sections.append(f"[[ ## {name} ## ]]")
-                sections.append(f"Output field `{name}` should be of type: {_render_type_str(field_type, indent=0)}\n")
+                sections.append(f"Output field `{name}` should be of type: {render_schema_prose(field_type, indent=0)}\n")
 
         sections.append("[[ ## completed ## ]]")
 

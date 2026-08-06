@@ -83,7 +83,7 @@ VOCABULARY: dict = {
         "desc_suffix": "the field-description remainder after `name` (type): — description, custom-type notes, constraints",
         "value": "the field's value for the current call/demo/turn, spelled by the direction's codec",
         "placeholder": "the literal {field_name} token",
-        "typed_placeholder": "the placeholder plus the historical type note for outputs",
+        "typed_placeholder": "the field's schema, spelled by the direction's codec (the shared text codec renders the placeholder plus the historical type note)",
         "marker": "the [[ ## field_name ## ]] marker",
         "chat_type_hint": "the historical non-str output hint suffix, empty for str",
     },

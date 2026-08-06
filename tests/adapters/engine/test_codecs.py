@@ -12,7 +12,7 @@ import pydantic
 import pytest
 from pydantic.fields import FieldInfo
 
-from dspy.adapters._engine.codecs import PYDANTIC_JSON, TEXT_PYTHONISH
+from dspy.adapters._engine.codecs import BAML, PYDANTIC_JSON, TEXT_PYTHONISH, render_schema_prose
 from dspy.adapters._engine.formats.baml import BAMLFormat
 from dspy.adapters._engine.formats.chat import ChatFormat
 from dspy.adapters._engine.formats.json import JSONFormat
@@ -61,7 +61,7 @@ ROUND_TRIP_VALUES = [
 ]
 
 
-@pytest.mark.parametrize("codec", [TEXT_PYTHONISH, PYDANTIC_JSON], ids=lambda c: c.name)
+@pytest.mark.parametrize("codec", [TEXT_PYTHONISH, PYDANTIC_JSON, BAML], ids=lambda c: c.name)
 @pytest.mark.parametrize("annotation,value", [(a, v) for _, a, v in ROUND_TRIP_VALUES], ids=[i for i, _, _ in ROUND_TRIP_VALUES])
 def test_round_trip(codec, annotation, value):
     rendered = codec.render_value(value, _field(annotation))
@@ -89,6 +89,37 @@ def test_format_bindings():
     assert JSONFormat().input_codec is TEXT_PYTHONISH
     assert BAMLFormat().input_codec is PYDANTIC_JSON
     assert BAMLFormat().output_codec is TEXT_PYTHONISH
+
+
+def test_schema_spelling_defaults_to_the_historical_type_note():
+    """The codec's third surface: {f.typed_placeholder} routes here."""
+    from dspy.adapters.utils import translate_field_type
+
+    fi = _field(list[Inner])
+    assert TEXT_PYTHONISH.render_typed_placeholder("tags", fi) == translate_field_type("tags", fi)
+    assert PYDANTIC_JSON.render_typed_placeholder("tags", fi) == translate_field_type("tags", fi)
+
+
+def test_baml_schema_spelling_is_schema_prose():
+    fi = _field(list[Inner])
+    rendered = BAML.render_typed_placeholder("tags", fi)
+    assert rendered == f"Output field `tags` should be of type: {render_schema_prose(list[Inner], indent=0)}"
+    assert rendered.startswith("Output field `tags` should be of type: [\n  {")
+    assert "label: string," in rendered
+    assert "weight: float," in rendered
+
+
+def test_baml_value_spelling_inherits_indented_pydantic():
+    model = Outer(name="x", inner=Inner(label="a", weight=0.5), tags=["t"])
+    assert BAML.render_value(model, _field(Outer)) == PYDANTIC_JSON.render_value(model, _field(Outer))
+
+
+def test_schema_prose_recursive_model_refuses_with_the_pinned_message():
+    class Node(pydantic.BaseModel):
+        child: "Node | None"
+
+    with pytest.raises(ValueError, match="cannot handle recursive pydantic models"):
+        render_schema_prose(Node)
 
 
 def test_known_non_round_trips_documented():
