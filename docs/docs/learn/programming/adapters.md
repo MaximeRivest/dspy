@@ -14,6 +14,8 @@ The adapter system is responsible for:
 - Managing conversation history and function calls.
 - Converting pre-built DSPy types into LM prompt messages, e.g., `dspy.Tool`, `dspy.Image`, etc.
 
+One principle governs all of this: **your signature is the contract, and the adapter is the mechanism.** A prediction contains exactly the output fields your signature declares — and you can swap adapters freely without changing your program, because the *how* of prompting is never part of the *what* you asked for.
+
 ## Configure Adapters
 
 You can use `dspy.configure(adapter=...)` to choose the adapter for the entire Python process, or
@@ -328,6 +330,48 @@ Response:
 Avoid using `JSONAdapter` if you are:
 
 - Using a model that does not natively support structured output, such as a small open-source model hosted on Ollama.
+
+### Other adapters
+
+Three more adapters cover specific situations; the [adapters deep-dive](../../diving-deeper/adapters.md) describes each in detail:
+
+- **`dspy.XMLAdapter`** — `<field_name>value</field_name>` tags, for models that handle XML more reliably than markers or JSON.
+- **`BAMLAdapter`** (import from `dspy.adapters.baml_adapter`) — the JSON prompt shape with a friendlier value encoding: pydantic inputs render as indented, readable JSON and the output schema is presented in a compact commented form. Worth trying for complex nested output types.
+- **`dspy.TwoStepAdapter(extraction_model)`** — two LM calls: the main (reasoning) model answers in free form, then a small extractor model pulls out your declared fields. For models that think well but format unreliably.
+
+## Semantic roles: saying what a field means
+
+Beyond its data type, a field can declare what it *means* to the LM exchange — that it is the model's thinking channel, a grounded citation, an image input, and so on. This is a **semantic role**, and it belongs in the signature because it is part of your intent; *how* the role is served (a native provider feature, or plain prompting) is the adapter layer's job and can differ per model.
+
+```python
+from typing import Annotated
+from dspy.signatures.roles import citations
+
+class GroundedQA(dspy.Signature):
+    """Answer from the documents."""
+    question: str = dspy.InputField()
+    documents: list[str] = dspy.InputField()
+    answer: Annotated[str, citations] = dspy.OutputField()   # canonical form
+    # equivalently: answer: citations[str] = dspy.OutputField()
+    # equivalently: answer: str = dspy.OutputField(role="citations")
+```
+
+The role vocabulary is small and closed: `plain`, `reasoning`, `tools`, `tool_calls`, `citations`, `history`, `media`, `code`. Unknown roles raise immediately, and conflicting declarations on one field raise rather than guess. The familiar semantic types (`dspy.Reasoning`, `dspy.Tool`, `dspy.Image`, ...) still work exactly as before — each one implies its role automatically, so existing programs need no changes.
+
+## Predictions contain what you declared
+
+A `dspy.Prediction` carries exactly your signature's output fields. Anything else a module generates along the way — for example, the chain-of-thought text `dspy.ChainOfThought` elicits when you didn't ask for it — is kept out of your outputs and stored in a debugging channel instead: `prediction._trajectory`, a plain dict.
+
+```python
+cot = dspy.ChainOfThought("question -> answer")
+result = cot(question="What is 2 + 2?")
+
+result.answer               # your declared output
+result._trajectory          # {"reasoning": "..."} — mechanism, for debugging
+result.reasoning            # still works, but warns: it's not a declared field
+```
+
+If you *want* the reasoning as a real output, declare it — add `reasoning: str = dspy.OutputField()` to your signature and it becomes contractual: present in the prediction, no warning.
 
 ## Summary
 

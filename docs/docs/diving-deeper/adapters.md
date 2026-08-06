@@ -2,39 +2,75 @@
 
 ## Intent
 
-An adapter is the layer between a `Signature` and the LM. It formats the signature’s instructions, fields, and demos into chat messages, sends the call, and parses the LM’s response back into typed Python values. Different adapters use different prompt shapes — chat markers, JSON, XML, or a two-stage extract — so the same Signature can run against models with widely different formatting strengths.
+An adapter is the layer between a `Signature` and the LM. It renders the signature's instructions, fields, and demos into chat messages, and parses the LM's response back into typed Python values. Different adapters use different prompt shapes — chat markers, JSON, XML, or a two-stage extract — so the same Signature can run against models with widely different formatting strengths.
 
 Read this when you want to know what the prompt looks like on the wire, why a typed field parses one way and not another, where the `[[ ## field_name ## ]]` markers come from, or which adapter to switch to when ChatAdapter is misbehaving.
+
+## The one line to hold onto
+
+Your signature is **intent**: what you asked for. Everything the adapter does is **mechanism**: how it gets delivered. You can swap any part of the mechanism — the adapter, how a field is served, how a value is encoded — and your task has not changed: same signature, same program, same metric. That separation is what makes adapters swappable, and it is enforced, not aspirational: a prediction contains exactly your declared output fields, and nothing in the adapter layer ever makes an extra LM call.
 
 ## Design decisions
 
 ### 1. Adapters are pluggable
 
-Same Signature, different prompt shape, no Signature changes. LMs vary a lot in what they prefer to read and produce: a model trained on instruction-following with markers loves ChatAdapter’s `[[ ## field ## ]]` format; a model with native structured-output mode does best with JSONAdapter; a reasoning model that formats unreliably wants TwoStepAdapter. Putting this decision behind one interface means Signatures, modules, and optimizers don’t have to know which family of LM they’re running against.
+Same Signature, different prompt shape, no Signature changes. LMs vary a lot in what they prefer to read and produce: a model trained on instruction-following with markers loves ChatAdapter's `[[ ## field ## ]]` format; a model with native structured-output mode does best with JSONAdapter; a reasoning model that formats unreliably wants TwoStepAdapter. Putting this decision behind one interface means Signatures, modules, and optimizers don't have to know which family of LM they're running against.
 
 ### 2. ChatAdapter is the default
 
-Text-only, model-agnostic, uses `[[ ## field ## ]]` markers. It needs no special LM features — no JSON mode, no function calling, no native structured outputs. That breadth is why it’s the default. It also includes a safety net: when its regex parser fails, it falls back to JSONAdapter automatically (toggle with `use_json_adapter_fallback=False`).
+Text-only, model-agnostic, uses `[[ ## field ## ]]` markers. It needs no special LM features — no JSON mode, no function calling, no native structured outputs. That breadth is why it's the default. It also includes a safety net: when its regex parser fails, it falls back to JSONAdapter automatically (toggle with `use_json_adapter_fallback=False`).
 
-### 3. Every adapter follows a fixed lifecycle
+### 3. One call flows through a plan
 
-preprocess → format → LM call → postprocess → parse. You can debug any adapter by walking these five steps. Preprocess adapts the signature for native LM features (function calling, reasoning). Format builds the messages. The LM call returns raw outputs. Postprocess pulls out tool calls and native-typed responses (Reasoning, Citations). Parse runs `parse_value` on each declared output field.
+Internally, every adapter call follows the same pipeline: **plan → render → one LM call → parse**. Planning decides everything up front — which fields the model will see, which native LM features will serve which fields, what gets stripped from or added to the request — before any text is generated. Rendering turns that plan into messages. Parsing recovers your typed fields from the response, using the same plan.
+
+Two properties of this pipeline are guarantees you can rely on:
+
+- **Planning is pure.** No LM is called during planning or rendering, so you can inspect what *would* be sent without spending a token.
+- **One adapter call is one LM exchange.** Nothing inside the adapter's rendering or parsing machinery makes an extra LM call. The visible exceptions are explicit, named behaviors that wrap the exchange: ChatAdapter's JSON fallback retries the request once under a different format (decision 7), and TwoStepAdapter is openly a two-call design (decision 9).
 
 ### 4. Type coercion is centralized
 
-`dspy/adapters/utils.py::parse_value` is the single function every adapter delegates to. Adapters differ in how they *find* a field’s value in the LM’s output (regex marker, JSON key, XML tag), but once they have the raw string they all call the same `parse_value(value, annotation)`. That keeps coercion rules consistent across adapter swaps and gives you one place to look when a typed field misbehaves.
+`dspy/adapters/utils.py::parse_value` is the single function every adapter delegates to. Adapters differ in how they *find* a field's value in the LM's output (regex marker, JSON key, XML tag), but once they have the raw string they all call the same `parse_value(value, annotation)`. That keeps coercion rules consistent across adapter swaps and gives you one place to look when a typed field misbehaves.
 
-### 5. Custom types own their own serialization
+### 5. A field is a shape plus a role
 
-`Image`, `Audio`, `Code`, `Reasoning`, `Tool`, `ToolCalls`, and any user subclass of `dspy.Type` plug in their own `format()` and optional `parse_lm_response()`. The adapter doesn’t special-case images or audio. When the field’s annotation is a `dspy.Type` subclass, the adapter calls `type.format()` to render it into the provider’s content-block format and `type.parse_lm_response()` to read it back. Adding a new modality means writing a new subclass — no adapter changes.
+A signature field carries two independent things:
 
-### 6. Native LM features are surfaced through types
+- Its **shape** — the data type: `str`, `int`, a pydantic model, `list[Quote]`, an enum. Any type with a JSON-schema meaning works; you do not need special DSPy types for data. (Types with no JSON-schema meaning, like `Callable`, are refused with an error naming the field — a callable is a tool, not data.)
+- Its **semantic role** — what the field means to the exchange: is it ordinary data (`plain`), the model's thinking channel (`reasoning`), invokable capabilities (`tools`), grounded citations (`citations`), conversation turns (`history`), an image or audio input (`media`)?
 
-Function calling, structured outputs, and reasoning ride on `adapt_to_native_lm_feature()` and `parse_lm_response()` hooks on the type. A `dspy.Reasoning` output field, for example, tells the adapter “set `reasoning_effort` in `lm_kwargs` and pull the reasoning from `response['reasoning_content']` instead of regex-parsing it.” Model-specific feature integration lives at the type layer, where it’s reusable across adapters.
+The role vocabulary is small and closed: `plain`, `reasoning`, `tools`, `tool_calls`, `citations`, `history`, `media`, `code`. Roles are declared in the signature — they are part of your intent — while the machinery that *serves* a role (a native provider feature, or a textual pattern in the prompt) belongs to the adapter layer and can change without touching your program.
+
+You can declare a role three ways today, all resolving to the same thing:
+
+```python
+from typing import Annotated
+from dspy.signatures.roles import citations
+
+# 1. Canonical — type checkers see `str`, dspy sees the role:
+answer: Annotated[str, citations] = dspy.OutputField()
+
+# 2. Subscript sugar — identical to the Annotated form:
+answer: citations[str] = dspy.OutputField()
+
+# 3. Keyword — validated eagerly, unknown roles raise immediately:
+answer: str = dspy.OutputField(role="citations")
+```
+
+The `Annotated` form also works inside string signatures (pass the marker via `custom_types`). Conflicting declarations on one field — say `role="citations"` on a `Reasoning`-typed field — raise immediately rather than guessing.
+
+The familiar semantic types still work and are not deprecated: `dspy.Reasoning` is exactly the fused spelling of "shape `str` + role `reasoning`", and every legacy type implies its role automatically (`Tool` → `tools`, `Citations` → `citations`, `Image`/`Audio`/`File`/`Document` → `media`, `History` → `history`, `Code` → `code`). The split form exists because roles and shapes vary independently: `citations[list[Quote]]` — structured, grounded quote objects — is expressible in one line, where a fused type would have to pin both halves at once.
+
+### 6. Native LM features are served per role, capability-checked
+
+Function calling, native reasoning modes, and provider citations are handled by the engine per role: when planning a call, each role-carrying field is matched against what the configured LM actually supports, and the plan records what was chosen (use the native channel, or render the request textually into the prompt). A model with native function calling gets a real `tools` array in the request; a model without it gets tool specs rendered as text and calls parsed from the response. Your signature is identical in both cases — that is the point of declaring the role rather than the mechanism.
+
+Custom `dspy.Type` subclasses that implement the documented `adapt_to_native_lm_feature()` / `parse_lm_response()` hooks continue to work unchanged; the engine wraps them so they participate in planning like the built-ins do.
 
 ### 7. ChatAdapter falls back to JSONAdapter on parse error
 
-Toggleable; on by default. The first time the LM produces malformed `[[ ## ## ]]` output, ChatAdapter catches the parse error and re-runs the request through JSONAdapter. This is more lenient than the right behavior for new code — you’d prefer to see the error — but it’s the default because it makes ChatAdapter usable against a wider range of models out of the box. Set `use_json_adapter_fallback=False` in tests.
+Toggleable; on by default. The first time the LM produces malformed `[[ ## ## ]]` output, ChatAdapter catches the parse error and re-runs the request through JSONAdapter. This is more lenient than the right behavior for new code — you'd prefer to see the error — but it's the default because it makes ChatAdapter usable against a wider range of models out of the box. Set `use_json_adapter_fallback=False` in tests. Note this is a deliberate exception to the one-call rule in decision 3: a fallback is a second, recorded exchange, not hidden machinery.
 
 ### 8. JSONAdapter prefers structured output mode
 
@@ -42,19 +78,31 @@ It checks `lm.supported_params` and falls through tiers: OpenAI-style `response_
 
 ### 9. TwoStepAdapter splits generation from extraction
 
-For reasoning models that produce free-form text but format unreliably. Stage one: the main LM gets the task as plain prose, no field markers, and produces whatever shape it wants. Stage two: a smaller extractor LM with ChatAdapter reads the output and pulls out the declared fields. Useful for o1, o3-mini, and similar models where formatting reliability is the bottleneck.
+For reasoning models that produce free-form text but format unreliably. Stage one: the main LM gets the task as plain prose, no field markers, and produces whatever shape it wants. Stage two: a smaller extractor LM with ChatAdapter reads the output and pulls out the declared fields. Useful for o1, o3-mini, and similar models where formatting reliability is the bottleneck. It is openly a two-call design — you configure the extraction model explicitly.
 
-### 10. Field marker format is hard-coded
+### 10. How a value is written is a codec, not an adapter
 
-`[[ ## name ## ]]` is the pattern, chosen for low collision and clean regex. The brackets-plus-hashes shape is unlikely to appear in real text or code, and the symmetry makes the parser simple. There’s no config knob to change it. JSONAdapter and XMLAdapter use their own formats; if you want a different chat-style format, subclass `Adapter`.
+When a field holds an object — a pydantic model, a list, a dict — someone decides how to *write it into* the prompt and what syntax to ask for back. That decision is a **codec**: a render/parse pair for values, separate from the adapter's overall prompt shape. The clearest illustration is BAMLAdapter: it is the JSON prompt shape plus a different *input* codec — pydantic models render as indented, readable JSON instead of compact dumps — and a schema presentation the model finds easier to follow for deeply nested types. Same exchange structure, different value encoding.
 
-### 11. Finetuning data export is per-adapter
+Today the codec pairing is fixed per adapter. The named concept matters anyway, because it tells you where to look when a rendered value surprises you: the adapter decides the message structure; the codec decides how your object appears inside it.
 
-`format_finetune_data` is implemented on ChatAdapter (OpenAI message format); JSONAdapter raises `NotImplementedError`; TwoStepAdapter doesn’t support it either. If you’re using `BootstrapFinetune`, stay on ChatAdapter or implement `format_finetune_data` on the adapter of your choice.
+### 11. Field marker format is hard-coded
+
+`[[ ## name ## ]]` is the pattern, chosen for low collision and clean regex. The brackets-plus-hashes shape is unlikely to appear in real text or code, and the symmetry makes the parser simple. There's no config knob to change it. JSONAdapter and XMLAdapter use their own formats; if you want a different chat-style format, subclass `Adapter`.
+
+### 12. Predictions carry exactly what you declared
+
+A prediction's fields are your signature's output fields — no more, no less. Anything else a module generates while answering (a chain of thought you did not ask for, a tool trajectory, REPL history) is **mechanism exhaust**, and it lives in a separate observability channel: `prediction._trajectory`, a dict you can read for debugging. Exhaust never appears in `prediction.keys()`, item access, or serialized state.
+
+For compatibility, attribute access still reaches the channel: `result.reasoning` on a ChainOfThought prediction returns the reasoning with a `DeprecationWarning` pointing you at `_trajectory`. The rule for making it contractual is one sentence: **want it? declare it.** Put `reasoning: str = dspy.OutputField()` (or a `reasoning`-role field) in your signature and it is a real output — present in the prediction, no warning, yours.
+
+### 13. Finetuning data export is per-adapter
+
+`format_finetune_data` is implemented on ChatAdapter (OpenAI message format); JSONAdapter raises `NotImplementedError`; TwoStepAdapter doesn't support it either. If you're using `BootstrapFinetune`, stay on ChatAdapter or implement `format_finetune_data` on the adapter of your choice.
 
 ## API walkthrough
 
-Grouped by what you’re trying to do.
+Grouped by what you're trying to do.
 
 ### The adapters
 
@@ -62,26 +110,26 @@ Grouped by what you’re trying to do.
 The default. Builds a chat-style prompt with field markers, parses the response with a regex over the same markers, and (by default) falls back to JSONAdapter if the regex misses. Set `use_json_adapter_fallback=False` when you want a hard error in tests.
 
 **`dspy.JSONAdapter(callbacks=None, use_native_function_calling=True)`**  
-Outputs structured JSON. Internally extends ChatAdapter — formatting is similar, but the output instruction asks for JSON and parsing uses `json_repair`. The constructor’s `use_native_function_calling=True` default flips when tool calling is wired in.
+Outputs structured JSON. Formatting is similar to ChatAdapter on the input side, but the output instruction asks for JSON and parsing uses `json_repair`. The constructor's `use_native_function_calling=True` default flips when tool calling is wired in.
 
 **`dspy.XMLAdapter(callbacks=None)`**  
-`<field_name>value</field_name>` tags. The parser is a regex (`r"<(\w+)>(.*?)</\1>"` with `DOTALL`); it’s robust to whitespace but doesn’t tolerate nested tags of the same name.
+`<field_name>value</field_name>` tags. The parser is a regex (`r"<(\w+)>(.*?)</\1>"` with `DOTALL`); it's robust to whitespace but doesn't tolerate nested tags of the same name.
 
 **`dspy.TwoStepAdapter(extraction_model: BaseLM, **kwargs)`**  
-Two LM calls per inference. Use it when the main LM is a reasoning model that’s bad at formatting — the extractor is usually a cheap general-purpose LM with ChatAdapter. Doesn’t support finetuning yet.
+Two LM calls per inference. Use it when the main LM is a reasoning model that's bad at formatting — the extractor is usually a cheap general-purpose LM with ChatAdapter. Doesn't support finetuning yet.
 
-**`dspy.BAMLAdapter`**  
-JSON-backed, but renders the output schema in BAML-style commented Pydantic form. Worth trying when JSONAdapter’s raw JSON schema is too verbose for complex nested types.
+**`BAMLAdapter`** (import from `dspy.adapters.baml_adapter`)  
+The JSON prompt shape with a friendlier value encoding: pydantic inputs render as indented JSON, and the output schema is presented in BAML-style commented-Pydantic form. Worth trying when JSONAdapter's raw JSON schema is too verbose for complex nested types. (See decision 10 — this is a codec difference, not a new exchange structure.)
 
 **`dspy.Adapter`**  
 The base class. Subclass it when you want a new prompt shape — implement `format()`, `parse()`, and (optionally) `format_finetune_data()`.
 
 ### Adapter lifecycle
 
-You’ll only override these methods when writing a custom adapter, but reading them helps when debugging a malformed prompt or a parse failure.
+You'll only override these methods when writing a custom adapter, but reading them helps when debugging a malformed prompt or a parse failure.
 
 **`Adapter.__call__(lm, lm_kwargs, signature, demos, inputs)` / `Adapter.acall(...)`**  
-Public entry. The flow inside is preprocess → format → LM call → postprocess. `lm_kwargs` (temperature, max_tokens, response_format, etc.) is where adapters reach during preprocess to request structured output or function calling.
+Public entry. The flow inside is plan → render → LM call → parse (decision 3). `lm_kwargs` (temperature, max_tokens, response_format, etc.) is where planning records requests for structured output or function calling.
 
 **`Adapter.format(signature, demos, inputs)` → `list[dict]`**  
 Turns the signature, demos, and inputs into chat messages. The pieces it composes from:
@@ -91,45 +139,49 @@ Turns the signature, demos, and inputs into chat messages. The pieces it compose
 - `format_field_structure(signature)` — the explanation of the marker format.
 - `format_task_description(signature)` — `signature.instructions`.
 - `format_demos(signature, demos)` — each demo becomes a user/assistant pair.
-- `format_user_message_content(signature, inputs)` — the current call’s inputs.
+- `format_user_message_content(signature, inputs)` — the current call's inputs.
 - `format_assistant_message_content(signature, outputs)` — used inside demos.
-- `format_conversation_history(signature, history)` — when a field has type `dspy.History`, expand it into turn messages instead of stuffing it into one field’s value.
+- `format_conversation_history(signature, history)` — when a field has type `dspy.History`, expand it into turn messages instead of stuffing it into one field's value.
 
 **`Adapter.parse(signature, completion)` → `dict`**  
-Extracts typed field values from the LM’s response. ChatAdapter regex-matches the marker pattern, splits by field, and delegates each value to `parse_value`. JSONAdapter parses the JSON object and pulls values by key. XMLAdapter walks tags.
+Extracts typed field values from the LM's response. ChatAdapter regex-matches the marker pattern, splits by field, and delegates each value to `parse_value`. JSONAdapter parses the JSON object and pulls values by key. XMLAdapter walks tags.
 
 **`Adapter.format_finetune_data(signature, demos, inputs, outputs)`**  
-Serializes a demo into the LM provider’s finetune format. ChatAdapter writes OpenAI message format. Other adapters raise `NotImplementedError`.
+Serializes a demo into the LM provider's finetune format. ChatAdapter writes OpenAI message format. Other adapters raise `NotImplementedError`.
 
 ### Type coercion
 
 The single function every adapter calls when turning an LM-produced string into a typed value.
 
 **`parse_value(value, annotation)` in `dspy/adapters/utils.py`**  
-Strategy: if the annotation is `str`, pass through. If it’s an `Enum` or `Literal`, match against allowed values. Otherwise: try `json_repair.loads`, fall back to `ast.literal_eval`, fall back to the raw string; then validate with `TypeAdapter(annotation)`. If validation fails and the annotation is a `dspy.Type` subclass, retry with the raw value so the type’s own parser can take a shot.
+Strategy: if the annotation is `str`, pass through. If it's an `Enum` or `Literal`, match against allowed values. Otherwise: try `json_repair.loads`, fall back to `ast.literal_eval`, fall back to the raw string; then validate with `TypeAdapter(annotation)`. If validation fails and the annotation is a `dspy.Type` subclass, retry with the raw value so the type's own parser can take a shot.
 
-Other helpers in the same file you’ll see in tracebacks:
+Other helpers in the same file you'll see in tracebacks:
 
 - `format_field_value(field_info, value, assume_text=True)` — the inverse of parse: serializes a typed value for the prompt.
 - `serialize_for_json(value)` — Pydantic-aware JSON serialization, used by JSONAdapter.
-- `translate_field_type(field_info)` — generates the constraint string the prompt shows (“greater than: 0”).
+- `translate_field_type(field_info)` — generates the constraint string the prompt shows ("greater than: 0").
 - `get_field_description_string(fields)` — the field-list rendering.
 - `find_enum_member(enum_cls, raw)` — resolves an enum by name or value.
 
+### Semantic role markers
+
+**`dspy.signatures.roles`** — the role marker objects: `plain`, `reasoning`, `tools`, `tool_calls`, `citations`, `history`, `media`, `code`. Each is usable as `Annotated` metadata or via subscript sugar (`citations[str]` is exactly `Annotated[str, citations]`). Constructing a `SemanticRole` with an unknown name raises immediately, listing the vocabulary. See decision 5 for the three declaration spellings and the conflict rules.
+
 ### Custom type wrappers
 
-Types adapters know how to render and parse beyond Python’s standard ones. Each implements `format()`; some implement `parse_lm_response()` and `adapt_to_native_lm_feature()` for native LM hooks.
+Types adapters know how to render and parse beyond Python's standard ones. Each is the fused spelling of a shape plus a semantic role (decision 5); each implements `format()`, and some implement native-feature hooks that the engine wraps into its planning (decision 6).
 
 **`dspy.adapters.types.Type`**  
-The base class. Subclass it (it’s a `pydantic.BaseModel`) and implement `format()` to plug in a new type. Adapters wrap the output of `format()` with `<<CUSTOM-TYPE-START-IDENTIFIER>>...<<END-IDENTIFIER>>` so multi-modal content can be inserted into a single message stream and later split out.
+The base class. Subclass it (it's a `pydantic.BaseModel`) and implement `format()` to plug in a new type. Adapters wrap the output of `format()` with `<<CUSTOM-TYPE-START-IDENTIFIER>>...<<END-IDENTIFIER>>` so multi-modal content can be inserted into a single message stream and later split out.
 
 **`dspy.Image(source)`**
 
-URL reference, data URI, bytes, or PIL image. `format()` returns the provider’s image content block (`{"type": "image_url", "image_url": {"url": ...}}`). Ordinary construction and adapter parsing never access the filesystem or network. Use `Image.from_path(path)` to read a local file or `Image.from_url(url)` to download and base64-encode a remote resource. The deprecated direct call `Image(url, download=True)` also downloads for compatibility through 3.3; migrate it to `Image.from_url(url)`.
+URL reference, data URI, bytes, or PIL image. `format()` returns the provider's image content block (`{"type": "image_url", "image_url": {"url": ...}}`). Ordinary construction and adapter parsing never access the filesystem or network. Use `Image.from_path(path)` to read a local file or `Image.from_url(url)` to download and base64-encode a remote resource. The deprecated direct call `Image(url, download=True)` also downloads for compatibility through 3.3; migrate it to `Image.from_url(url)`.
 
 **`dspy.Audio(source)`**
 
-A data URI, in-memory bytes, or array data; raw base64 must be passed as `Audio(data=..., audio_format=...)`. Renders as the provider’s audio content block. Use `Audio.from_path(path)` or `Audio.from_url(url)` for resource loading.
+A data URI, in-memory bytes, or array data; raw base64 must be passed as `Audio(data=..., audio_format=...)`. Renders as the provider's audio content block. Use `Audio.from_path(path)` or `Audio.from_url(url)` for resource loading.
 
 **`dspy.File(file_data=None, file_id=None, filename=None)`**
 
@@ -139,19 +191,19 @@ Either in-memory bytes, a data URI, or a file ID (some providers preupload files
 Code with a class-level `language` parameter. `dspy.Code["java"]` produces a Code subclass typed for Java. `format()` returns the raw string — no wrapper, no fencing.
 
 **`dspy.History(messages)`**  
-Conversation turns. When the adapter sees this type on a field, it expands the messages into real user/assistant messages instead of stuffing them into one field’s value. Use this when you want the LM to see prior turns as messages.
+Conversation turns. When the adapter sees this type on a field, it expands the messages into real user/assistant messages instead of stuffing them into one field's value. Use this when you want the LM to see prior turns as messages.
 
 **`dspy.Reasoning(content)`**  
-String-like wrapper. When the LM supports a reasoning mode (o1, o3-mini, GPT-5 thinking variants), `Reasoning.adapt_to_native_lm_feature()` sets `reasoning_effort` in `lm_kwargs` and removes the field from the signature; `parse_lm_response()` pulls the reasoning out of the native response field. When the LM doesn’t support native reasoning, it falls back to a regular text field and behaves like the `reasoning` field `ChainOfThought` adds.
+String-like wrapper — the fused spelling of shape `str` + role `reasoning`. When the LM supports a native reasoning mode (o1, o3-mini, GPT-5 thinking variants), planning sets `reasoning_effort` and reads the reasoning from the native response channel; otherwise the field renders and parses as ordinary text. Either way your signature is unchanged.
 
 **`dspy.Tool(func, name=None, desc=None, args=None, arg_types=None, arg_desc=None)`**  
-Wraps a Python callable. Auto-introspects the function signature if you don’t pass `args`/`arg_types`/`arg_desc`. Used by `ReAct` and anywhere modules accept tools. The full tool story lives in the Tools / ReAct / MCP DD page.
+Wraps a Python callable. Auto-introspects the function signature if you don't pass `args`/`arg_types`/`arg_desc`. Used by `ReAct` and anywhere modules accept tools. The full tool story lives in the Tools / ReAct / MCP DD page.
 
 **`dspy.adapters.types.tool.ToolCalls.from_dict_list(...)`**  
 The list of tool calls the LM produced, parsed from native function-calling responses.
 
 **`dspy.adapters.types.Citations`**  
-Declared as a default native response type. When the provider returns citations natively (e.g., Anthropic), adapters extract them through the type’s `parse_lm_response`.
+Declared as a default native response type. When the provider returns citations natively (e.g., Anthropic), the engine's citations handling extracts them; on other providers the field behaves textually.
 
 ### Migrating resource loading in 3.3
 
@@ -177,6 +229,15 @@ Safe in-memory inputs such as data URIs, bytes, PIL images, audio arrays, and st
 - **`dspy.configure(adapter=dspy.JSONAdapter())`** — process-wide default.
 - **`with dspy.context(adapter=dspy.XMLAdapter()): ...`** — scoped override.
 - **No automatic LM-based selection.** ChatAdapter is the default and stays the default until you set otherwise. Some teleprompts (e.g., `BootstrapFinetune`) accept an `adapter` dict keyed by LM, so different LMs in a finetuning loop can use different adapters.
+
+## Arriving: the adapter as data
+
+This section describes ratified, in-progress work — none of it is callable today. It is documented here so the direction is public and so the pieces above make sense as parts of a whole.
+
+- **Per-role strategy bindings.** `dspy.ChatAdapter(strategies={"reasoning": "native_channel", "tools": "textual_json"})` — choose *how each role is served* per adapter, with an `"auto"` default that resolves against the LM's declared capabilities. Today the engine makes these choices internally; the binding surface makes them explicit, swappable, and testable.
+- **A named codec pool.** Register value codecs and bind them per field, including asymmetric pairs (render inputs as compact Python literals, request outputs as JSON).
+- **The `@role` string-signature shorthand.** `"question -> answer: str @citations"` — the fourth spelling of decision 5, plus a public `dspy.roles` import path.
+- **Adapter serialization.** Every adapter exports its identity and full literal vocabulary as data, and can be reconstructed from that data alone — the foundation for saving programs whose exact prompt behavior travels with them.
 
 ## Cross-links
 
