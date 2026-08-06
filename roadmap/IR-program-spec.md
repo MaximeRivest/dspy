@@ -356,11 +356,12 @@ same with a reasoning field prepended to the inner signature. PoT/CodeAct/RLM
 have this same loop shape, but the tool leaf is replaced by a `Call` to the
 **interpreter** leaf running model-generated code as data (§d, §7).)*
 
-### What is reused vs. net-new (grounded strictly in `adapter-engine/qc-03`)
+### What is reused vs. net-new (originally grounded in `adapter-engine/qc-03`; refreshed post-Epic-D, 2026-08-06)
 
 The adapter engine on this branch reifies *format/parse as data* and the IR
-reuses it directly. But three things the brief assumed are **not on this branch**
-and are designed here as net-new (or required-but-absent), not claimed as reuse.
+reuses it directly. When this section was first written (against qc-03),
+three things the brief assumed were absent; **Epic D built all of them** —
+see the refreshed inventory below the original reuse list.
 
 **Present and reused (real `.py`, cited):**
 - `AdapterPlan` + `RenderField` — `_engine/ir.py:41,16`.
@@ -381,29 +382,52 @@ and are designed here as net-new (or required-but-absent), not claimed as reuse.
   (arg schema). `dspy.Tool.format_as_litellm_function_call()` (`tool.py:152`)
   produces the same arg-only shape.
 
-**Absent on this branch (named only in docstrings — do NOT treat as reusable):**
-`strategy.py` (`TypeStrategy`/`PlanStep`), a `formats/` layer (`Format` objects),
-and `builder.py`/`render.py` (`build_plan`/`render_messages`). The IR needs a
-**format identity + literal-table** concept (§Adapter-notes) and, for RLM/PoT, a
-strategy concept — both are **required-but-not-yet-in-this-branch**, to be built,
-not reused.
+**Formerly absent, now built (Epics A–D; all real `.py` under
+`dspy/adapters/_engine/` unless noted):**
+- `strategy.py` (`TypeStrategy`/`PlanStep` contracts) + `strategies/` — the
+  built-in native reasoning/citations/tools strategies, the double-key
+  registry (`strategy_for(role, annotation)`, role-first with containment),
+  the per-role `strategies={...}` binding surface, and the closed strategy
+  vocabulary with `STRATEGIES_VERSION`.
+- The `formats/` layer (`Format` objects for chat/json/xml/baml/twostep) and
+  `builder.py`/`render.py` (`build_plan`/`render_messages`) — planning is an
+  explicit `AdapterPlan` per call, with the ADP-006/ADP-007 bake checks.
+- The **constrained template language** (`template/`: vocabulary-as-data,
+  eager teaching-error parser, pure renderer, static capacity derivation,
+  `preview()`), **presets** `chat`/`json`/`xml` defined AS templates
+  byte-reproducing the class adapters (`presets.py`), **codecs**
+  (`codecs.py`: render/parse/schema triples, named registry, `baml` entry),
+  and **versioned serde** (`serde.py` + `versions.py`: the component-4 entry
+  `{name, adapter_ir_version, versions, template, parser, codecs,
+  strategies, config}`, exact dump/load, loud link errors).
+- The public surface: `Adapter.dump_entry()`/`literal_table()`,
+  `dspy.adapters.load_entry`, `dspy.TemplateAdapter` (the authoring
+  surface), the section-9 registration APIs with admission gates
+  (`registry.py`/`admission.py`, incl. three-origin codec loading), the
+  `@role` shorthand, and `dspy.roles`.
 
-<a name="adapter-notes"></a>**§Adapter-notes — the format/literal-table gap +
-its fixed schema.** `AdapterPlan` reifies the field layer, transforms, and parser
-hooks, but the per-format wire vocabulary (Chat's `[[ ## field ## ]]` markers,
-JSON/XML structure, the literal table that maps a `RenderField` to its rendered
-form) lives in the absent `formats/` layer. The IR's adapter component therefore
-bakes a **`format_identity` + `literal_table`** that this branch does not yet
-provide; it is net-new structure the engine must grow to make the adapter fully
-self-describing as data.
+The normative home for all of this is `roadmap/adapter-ir-spec.md` (the
+adapter IR contract); this spec consumes it by reference — component 4 is a
+pool of that contract's preset entries plus bindings.
+
+<a name="adapter-notes"></a>**§Adapter-notes — the format/literal-table gap,
+CLOSED (Epic D) + its fixed schema.** `AdapterPlan` reifies the field layer,
+transforms, and parser hooks, and the per-format wire vocabulary now lives in
+the `formats/` + `presets.py` layers as template data. The IR's adapter
+component bakes the real exporter's output: `Adapter.dump_entry()` (the
+versioned preset entry) with `literal_table()` as the **derived** summary
+view — never authored. Server examples 01–03 regenerate from exactly this
+path; the fixed key vocabulary below remains the reader contract.
 
 **Fixed literal-table key vocabulary (resolves a real schema gap).** Rendering
 the four example adapters uniformly (the `explain` reader) surfaced that ad-hoc
 per-adapter keys drift — `field_marker` vs `input_field_marker` vs `field_line`,
-`output_requirement` vs `output_requirements`. That drift means the literal table
-is not yet a *schema*, only a per-adapter dict. The IR fixes a **closed key
+`output_requirement` vs `output_requirements`. That drift meant the literal table
+was a per-adapter dict, not a *schema*. The IR fixes a **closed key
 vocabulary** every format populates (absent key = "this format has no such
-construct", never a synonym):
+construct", never a synonym) — and since Epic D the engine derives exactly
+this vocabulary from the template (`derive_literal_table`), so drift is
+mechanically impossible:
 
 | key | meaning |
 |---|---|

@@ -33,6 +33,5 @@ With the engine authoritative: retire ambient resolution, callback threading, pe
 ## Standing risks
 
 - **Upstream sync friction:** `tests/callback/test_callback.py` conflicts with #10119; run the five-point orthogonality check (see `05-decisions.md` D-014) on every synced PR touching adapters/predict.
-- **The spec's "absent on this branch" section is stale** (written against qc-03; formats/builder/render/strategies exist now) — refresh when Epic D lands.
 - **Matrix flake:** `test_dspy_configure_allowance_async` on py3.14 has flaked twice; if it fails alone, rerun before investigating.
 - We will need to redo flex so that it optimizes the program IR and the tools codes etc. its added string only new leaf is a unelegant hack.

@@ -1,9 +1,9 @@
 # Epic D — presets, templates, and the adapter as data
 
-**Status:** v4 (2026-08-06) — D-α (PRs D-1/D-2) and D-β (PRs D-3/D-4/D-5)
-SHIPPED; this doc records what was actually built plus the D-γ handoff.
-Rescoped v2 after the template ratification (D-018/D-019 in
-`05-decisions.md`).
+**Status:** v5 (2026-08-06) — EPIC COMPLETE. D-α (PRs D-1/D-2), D-β (PRs
+D-3/D-4/D-5), and D-γ (PRs D-6/D-7 + two review fixes) all SHIPPED; this
+doc records what was actually built. Rescoped v2 after the template
+ratification (D-018/D-019 in `05-decisions.md`).
 
 **Ratified design.** An adapter is a **preset**: a named data entry
 `{template, parser binding, codec bindings, strategy bindings, config}`. The
@@ -90,9 +90,10 @@ preset `json` + baml codec.
   **SHIPPED** (see "D-β as built").
 - D-5: serialization dump/load + derived summary view + loud-refusal
   loader — **SHIPPED** (see "D-β as built").
-- D-6: `@role` parser + `dspy.roles` export (public-surface PR).
-- D-7: template authoring surface upstream + docs pass + server examples
-  regeneration (docs/corpus-style commits).
+- D-6: `@role` parser + `dspy.roles` export (public-surface PR) —
+  **SHIPPED** (see "D-γ as built").
+- D-7: template authoring surface upstream + registration APIs + docs pass
+  + server examples regeneration — **SHIPPED** (see "D-γ as built").
 
 ## D-α as built (D-1/D-2, 2026-08-06)
 
@@ -377,3 +378,129 @@ extraction to the standalone library later must be a move, not a surgery.
 
 **Gates:** L8 corpus discipline throughout; full `dspy-ci` matrix (stage new
 files first); stacked commits; no push/PR without Maxime's word.
+
+## D-γ as built (review fixes + D-6/D-7, 2026-08-06)
+
+**Review fixes folded in (spec §4/§5 sharpened first).** The D-β light
+review confirmed two HIGH defects, fixed tests-first from executed repros:
+(1) `PresetAdapter` dropped the loaded entry's `strategies` bindings — a
+dumped `reasoning: textual_field` silently re-enabled the native channel
+under a live call. Loaded entries now feed the non-`auto` bindings into the
+SAME surface the constructor kwarg feeds (a `tools: native_fc` binding also
+enables the legacy kwarg, since the two declarations must agree), and
+load-time binding validation admits exactly what construction admits
+(`check_binding_name`, ONE shared validator for constructor / load /
+registration). (2) The builtin ROLE strategy entry shadowed the annotation
+path for admitted subclasses (a `Reasoning` subclass's
+`adapt_to_native_lm_feature` silently never ran). Containment rule, now
+normative in spec §5: a builtin role entry answers only for the exact
+annotation registered beside it — double-key resolution is identical to
+the annotation-only path wherever that path answered; the role key only
+ADDS resolution where the annotation path had none.
+
+**D-6 — `@role` + `dspy.roles`.** The pre-tokenizer sits at the top of
+`_parse_field_string`: a field string containing no `@` returns untouched
+(names dict and all — the zero-drift guarantee is structural). Otherwise:
+depth-aware split on top-level commas (bracket- AND quote-aware, so
+`dict[str, int] @plain` and `Literal["x@y"]` both survive), per-field
+trailing `@(\w+)` extraction with EAGER vocabulary validation (unknown
+role errors name the vocabulary; two roles or a non-trailing `@` teach the
+grammar), untyped form injects `str`, and the field rewrites as
+`__dspy_Annotated__[<type>, __dspy_role_<name>__]` against a private
+namespace (reserved dunder spellings so user `custom_types` can never
+collide). `dspy.roles` is a REAL module (`dspy/roles.py` re-exporting the
+`dspy.signatures.roles` marker objects), imported eagerly in
+`dspy/__init__.py` — `import dspy.roles`, `from dspy import roles`, and
+`dspy.roles.citations[str]` all work. E2E xfails #1 and #2 flipped; the
+acceptance suite carries zero remaining xfails.
+
+**D-7 — authoring surface, registration, proof.**
+- **`dspy.TemplateAdapter(messages, parse_mode="json", *, name, codecs,
+  strategies, config, **adapter_kwargs)`** — a subclass of the D-5
+  `PresetAdapter`, minting its preset through `_make_preset` (eager
+  template parse, eager capacity) so an authored adapter IS an ordinary
+  entry: `dump_entry()`/`literal_table()`/`load_entry` round-trip
+  byte-identically. `parse_mode` defaults to the reference UX's `json`;
+  callables refuse pointing at the registration contract. `preview()`
+  (public on `PresetAdapter`) renders format()-identical bytes and accepts
+  string signatures. Strategy-aware from birth: `build_plan` now runs the
+  bake triple check for preset-backed adapters (ADP-006/ADP-007 against
+  `preset.capacity`, plus a NEW fragment-lane check — a strategy-contributed
+  fragment with no `{fragments(...)}` slot refuses rather than dropping
+  instruction bytes), and `PresetAdapter.format` refuses demos/history
+  the template cannot host (L5: an optimizer's examples never vanish
+  silently; builtin-preset entries host both, so nothing existing trips).
+  `PresetAdapter` also accepts a preset NAME (pool resolution), giving
+  registered presets a consumer.
+- **Registration APIs** (`dspy/adapters/registry.py`, gates in
+  `_engine/admission.py`): `register_codec` runs the round-trip probe
+  battery — 14 schema-generated adversarial probes (mixed-case unicode,
+  empty string/collections, nesting, None-bearing optional shapes) that
+  every builtin codec passes (pinned by test; the gate is calibrated to
+  admit equivalents) and that refuses failures naming the probe;
+  `register_strategy(strategy, *, role=|annotation=)` verifies the
+  TypeStrategy contract plus `capability_requirements` (tuple, may be
+  empty — but must be DECLARED) plus the carried `parser` attribute (a
+  hook with `.parse`, or an explicit None for request-only strategies);
+  `register_preset` validates through the `_make_preset` mint +
+  `check_binding_name`. Builtin names can be neither shadowed nor removed;
+  duplicates refuse (unregister first, deliberately). Three-origin codec
+  loading landed in the serde: `builtin` resolves internally; `packaged`
+  imports `module:attr` and refuses a distribution-version mismatch naming
+  both versions; `authored` verifies sha256 identity before exec'ing in an
+  isolated namespace (ADP-011) — code origins run the same battery at
+  link. Foreign-language entries refuse at the profile level (D-025/026).
+  `describe_template_language()` went public (the §3 discoverability
+  contract requires it enumerable).
+- **Server examples**: 01–03's `4_adapter` components regenerated from the
+  REAL exporter — `dump_entry()` entries (adapter_ir_version 0.1.0 +
+  versions block + template as data) with `literal_table()` as the derived
+  view, collapsing the ad-hoc key drift (`field_marker` /
+  `input_field_marker` / `output_requirements`) onto the fixed 7-key
+  vocabulary. `explain` renders all four unchanged (reader code
+  untouched); all four `load.py` runs re-prove bit-for-bit roundtrip.
+  Example 04's authored TerseAdapter stays hand-authored BY DESIGN: the
+  exporter refuses non-engine adapters loudly ("renders through legacy
+  method overrides, not preset data"), which is the correct §9 behavior
+  for authored adapter code. Pre-regen manifests kept server-side as
+  `manifest.json.pre-d7.bak`; regen script at
+  `examples-build/regen_adapter_components.py`.
+- **Docs**: `docs/docs/diving-deeper/adapters.md` recipes 13–19 moved to
+  Today with syntax matching what shipped; the presets/templates section
+  rewrote to present tense; role spellings are four; stale "arriving"
+  claims swept. `IR-program-spec.md`'s reuse inventory refreshed (the
+  absent-on-this-branch list is now the built list; §Adapter-notes gap
+  marked CLOSED); the campaign doc's staleness risk dropped.
+
+**Public surface added in D-γ (the C1 ratification list):**
+`dspy.roles` (module) · the `@role` string-signature grammar ·
+`dspy.TemplateAdapter` (also at `dspy.adapters`) · `PresetAdapter.preview()`
+· `dspy.adapters.register_codec/register_strategy/register_preset` +
+`unregister_*` · `dspy.adapters.describe_template_language` ·
+`load_entry` added to `dspy.adapters.__all__` (was importable, unlisted).
+The pinned-surface test (`tests/adapters/engine/test_private_surface.py`)
+records exactly this set.
+
+## Epic end state
+
+An adapter is now data end to end: the constrained template language with
+one vocabulary structure and teaching errors; presets `chat`/`json`/`xml`
+byte-reproducing the class adapters; codecs as named render/parse/schema
+triples with BAML reclassified as the `baml` codec + template arrangement;
+roles load-bearing for strategy resolution (double-key, containment-
+bounded) with per-role `strategies=` bindings and bake-time triple checks;
+versioned exact serde (`dump_entry`/`load_entry`/`literal_table`) whose
+entries the real server artifacts now carry; a public authoring surface
+(`TemplateAdapter`) and gated registration (`register_codec/strategy/
+preset`, three-origin shipping); and the `@role`/`dspy.roles` signature
+spellings. Corpus: zero drift across the entire epic. What Epic E needs:
+the engine renders into chat-dict messages via the legacy request path —
+the lm15 veneer replaces `_render_request`/`parser_hook`'s
+`clients.openai_format` back-edge (the pinned import-boundary exception
+that dies with E). What Epic F needs: `PresetAdapter` runs the legacy
+postprocess path (its format/parse overrides are its contract) — engine
+postprocess for loaded entries is an H-adjacent decision; TwoStep's
+`formats/twostep.py → chat_adapter` pin dies with the lowering substrate;
+entry `config` does not yet carry `use_native_function_calling` nor
+LM-bound `"auto"` resolutions (recording those needs the exporter's
+LM-bound bake step — F's linker territory).
