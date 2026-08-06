@@ -296,12 +296,10 @@ LITERAL_TABLE_KEYS = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="epic D: public dspy.roles export (D-5)")
 def test_epic_d_public_roles_import():
     assert dspy.roles.citations is R.citations
 
 
-@pytest.mark.xfail(strict=True, reason="epic D: @role string-signature shorthand (D-5)")
 def test_epic_d_role_string_shorthand():
     signature = dspy.Signature("question -> answer: str @citations")
     assert _role_of(signature, "answer") == "citations"

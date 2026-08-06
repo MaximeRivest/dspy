@@ -675,11 +675,136 @@ def _parse_field_string(field_string: str, names=None) -> Iterator[tuple[str, ty
     fields and types.
     """
 
+    field_string, names = _rewrite_role_shorthand(field_string, names)
     args = ast.parse(f"def f({field_string}): pass").body[0].args.args
     field_names: list[str] = [arg.arg for arg in args]
     types_list: list[type] = [str if arg.annotation is None else _parse_type_node(arg.annotation, names) for arg in args]
     is_type_undefined: list[bool] = [True if arg.annotation is None else False for arg in args]
     return zip(field_names, types_list, is_type_undefined, strict=False)
+
+
+def _split_top_level(text: str, sep: str) -> list[str]:
+    """Split ``text`` on ``sep`` characters at bracket depth zero, outside quotes.
+
+    The depth-aware split the ``@role`` shorthand needs: a comma inside a
+    subscript (``dict[str, int] @plain``) or a quoted literal never splits a
+    field, and a ``:`` inside a subscript never splits name from type.
+    """
+    parts: list[str] = []
+    depth = 0
+    quote: str | None = None
+    start = 0
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if quote is not None:
+            if char == "\\":
+                i += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == sep and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+        i += 1
+    parts.append(text[start:])
+    return parts
+
+
+def _top_level_positions(text: str, char: str) -> list[int]:
+    """Positions of ``char`` at bracket depth zero, outside quotes."""
+    positions: list[int] = []
+    depth = 0
+    quote: str | None = None
+    i = 0
+    while i < len(text):
+        current = text[i]
+        if quote is not None:
+            if current == "\\":
+                i += 2
+                continue
+            if current == quote:
+                quote = None
+        elif current in "'\"":
+            quote = current
+        elif current in "([{":
+            depth += 1
+        elif current in ")]}":
+            depth -= 1
+        elif current == char and depth == 0:
+            positions.append(i)
+        i += 1
+    return positions
+
+
+def _rewrite_role_shorthand(field_string: str, names=None) -> tuple[str, Any]:
+    """Rewrite ``@role`` field shorthands into ``Annotated`` marker spellings.
+
+    ``"answer: str @citations"`` becomes ``Annotated[str, citations]`` (in a
+    private namespace spelling), and the untyped form ``"answer @reasoning"``
+    injects the defaulted ``str`` shape first — all before ``ast.parse`` sees
+    the string, since ``@word`` is not valid inside an argument list. Unknown
+    roles refuse eagerly naming the vocabulary. A field string containing no
+    ``@`` is returned untouched, names and all.
+    """
+    if "@" not in field_string:
+        return field_string, names
+
+    from dspy.signatures.roles import ALL_ROLE_MARKERS
+
+    rewritten_fields: list[str] = []
+    used_roles: set[str] = set()
+    for segment in _split_top_level(field_string, ","):
+        at_positions = _top_level_positions(segment, "@")
+        if not at_positions:
+            rewritten_fields.append(segment)
+            continue
+        if len(at_positions) > 1:
+            raise ValueError(
+                f"Invalid field {segment.strip()!r}: a field declares at most one @role "
+                f"(e.g. 'answer: str @citations')."
+            )
+        position = at_positions[0]
+        role_match = re.fullmatch(r"\s*(\w+)\s*", segment[position + 1 :])
+        head = segment[:position].strip()
+        if role_match is None or not head:
+            raise ValueError(
+                f"Invalid field {segment.strip()!r}: the @role shorthand goes at the end of a field — "
+                f"'name @role' or 'name: type @role'."
+            )
+        role = role_match.group(1)
+        if role not in ALL_ROLE_MARKERS:
+            raise ValueError(
+                f"Unknown semantic role {role!r} in field {segment.strip()!r}. "
+                f"Valid roles: {sorted(ALL_ROLE_MARKERS)}."
+            )
+        used_roles.add(role)
+        colon_positions = _top_level_positions(head, ":")
+        if colon_positions:
+            name = head[: colon_positions[0]].strip()
+            annotation = head[colon_positions[0] + 1 :].strip()
+        else:
+            name, annotation = head, "str"
+        rewritten_fields.append(f"{name}: __dspy_Annotated__[{annotation}, __dspy_role_{role}__]")
+
+    if not used_roles:
+        return field_string, names
+
+    if names is None:
+        names = dict(typing.__dict__)
+        names["NoneType"] = type(None)
+    else:
+        names = dict(names)
+    names["__dspy_Annotated__"] = typing.Annotated
+    for role in used_roles:
+        names[f"__dspy_role_{role}__"] = ALL_ROLE_MARKERS[role]
+    return ", ".join(part.strip() for part in rewritten_fields), names
 
 
 def _parse_type_node(node, names=None) -> Any:

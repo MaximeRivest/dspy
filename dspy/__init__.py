@@ -2,6 +2,7 @@ from dspy.predict import *
 from dspy.primitives import *
 from dspy.retrievers import *
 from dspy.signatures import *
+from dspy import roles
 from dspy.teleprompt import *
 from dspy.predict.flex import Flex
 
