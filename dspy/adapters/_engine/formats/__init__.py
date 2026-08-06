@@ -19,13 +19,19 @@ legacy pipeline byte-for-byte.
 
 from typing import Any
 
+from dspy.adapters._engine.template.renderer import (
+    COMPLETE_DEMO_MISSING_FIELD_MESSAGE,
+    INCOMPLETE_DEMO_MISSING_FIELD_MESSAGE,
+    INCOMPLETE_DEMO_PREFIX,
+)
+
 
 class Format:
     """Base class for wire formats. Subclasses own all literals.
 
     The pipeline-level demo strings live here (shared by every format
-    today) so the renderer holds no literals at all; a format may override
-    them.
+    today, single-sourced with the template walker) so the renderer holds
+    no literals at all; a format may override them.
 
     Value syntax is delegated to codec bindings (``codecs.py``): a format
     owns the structure of the exchange, its codecs own the wire syntax of
@@ -33,9 +39,14 @@ class Format:
     it by overriding only ``input_codec``.
     """
 
-    incomplete_demo_prefix = "This is an example of the task, though some input or output fields are not supplied."
-    incomplete_demo_missing_field_message = "Not supplied for this particular example. "
-    complete_demo_missing_field_message = "Not supplied for this conversation history message. "
+    #: Preset whose template this format's rendered content delegates to;
+    #: None for formats not yet defined as presets (TwoStep, and BAML's
+    #: system section until D-3 reclassifies BAML as a codec binding).
+    preset_name: str | None = None
+
+    incomplete_demo_prefix = INCOMPLETE_DEMO_PREFIX
+    incomplete_demo_missing_field_message = INCOMPLETE_DEMO_MISSING_FIELD_MESSAGE
+    complete_demo_missing_field_message = COMPLETE_DEMO_MISSING_FIELD_MESSAGE
 
     @property
     def input_codec(self):

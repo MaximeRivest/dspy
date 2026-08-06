@@ -24,6 +24,10 @@ class XMLFormat(ChatFormat):
     field_pattern = re.compile(r"<(?P<name>\w+)>((?P<content>.*?))</\1>", re.DOTALL)
     parse_error_adapter_name = "XMLAdapter"
 
+    #: Rendered content executes ChatFormat's preset delegators against the
+    #: xml preset (tag-wrapped blocks, no completed marker).
+    preset_name = "xml"
+
     def render_fields_with_values(self, fields_with_values: dict[str, tuple], codec=None) -> str:
         codec = codec or self.output_codec
         output = []
@@ -47,36 +51,6 @@ class XMLFormat(ChatFormat):
         parts.append(format_signature_fields_for_instructions(signature.input_fields))
         parts.append(format_signature_fields_for_instructions(signature.output_fields))
         return "\n\n".join(parts).strip()
-
-    def render_user_content(
-        self,
-        signature,
-        inputs: dict[str, Any],
-        prefix: str = "",
-        suffix: str = "",
-        main_request: bool = False,
-    ) -> str:
-        messages = [prefix]
-
-        messages.append(
-            self.render_fields_with_values(
-                {k: (v, inputs.get(k)) for k, v in signature.input_fields.items() if k in inputs},
-                codec=self.input_codec,
-            )
-        )
-
-        if main_request:
-            output_requirements = self.output_requirements(signature)
-            if output_requirements is not None:
-                messages.append(output_requirements)
-
-        messages.append(suffix)
-        return "\n\n".join(messages).strip()
-
-    def render_assistant_content(self, signature, outputs: dict[str, Any], missing_field_message=None) -> str:
-        return self.render_fields_with_values(
-            {k: (v, outputs.get(k, missing_field_message)) for k, v in signature.output_fields.items()}
-        )
 
     def output_requirements(self, signature) -> str | None:
         message = "Respond with the corresponding output fields wrapped in XML tags "

@@ -52,7 +52,7 @@ class TextPythonishCodec(ValueCodec):
     implicitly.
     """
 
-    name = "text-pythonish"
+    name = "text_pythonish"
 
     def render_value(self, value: Any, field_info: FieldInfo) -> str:
         from dspy.adapters.utils import format_field_value
@@ -74,7 +74,7 @@ class PydanticJSONCodec(TextPythonishCodec):
     which is exactly why codec bindings are directional.
     """
 
-    name = "pydantic-json"
+    name = "pydantic_json"
 
     def render_value(self, value: Any, field_info: FieldInfo) -> str:
         if isinstance(value, BaseModel):
@@ -84,3 +84,20 @@ class PydanticJSONCodec(TextPythonishCodec):
 
 TEXT_PYTHONISH = TextPythonishCodec()
 PYDANTIC_JSON = PydanticJSONCodec()
+
+#: Named codec entries preset bindings resolve against (spec section 5's
+#: initial vocabulary, populated as codecs land). Engine-private until the
+#: registration API ships with its round-trip admission gate (spec
+#: section 9).
+CODECS: dict[str, ValueCodec] = {
+    TEXT_PYTHONISH.name: TEXT_PYTHONISH,
+    PYDANTIC_JSON.name: PYDANTIC_JSON,
+}
+
+
+def resolve_codec(name: str) -> ValueCodec:
+    """A codec by registry name; a dangling ref refuses naming itself."""
+    try:
+        return CODECS[name]
+    except KeyError:
+        raise KeyError(f"unknown codec {name!r} — registered codecs: {', '.join(CODECS)}") from None

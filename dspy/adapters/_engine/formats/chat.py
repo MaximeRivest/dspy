@@ -1,15 +1,20 @@
-"""ChatFormat: every ChatAdapter literal, frozen.
+"""ChatFormat: ChatAdapter's wire behavior, rendered from the ``chat`` preset.
 
-Each method reproduces the corresponding legacy ChatAdapter body
-byte-for-byte (the dual-run harness and golden corpus adjudicate). Shared
-value-rendering rules (guillemet list blobs, type notes, description
-strings) stay in ``dspy.adapters.utils`` — they were never adapter methods
-and remain the single source of those strings.
+Since D-2 the rendered content (system message, user turns, assistant
+turns) executes from the preset template in ``_engine/presets.py`` — data,
+not method bodies. The granular methods kept below (field description,
+field structure, task description, output requirements, field blocks) are
+the frozen legacy literals: BAML still composes its system message from
+them, and the preset parity tests diff them against the template renders
+so the two sources cannot drift. Shared value-rendering rules (guillemet
+list blobs, type notes, description strings) stay in
+``dspy.adapters.utils``.
 
-Byte-parity traps preserved on purpose: the ``\\n\\n``-join-then-``strip()``
-shape of section rendering, the trailing-space demo messages (defined on the
-Format base), the 8-space task-description indentation, and the trailing
-newline after the assistant completed marker.
+Byte-parity traps live in the preset template on purpose: the
+``\\n\\n``-join-then-``strip()`` shape of section rendering (``strip`` loop
+flags), the trailing-space demo messages (defined on the Format base), the
+8-space task-description indentation (``{instruction(style='indented')}``),
+and the trailing newline after the assistant completed marker.
 
 The format also owns parsing: the header regex, the parse mechanics (via
 the shared engine core), and even the historical ``adapter_name`` string in
@@ -37,9 +42,41 @@ class ChatFormat(Format):
     #: pinned wire behavior, not a reflection of the calling class.
     parse_error_adapter_name = "ChatAdapter"
 
+    preset_name = "chat"
+
     def parse(self, signature, completion: str) -> dict[str, Any]:
         sections = parse_labeled_sections(completion, self.field_header_pattern)
         return parse_fields(sections, signature, completion, self.parse_error_adapter_name, codec=self.output_codec)
+
+    # --- Rendered content: the preset template is the render path ----------
+    # The three delegators below execute the preset named by
+    # ``preset_name`` (json/xml override only the name), so every content
+    # string on the engine path renders from template data. The granular
+    # methods further down keep the frozen legacy literals: BAML still
+    # composes from them, and the preset parity tests diff the two sources
+    # so they cannot drift.
+
+    def render_system(self, signature) -> str:
+        from dspy.adapters._engine.presets import render_preset_system
+
+        return render_preset_system(self, signature)
+
+    def render_user_content(
+        self,
+        signature,
+        inputs: dict[str, Any],
+        prefix: str = "",
+        suffix: str = "",
+        main_request: bool = False,
+    ) -> str:
+        from dspy.adapters._engine.presets import render_preset_user_content
+
+        return render_preset_user_content(self, signature, inputs, prefix, suffix, main_request)
+
+    def render_assistant_content(self, signature, outputs: dict[str, Any], missing_field_message=None) -> str:
+        from dspy.adapters._engine.presets import render_preset_assistant_content
+
+        return render_preset_assistant_content(self, signature, outputs, missing_field_message)
 
     def render_field_description(self, signature) -> str:
         return (
@@ -71,29 +108,6 @@ class ChatFormat(Format):
         objective = ("\n" + " " * 8).join([""] + instructions.splitlines())
         return f"In adhering to this structure, your objective is: {objective}"
 
-    def render_user_content(
-        self,
-        signature,
-        inputs: dict[str, Any],
-        prefix: str = "",
-        suffix: str = "",
-        main_request: bool = False,
-    ) -> str:
-        messages = [prefix]
-        for k, v in signature.input_fields.items():
-            if k in inputs:
-                value = inputs.get(k)
-                formatted_field_value = self.input_codec.render_value(value, v)
-                messages.append(f"[[ ## {k} ## ]]\n{formatted_field_value}")
-
-        if main_request:
-            output_requirements = self.output_requirements(signature)
-            if output_requirements is not None:
-                messages.append(output_requirements)
-
-        messages.append(suffix)
-        return "\n\n".join(messages).strip()
-
     def output_requirements(self, signature) -> str | None:
         def type_info(v):
             if v.annotation == ToolCalls:
@@ -107,13 +121,6 @@ class ChatFormat(Format):
         message += ", then ".join(f"`[[ ## {f} ## ]]`{type_info(v)}" for f, v in signature.output_fields.items())
         message += ", and then ending with the marker for `[[ ## completed ## ]]`."
         return message
-
-    def render_assistant_content(self, signature, outputs: dict[str, Any], missing_field_message=None) -> str:
-        assistant_message_content = self.render_fields_with_values(
-            {k: (v, outputs.get(k, missing_field_message)) for k, v in signature.output_fields.items()}
-        )
-        assistant_message_content += "\n\n[[ ## completed ## ]]\n"
-        return assistant_message_content
 
     def render_fields_with_values(self, fields_with_values: dict[str, tuple], codec=None) -> str:
         """Field blocks: ``[[ ## name ## ]]\\nvalue`` joined by blank lines.

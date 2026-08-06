@@ -18,6 +18,7 @@ non-goals.
 
 from typing import Any
 
+from dspy.adapters._engine.formats import Format
 from dspy.adapters._engine.formats.json import JSONFormat
 from dspy.adapters.baml_adapter import _render_type_str
 
@@ -28,6 +29,12 @@ class BAMLFormat(JSONFormat):
         from dspy.adapters._engine.codecs import PYDANTIC_JSON
 
         return PYDANTIC_JSON
+
+    def render_system(self, signature) -> str:
+        # BAML keeps the composed legacy system path: its structure section
+        # is this class's body below, not the json preset's template. D-3
+        # reclassifies BAML as codec bindings on preset json.
+        return Format.render_system(self, signature)
     def render_field_structure(self, signature) -> str:
         sections = []
 

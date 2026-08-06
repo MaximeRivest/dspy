@@ -56,18 +56,9 @@ def _expand_markers(message):
 
 def _render_demos(fmt: Format, signature, demos: list[dict[str, Any]]):
     """Structural twin of ``Adapter.format_demos``."""
-    complete_demos = []
-    incomplete_demos = []
+    from dspy.adapters._engine.template.renderer import classify_demos
 
-    for demo in demos:
-        is_complete = all(k in demo and demo[k] is not None for k in signature.fields)
-        has_input = any(k in demo for k in signature.input_fields)
-        has_output = any(k in demo for k in signature.output_fields)
-
-        if is_complete:
-            complete_demos.append(demo)
-        elif has_input and has_output:
-            incomplete_demos.append(demo)
+    incomplete_demos, complete_demos = classify_demos(signature, demos)
 
     messages = []
     for demo in incomplete_demos:

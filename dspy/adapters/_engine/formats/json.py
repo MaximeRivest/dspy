@@ -35,6 +35,10 @@ from dspy.utils.exceptions import AdapterParseError
 class JSONFormat(ChatFormat):
     parse_error_adapter_name = "JSONAdapter"
 
+    #: Rendered content executes ChatFormat's preset delegators against the
+    #: json preset (marker-block user side, JSON-object assistant side).
+    preset_name = "json"
+
     def render_field_structure(self, signature) -> str:
         parts = []
         parts.append("All interactions will be structured in the following way, with the appropriate values filled in.")
@@ -73,11 +77,6 @@ class JSONFormat(ChatFormat):
         message += ", then ".join(f"`{f}`{type_info(v)}" for f, v in signature.output_fields.items())
         message += "."
         return message
-
-    def render_assistant_content(self, signature, outputs: dict[str, Any], missing_field_message=None) -> str:
-        return self._render_json_object(
-            {k: outputs.get(k, missing_field_message) for k, v in signature.output_fields.items()}
-        )
 
     def _render_json_object(self, values: dict[str, Any]) -> str:
         return json.dumps(serialize_for_json(values), indent=2, ensure_ascii=False)
