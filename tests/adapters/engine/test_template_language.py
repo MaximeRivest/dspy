@@ -171,6 +171,46 @@ def test_unknown_separator_escape_refuses():
         parse_content(r"{% for f in inputs separator='\q' %}{f.name}{% endfor %}")
 
 
+def test_same_quote_escapes_lex_in_loop_separators():
+    """The vocabulary documents \\' and \\\" — they must work in the quote
+    position where they are needed, not only cross-quoted."""
+    (loop,) = parse_content(r"{% for f in inputs separator='don\'t' %}{f.name}{% endfor %}")
+    assert loop.separator == "don't"
+    (loop,) = parse_content('{% for f in inputs separator="say \\"hi\\"" %}{f.name}{% endfor %}')
+    assert loop.separator == 'say "hi"'
+    (loop,) = parse_content("{% for f in inputs separator='a\\'b\"c' %}{f.name}{% endfor %}")
+    assert loop.separator == "a'b\"c"
+
+
+def test_percent_is_legal_inside_quoted_loop_options():
+    (loop,) = parse_content("{% for f in inputs separator=' % ' %}{f.name}{% endfor %}")
+    assert loop.separator == " % "
+    (loop,) = parse_content("{% for f in inputs separator='100%' %}{f.name}{% endfor %}")
+    assert loop.separator == "100%"
+
+
+def test_loop_option_arity_errors_state_the_actual_problem():
+    with pytest.raises(TemplateError, match="'separator' requires a quoted value"):
+        parse_content("{% for f in inputs separator %}{f.name}{% endfor %}")
+    with pytest.raises(TemplateError, match="'separator' requires a quoted value"):
+        parse_content("{% for f in inputs separator=- %}{f.name}{% endfor %}")
+    with pytest.raises(TemplateError, match="'strip' takes no value"):
+        parse_content("{% for f in inputs strip='x' %}{f.name}{% endfor %}")
+
+
+def test_every_declared_loop_option_is_accepted():
+    """Acceptance reads the vocabulary data: every declared option parses
+    in its declared arity."""
+    for key, entry in VOCABULARY["loop_options"].items():
+        spelled = f"{key}='x'" if entry["takes_value"] else key
+        parse_content(f"{{% for f in inputs {spelled} %}}{{f.name}}{{% endfor %}}")
+
+
+def test_same_quote_escapes_lex_in_call_kwargs():
+    (slot,) = parse_content(r"{outputs(style='xml', wrap='don\'t')}")
+    assert slot.wrap == "don't"
+
+
 def test_loop_variable_reference_outside_loop_refuses():
     with pytest.raises(TemplateError, match="outside a loop block"):
         parse_content("{f.name}")

@@ -141,14 +141,64 @@ class ParsedTemplate:
 _IDENT = re.compile(r"[A-Za-z_]\w*")
 _SLOT_OPEN = re.compile(r"\{([A-Za-z_]\w*)")
 _BLOCK_TAG = re.compile(r"\{%\s*(\w+)")
-_FOR_TAG = re.compile(r"\{%\s*for\s+([A-Za-z_]\w*)\s+in\s+([A-Za-z_]\w*)((?:\s[^%]*?)?)\s*%\}")
+_FOR_HEAD = re.compile(r"\{%\s*for\s+([A-Za-z_]\w*)\s+in\s+([A-Za-z_]\w*)")
 _ENDFOR_TAG = re.compile(r"\{%\s*endfor\s*%\}")
 _NESTED_FOR = re.compile(r"\{%\s*for\b")
-_LOOP_OPTION = re.compile(r"\s*(?:(\w+)\s*=\s*(?:'([^']*)'|\"([^\"]*)\")|(\w+))")
-_CALL_KWARG = re.compile(r"\s*(\w+)\s*=\s*(?:'([^']*)'|\"([^\"]*)\")\s*(?:,|$)")
 _POSITIONAL = re.compile(r"^\s*(?:'([^']*)'|\"([^\"]*)\")\s*$")
 
 _STRING_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", "'": "'", '"': '"'}
+
+
+def _lex_quoted(text: str, i: int, where: str) -> tuple[str, int]:
+    """Read a quoted value starting at ``i``; return (raw value, index after).
+
+    Backslash-escape-aware: a backslash keeps its following character in
+    the raw value (``_decode_escapes`` interprets it later), so quotes and
+    ``%`` are legal value bytes — the vocabulary's documented escape set
+    is lexable everywhere it is needed.
+    """
+    n = len(text)
+    if i >= n or text[i] not in ("'", '"'):
+        raise TemplateError(f"{where} requires a quoted value (near {text[i : i + 20]!r})")
+    quote = text[i]
+    i += 1
+    out: list[str] = []
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if ch == quote:
+            return "".join(out), i + 1
+        out.append(ch)
+        i += 1
+    raise TemplateError(f"unclosed quote in {where}")
+
+
+def _lex_tag_options(text: str, i: int, tag: str) -> tuple[list[tuple[str, str | None]], int]:
+    """Lex ``key='value'`` pairs and bare flags up to the closing ``%}``."""
+    options: list[tuple[str, str | None]] = []
+    n = len(text)
+    while i < n:
+        while i < n and text[i].isspace():
+            i += 1
+        if text.startswith("%}", i):
+            return options, i + 2
+        match = _IDENT.match(text, i)
+        if not match:
+            raise TemplateError(
+                f"malformed '{{% {tag} %}}' tag near {text[i : i + 30]!r} — "
+                f"options are bare flags or key='value' pairs"
+            )
+        key = match.group(0)
+        i = match.end()
+        if i < n and text[i] == "=":
+            value, i = _lex_quoted(text, i + 1, f"'{{% {tag} %}}' option {key!r}")
+            options.append((key, value))
+        else:
+            options.append((key, None))
+    raise TemplateError(f"unclosed '{{% {tag} %}}' tag — expected '%}}'")
 
 
 def _decode_escapes(value: str, where: str) -> str:
@@ -279,7 +329,8 @@ def _parse_slot(text: str, i: int, loop_var, allow_fragments: bool, fragment_tar
 
 
 def _read_call_args(text: str, open_paren: int, name: str) -> tuple[str, int]:
-    """Read a call's raw argument text, honoring quotes; return (raw, index after ')')."""
+    """Read a call's raw argument text, honoring quotes and backslash
+    escapes; return (raw, index after ')')."""
     j = open_paren + 1
     start = j
     quote: str | None = None
@@ -287,6 +338,9 @@ def _read_call_args(text: str, open_paren: int, name: str) -> tuple[str, int]:
     while j < n:
         ch = text[j]
         if quote is not None:
+            if ch == "\\" and j + 1 < n:
+                j += 2
+                continue
             if ch == quote:
                 quote = None
         elif ch in {"'", '"'}:
@@ -299,27 +353,35 @@ def _read_call_args(text: str, open_paren: int, name: str) -> tuple[str, int]:
 
 def _parse_call_kwargs(name: str, raw: str, valid_keys: tuple) -> dict[str, str]:
     kwargs: dict[str, str] = {}
-    position = 0
-    stripped = raw.strip()
-    if not stripped:
-        return kwargs
-    while position < len(raw):
-        match = _CALL_KWARG.match(raw, position)
-        if not match:
+    i = 0
+    n = len(raw)
+    while i < n:
+        while i < n and raw[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        match = _IDENT.match(raw, i)
+        if not match or match.end() >= n or raw[match.end()] != "=":
             raise TemplateError(
                 f"could not parse arguments {raw!r} for {{{name}(...)}} — expected quoted key='value' "
                 f"pairs; valid keys: {spell_out(valid_keys)}"
             )
-        key = match.group(1)
-        value = match.group(2) if match.group(2) is not None else match.group(3)
+        key = match.group(0)
         if key not in valid_keys:
             raise TemplateError(f"unknown argument {key!r} for {{{name}(...)}} — valid keys: {spell_out(valid_keys)}")
         if key in kwargs:
             raise TemplateError(f"duplicate argument {key!r} for {{{name}(...)}}")
+        value, i = _lex_quoted(raw, match.end() + 1, f"{{{name}(...)}} argument {key!r}")
         kwargs[key] = _decode_escapes(value, f"{{{name}(...)}} argument {key!r}")
-        position = match.end()
-        if position >= len(raw) or not raw[position:].strip():
-            break
+        while i < n and raw[i].isspace():
+            i += 1
+        if i < n:
+            if raw[i] != ",":
+                raise TemplateError(
+                    f"could not parse arguments {raw!r} for {{{name}(...)}} — expected quoted key='value' "
+                    f"pairs separated by commas; valid keys: {spell_out(valid_keys)}"
+                )
+            i += 1
     return kwargs
 
 
@@ -379,23 +441,24 @@ def _parse_loop(text: str, i: int, allow_fragments: bool):
         raise TemplateError(f"unknown block tag {{% {verb} %}} — valid block tags: for, endfor")
 
     collections = VOCABULARY["loop_collections"]
-    match = _FOR_TAG.match(text, i)
+    match = _FOR_HEAD.match(text, i)
     if not match:
         raise TemplateError(
             "malformed '{% for %}' tag — expected "
             "{% for f in inputs|outputs [separator='...'] [strip] %} "
             f"(near {text[i : i + 60]!r})"
         )
-    var, collection, options_raw = match.group(1), match.group(2), match.group(3) or ""
+    var, collection = match.group(1), match.group(2)
     if collection not in collections:
         raise TemplateError(f"unknown loop collection {collection!r} — valid collections: {spell_out(collections)}")
 
-    separator, strip = _parse_loop_options(options_raw)
+    options, body_start = _lex_tag_options(text, match.end(), "for")
+    separator, strip = _parse_loop_options(options)
 
-    end_match = _ENDFOR_TAG.search(text, match.end())
+    end_match = _ENDFOR_TAG.search(text, body_start)
     if not end_match:
         raise TemplateError("unclosed '{% for %}' — every loop block ends with '{% endfor %}'")
-    body_text = text[match.end() : end_match.start()]
+    body_text = text[body_start : end_match.start()]
     if _NESTED_FOR.search(body_text):
         raise TemplateError("nested loop blocks are not supported")
     # Authoring ergonomics: one newline trims off each end of the body so
@@ -409,32 +472,32 @@ def _parse_loop(text: str, i: int, allow_fragments: bool):
     return Loop(var=var, collection=collection, separator=separator, strip=strip, body=body), end_match.end()
 
 
-def _parse_loop_options(options_raw: str) -> tuple[str, bool]:
+def _parse_loop_options(options: list[tuple[str, str | None]]) -> tuple[str, bool]:
+    """Validate lexed loop options against the vocabulary data.
+
+    Acceptance reads the same structure the error messages enumerate
+    (name set and per-option ``takes_value`` arity), so extending the
+    vocabulary extends acceptance — never a refusal that cites the refused
+    option as valid.
+    """
     valid = VOCABULARY["loop_options"]
     separator = "\n"
     strip = False
-    position = 0
-    while position < len(options_raw):
-        if not options_raw[position:].strip():
-            break
-        match = _LOOP_OPTION.match(options_raw, position)
-        if not match:
-            raise TemplateError(
-                f"could not parse loop options {options_raw.strip()!r} — valid options: {spell_out(valid)}"
-            )
-        if match.group(4) is not None:  # bare flag
-            if match.group(4) != "strip":
-                raise TemplateError(
-                    f"unknown loop option {match.group(4)!r} — valid options: {spell_out(valid)}"
-                )
-            strip = True
-        else:
-            key = match.group(1)
-            value = match.group(2) if match.group(2) is not None else match.group(3)
-            if key != "separator":
-                raise TemplateError(f"unknown loop option {key!r} — valid options: {spell_out(valid)}")
+    for key, value in options:
+        if key not in valid:
+            raise TemplateError(f"unknown loop option {key!r} — valid options: {spell_out(valid)}")
+        if valid[key]["takes_value"] and value is None:
+            raise TemplateError(f"loop option {key!r} requires a quoted value: {key}='...'")
+        if not valid[key]["takes_value"] and value is not None:
+            raise TemplateError(f"loop option {key!r} takes no value — write the bare flag: {key}")
+        if key == "separator":
             separator = _decode_escapes(value, "loop separator")
-        position = match.end()
+        elif key == "strip":
+            strip = True
+        else:  # declared in the vocabulary before this parser learned it
+            raise TemplateError(
+                f"loop option {key!r} is declared but not implemented — implemented options: separator, strip"
+            )
     return separator, strip
 
 

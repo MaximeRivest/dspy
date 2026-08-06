@@ -6,8 +6,11 @@ This module is that source: the parser validates against it, error messages
 enumerate valid sets from it, and ``describe_template_language()`` returns
 it. Nothing else may hardcode a slot, style, variable, or directive name.
 
-Every leaf value is a one-line human description, so the structure doubles
-as the documentation table.
+Every entry carries a one-line human description, so the structure doubles
+as the documentation table; entries that need machine-read facts beyond
+the description (loop options declare a ``takes_value`` arity bit) carry
+them alongside it — the parser's acceptance reads the same data the error
+messages enumerate.
 """
 
 from copy import deepcopy
@@ -85,8 +88,14 @@ VOCABULARY: dict = {
         "chat_type_hint": "the historical non-str output hint suffix, empty for str",
     },
     "loop_options": {
-        "separator": "string joined between iterations (quoted; \\n \\t \\r \\\\ \\' \\\" escapes); default newline",
-        "strip": "bare flag: str.strip() the joined result (the historical section-strip shape)",
+        "separator": {
+            "takes_value": True,
+            "description": "string joined between iterations (quoted; \\n \\t \\r \\\\ \\' \\\" escapes); default newline",
+        },
+        "strip": {
+            "takes_value": False,
+            "description": "bare flag: str.strip() the joined result (the historical section-strip shape)",
+        },
     },
     "directive_roles": {
         "demos": "expands into user/assistant message pairs per demo; optional user=/assistant= content templates",
