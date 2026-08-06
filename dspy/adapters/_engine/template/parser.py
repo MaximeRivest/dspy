@@ -343,15 +343,21 @@ def _parse_slot(text: str, i: int, loop_var, allow_fragments: bool, fragment_tar
             targets = VOCABULARY["fragment_targets"]
             raise TemplateError(
                 f"{{fragments}} requires a target: {{fragments('system')}} — valid targets: {spell_out(targets)}; "
-                f"'fragments' is a reserved name — a signature field named 'fragments' has no bare value-slot "
-                f"spelling (reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
+                f"'fragments' is a reserved name — a signature field named 'fragments' is spelled "
+                f"{{field('fragments')}} (reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
+            )
+        if name == "field":
+            raise TemplateError(
+                "{field} is called with a quoted field name: {field('name')} — the escape spelling for any "
+                f"signature field; a signature field named 'field' is spelled {{field('field')}} "
+                f"(reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
             )
         if name in VOCABULARY["aggregate_slots"]:
             styles = VOCABULARY["aggregate_styles"][name]
             raise TemplateError(
                 f"{{{name}}} is an aggregate slot and is called: {{{name}(style='...')}} — "
                 f"valid styles: {spell_out(styles)}; {name!r} is a reserved name — a signature field "
-                f"named {name!r} has no bare value-slot spelling (reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
+                f"named {name!r} is spelled {{field({name!r})}} (reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
             )
         return ValueSlot(name), j + 1
 
@@ -437,6 +443,19 @@ def _build_call_slot(name, args_raw, text, start, end, allow_fragments, fragment
         fragment_targets_seen.add(target)
         owns_line = (start == 0 or text[start - 1] == "\n") and (end >= len(text) or text[end] == "\n")
         return FragmentsSlot(target, owns_line=owns_line)
+
+    if name == "field":
+        match = _POSITIONAL.match(args_raw)
+        if not match:
+            raise TemplateError(
+                "{field(...)} takes one quoted field name — {field('question')} — the escape "
+                "spelling for any signature field (and the only spelling for a field carrying "
+                f"a reserved name: {spell_out(RESERVED_SLOT_NAMES)})"
+            )
+        field_name = match.group(1) if match.group(1) is not None else match.group(2)
+        if not re.fullmatch(_IDENT, field_name):
+            raise TemplateError(f"{{field(...)}} needs a field identifier, got {field_name!r}")
+        return ValueSlot(field_name)
 
     if name == "instruction":
         styles = VOCABULARY["instruction_styles"]

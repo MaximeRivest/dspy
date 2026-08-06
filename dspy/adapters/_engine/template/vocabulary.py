@@ -18,6 +18,7 @@ from copy import deepcopy
 VOCABULARY: dict = {
     "value_slots": {
         "{field_name}": "a signature field's value, spelled by the direction's bound codec; unknown names refuse at render, missing values render empty",
+        "{field('name')}": "the escape spelling of a field's value slot — unambiguous for any name, and the only spelling for a field carrying a reserved name",
         "{instruction}": "the signature instructions (ProgramIR 3a); accepts style=",
     },
     "instruction_styles": {
@@ -123,8 +124,9 @@ VOCABULARY: dict = {
 #: The names the language reserves for its own slots (spec section 3). A
 #: signature field may carry one — loops and aggregates render it like any
 #: other field — but it has no bare value-slot spelling, and shadowing is
-#: never silent: the parser and renderer refuse naming the collision.
-RESERVED_SLOT_NAMES: tuple = ("instruction", *VOCABULARY["aggregate_slots"], "fragments")
+#: never silent: the parser and renderer refuse naming the collision and
+#: the {field('name')} escape spelling as the way out.
+RESERVED_SLOT_NAMES: tuple = ("instruction", *VOCABULARY["aggregate_slots"], "fragments", "field")
 
 
 def describe_template_language() -> dict:

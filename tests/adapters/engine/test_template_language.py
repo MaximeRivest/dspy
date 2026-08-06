@@ -236,6 +236,49 @@ def test_bare_aggregate_and_fragments_errors_name_the_reserved_collision():
         assert spell_out(RESERVED_SLOT_NAMES) in str(excinfo.value)
 
 
+def test_field_escape_spelling_renders_any_field():
+    """{field('name')} is the unambiguous value-slot spelling (spec
+    section 3): equivalent to the bare form for ordinary names, the ONLY
+    spelling for reserved-colliding names."""
+    assert render("{field('question')}", mode="user_values", values={"question": "hm?"}) == "hm?"
+    sig = dspy.Signature("inputs, instruction -> outputs", "Do it.")
+    rendered = render(
+        "{field('inputs')}|{field('instruction')}",
+        signature=sig,
+        mode="user_values",
+        values={"inputs": "A", "instruction": "B"},
+    )
+    assert rendered == "A|B"
+
+
+def test_field_escape_spelling_unknown_name_refuses_at_render():
+    with pytest.raises(TemplateRenderError, match="unknown value slot"):
+        render("{field('mystery')}", mode="user_values", values={})
+
+
+def test_bare_field_teaches_the_call_form():
+    with pytest.raises(TemplateError, match=r"\{field\('name'\)\}"):
+        parse_content("{field}")
+
+
+def test_field_call_form_argument_errors_teach():
+    with pytest.raises(TemplateError, match="one quoted field name"):
+        parse_content("{field(question)}")
+    with pytest.raises(TemplateError, match="field identifier"):
+        parse_content("{field('not a name')}")
+
+
+def test_reserved_collision_errors_name_the_field_escape():
+    """Every reserved-collision refusal must teach {field('name')} as the
+    way out (spec section 3)."""
+    for spelling in ("{outputs}", "{fragments}", "{field}"):
+        with pytest.raises(TemplateError, match=r"\{field\(") :
+            parse_content(spelling)
+    sig = dspy.Signature("instruction -> response", "Follow the instruction.")
+    with pytest.raises(TemplateRenderError, match=r"\{field\('instruction'\)\}"):
+        preview([{"role": "user", "content": "{instruction}"}], sig, inputs={"instruction": "Write a haiku."})
+
+
 def test_bare_instruction_refuses_when_a_field_is_named_instruction():
     """Alpaca-shape signatures: bare {instruction} must not silently render
     the docstring where the author plausibly meant the field."""

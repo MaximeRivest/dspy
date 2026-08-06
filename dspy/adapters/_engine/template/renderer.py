@@ -143,9 +143,9 @@ def _render_instruction(node: InstructionSlot, ctx: RenderContext) -> str:
 
         raise TemplateRenderError(
             "{instruction} is reserved for the signature instructions, but this signature also declares "
-            "a field named 'instruction' — write {instruction(style='raw')} for the instructions; a field "
-            "carrying a reserved name has no bare value-slot spelling "
-            f"(reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
+            "a field named 'instruction' — write {instruction(style='raw')} for the instructions and "
+            "{field('instruction')} for the field's value; a field carrying a reserved name has no bare "
+            f"value-slot spelling (reserved names: {spell_out(RESERVED_SLOT_NAMES)})"
         )
     instructions = ctx.signature.instructions or ""
     if node.style == "raw":
