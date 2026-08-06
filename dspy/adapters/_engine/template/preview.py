@@ -21,6 +21,7 @@ from dspy.adapters._engine.template.parser import (
     DemosDirective,
     HistoryDirective,
     ParsedTemplate,
+    directive_pair,
     parse_message_template,
 )
 from dspy.adapters._engine.template.renderer import (
@@ -28,7 +29,6 @@ from dspy.adapters._engine.template.renderer import (
     INCOMPLETE_DEMO_MISSING_FIELD_MESSAGE,
     INCOMPLETE_DEMO_PREFIX,
     RenderContext,
-    TemplateRenderError,
     classify_demos,
     render_nodes,
     render_user_content,
@@ -104,40 +104,24 @@ def _history_field_name(signature) -> str | None:
     return None
 
 
-def _pair_nodes(directive, demos_directive):
-    """A directive's user/assistant node pair, falling back to the demos
-    directive's patterns (history turns follow the demo pair shapes, the
-    historical behavior)."""
-    if directive.user is not None:
-        return directive.user, directive.assistant
-    if demos_directive is not None and demos_directive.user is not None:
-        return demos_directive.user, demos_directive.assistant
-    raise TemplateRenderError(
-        "this directive has no user/assistant content templates and no demos directive to inherit them from"
-    )
-
-
 def _expand_demos(directive: DemosDirective, signature, demos, ctx) -> list[dict[str, Any]]:
-    if directive.user is None:
-        raise TemplateRenderError(
-            "the demos directive needs user= and assistant= content templates to expand demos"
-        )
+    user_nodes, assistant_nodes = directive_pair(directive, None)
     incomplete, complete = classify_demos(signature, demos)
     messages = []
     for demo in incomplete:
         user = render_user_content(
-            directive.user, ctx("user_values", values=dict(demo), sig=signature), prefix=INCOMPLETE_DEMO_PREFIX
+            user_nodes, ctx("user_values", values=dict(demo), sig=signature), prefix=INCOMPLETE_DEMO_PREFIX
         )
         assistant = render_nodes(
-            directive.assistant,
+            assistant_nodes,
             ctx("assistant_values", values=dict(demo), missing=INCOMPLETE_DEMO_MISSING_FIELD_MESSAGE, sig=signature),
         )
         messages.append({"role": "user", "content": user})
         messages.append({"role": "assistant", "content": assistant})
     for demo in complete:
-        user = render_user_content(directive.user, ctx("user_values", values=dict(demo), sig=signature))
+        user = render_user_content(user_nodes, ctx("user_values", values=dict(demo), sig=signature))
         assistant = render_nodes(
-            directive.assistant,
+            assistant_nodes,
             ctx("assistant_values", values=dict(demo), missing=COMPLETE_DEMO_MISSING_FIELD_MESSAGE, sig=signature),
         )
         messages.append({"role": "user", "content": user})
@@ -146,7 +130,7 @@ def _expand_demos(directive: DemosDirective, signature, demos, ctx) -> list[dict
 
 
 def _expand_history(directive: HistoryDirective, demos_directive, turns, ctx) -> list[dict[str, Any]]:
-    user_nodes, assistant_nodes = _pair_nodes(directive, demos_directive)
+    user_nodes, assistant_nodes = directive_pair(directive, demos_directive)
     messages = []
     for turn in turns:
         user = render_user_content(user_nodes, ctx("user_values", values=dict(turn)))

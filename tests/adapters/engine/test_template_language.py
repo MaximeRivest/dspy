@@ -572,6 +572,65 @@ def test_preview_accepts_parsed_templates():
 
 
 # ---------------------------------------------------------------------------
+# Bare directives: default turn patterns, zero items render as nothing
+# ---------------------------------------------------------------------------
+
+
+def test_bare_demos_directive_expands_through_the_default_marker_patterns():
+    template = [
+        {"role": "system", "content": "S"},
+        {"role": "demos"},
+        {"role": "user", "content": "{question}"},
+    ]
+    messages = preview(template, QA, demos=[{"question": "1+1?", "answer": "2"}], inputs={"question": "hi"})
+    assert messages == [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "[[ ## question ## ]]\n1+1?"},
+        {"role": "assistant", "content": "[[ ## answer ## ]]\n2"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_bare_directives_with_zero_demos_and_turns_render_as_no_op():
+    template = [
+        {"role": "system", "content": "S"},
+        {"role": "demos"},
+        {"role": "history"},
+        {"role": "user", "content": "{question}"},
+    ]
+    assert preview(template, QA, inputs={"question": "hi"}) == [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_orphan_history_directive_expands_turns_through_the_default_patterns():
+    class Chatty(dspy.Signature):
+        """Chat."""
+
+        history: dspy.History = dspy.InputField()
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    template = [
+        {"role": "system", "content": "S"},
+        {"role": "history"},
+        {"role": "user", "content": "{question}"},
+    ]
+    messages = preview(
+        template,
+        Chatty,
+        inputs={"question": "Now?", "history": dspy.History(messages=[{"question": "Q1", "answer": "A1"}])},
+    )
+    assert messages == [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "[[ ## question ## ]]\nQ1"},
+        {"role": "assistant", "content": "[[ ## answer ## ]]\nA1"},
+        {"role": "user", "content": "Now?"},
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Preview == engine: schema positions render without call values
 # ---------------------------------------------------------------------------
 

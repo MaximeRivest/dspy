@@ -582,3 +582,33 @@ def _parse_message_content(content: str, fragment_targets_seen: set) -> tuple:
                 )
             fragment_targets_seen.add(node.target)
     return nodes
+
+
+# ---------------------------------------------------------------------------
+# Directive defaults
+# ---------------------------------------------------------------------------
+
+#: The language's default turn patterns (spec section 3): the marker pair a
+#: demos/history directive expands through when it carries no ``user=``/
+#: ``assistant=`` pair and no demos directive exists to inherit from.
+DEFAULT_DIRECTIVE_USER: tuple = parse_content(
+    "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}"
+)
+DEFAULT_DIRECTIVE_ASSISTANT: tuple = parse_content(
+    "{% for f in outputs separator='\\n\\n' strip %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}"
+)
+
+
+def directive_pair(directive, demos_directive) -> tuple:
+    """The user/assistant patterns a directive renders through.
+
+    Its own pair when authored; else the demos directive's (history turns
+    follow the demo shapes, the historical behavior); else the language's
+    default marker patterns — so every directive that parses can render,
+    and zero demos/turns expand to nothing.
+    """
+    if directive.user is not None:
+        return directive.user, directive.assistant
+    if demos_directive is not None and demos_directive.user is not None:
+        return demos_directive.user, demos_directive.assistant
+    return DEFAULT_DIRECTIVE_USER, DEFAULT_DIRECTIVE_ASSISTANT
