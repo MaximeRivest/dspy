@@ -193,6 +193,59 @@ section 8 phase 2).
   `render_template_messages` (or thread `fragments` into the delegators) —
   the walker parity tests are the safety net for that cutover.
 
+## Review fixes (D-α adversarial review, 2026-08-06)
+
+Nine defects confirmed by the adversarial review, fixed spec-first (the
+section 3 edits landed before the code). What changed and why:
+
+1. **Reserved-name collisions.** Bare `{instruction}` silently rendered
+   the docstring for signatures declaring a field named `instruction`.
+   The bare form now refuses at render naming the collision; the call
+   form (`{instruction(style=…)}`) stays unambiguous — the presets spell
+   the call form, so legacy signatures with reserved field names render
+   byte-identically. Bare aggregate/fragments parse errors name the
+   collision; `RESERVED_SLOT_NAMES` is one vocabulary constant.
+2. **Schema positions render without call values everywhere.** The
+   `{f.value}` refusal keys on `mode == "schema"`, and the walker builds
+   its system context with `values=None` — preview bytes are engine
+   bytes, pinned by preview-vs-`adapter.format()` parity tests.
+3. **`{% section strip %}` + xml zero-outputs parity.** Legacy
+   join-then-strip collapses trailing empty structure sections with their
+   separators; no per-loop arrangement expresses that, so the language
+   gained the section block and the xml system template wraps its
+   structure region in one. Zero-output / zero-field / native-FC
+   ToolCalls-only renders byte-match forced-legacy.
+4. **Bare directives render.** `{"role": "demos"}` / orphan
+   `{"role": "history"}` resolve patterns via `directive_pair` (own pair →
+   demos pair → language default marker patterns); zero demos/turns
+   no-op. Eager validation admits exactly the renderable set.
+5. **Import boundary sees relative imports** — resolved per-file against
+   the module's package, then through the same pin/ban logic.
+6. **Option lexing** is quote/escape-aware (documented `\'`/`\"` escapes
+   and `%` now lexable); arity errors state the actual problem.
+7. **Capacity API shape change** (unconsumed until D-4):
+   `TemplateCapacity` gains `directive_iterates_inputs/outputs` and
+   `directive_field_slots` (directive patterns analyzed via the same
+   `directive_pair` resolution rendering uses); live-lane bits stay
+   content-message-only; **`hosts_role_textually(role, field=…)` — the
+   field name is required for `media`/`tools`** (per-field hosting:
+   `iterates_inputs or field in field_slots`), refusing the coarse
+   per-role question that over-claimed. D-4's bake triple check must ask
+   per-field.
+8. **Vocabulary is the single source:** loop-option acceptance reads the
+   data (`loop_options` entries now carry `takes_value` + description);
+   unknown aggregate styles refuse at render naming the valid set, with a
+   conformance test walking the vocabulary against renderer coverage.
+9. **User-turn assembly declared:** join-then-strip + empty-user-turn
+   omission are spec section 3 semantics now, docstringed and pinned.
+   `render_user_content` no longer joins an empty body between prefix and
+   suffix (`'P\n\nS'`, the legacy chat/json shape); xml's accidental
+   `'P\n\n\n\nS'` corner (pipeline-unreachable) unifies on the chat
+   shape, pinned by test.
+
+Corpus: zero fixture changes; every parity fix proven against
+forced-legacy subclasses, never regenerated fixtures.
+
 **Non-goals:** lowering substrate (Epic F); lm15 types (Epic E); TwoStep
 expansion; template *optimization* (substrate here, optimizer later);
 deleting `format_*` outright (Epic H); `dspy-session` projections from the
