@@ -59,6 +59,11 @@ class AdapterPlan:
     config: LMConfig | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    # Strategy-contributed template fragments, keyed by fragment target
+    # ("system" | "user"); the preset's positional {fragments(...)} slots
+    # interpolate them, and empty targets cost zero bytes.
+    fragments: dict[str, list[str]] = field(default_factory=dict)
+
     # Model-facing field layer.
     input_fields: list[RenderField] = field(default_factory=list)
     output_fields: list[RenderField] = field(default_factory=list)

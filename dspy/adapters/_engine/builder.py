@@ -166,7 +166,9 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     )
     plan.warnings.extend(transform_warnings)
 
-    _record_format_parser(adapter, plan)
+    fmt = _record_format_parser(adapter, plan)
+    if fmt is not None and fmt.preset_name:
+        _check_template_capacity(fmt, lm, plan)
 
     return BuiltCall(plan=plan, render_signature=render_signature)
 
@@ -210,10 +212,11 @@ def _record_kwargs_delta(plan: AdapterPlan, type_name: str, before: dict, after:
         plan.metadata.setdefault("native_feature_kwargs", {})[type_name] = delta
 
 
-def _record_format_parser(adapter, plan: AdapterPlan) -> None:
+def _record_format_parser(adapter, plan: AdapterPlan):
     """Record the resolved Format's parser on the plan, so the IR is
     complete and rendering/parsing demonstrably share one Format instance
-    (the coupling invariant)."""
+    (the coupling invariant). Returns the Format when the engine path will
+    render (the bake capacity checks apply exactly then)."""
     from dspy.adapters._engine.formats import resolve_format
     from dspy.adapters._engine.overrides import resolve_override_verdict
 
@@ -221,6 +224,64 @@ def _record_format_parser(adapter, plan: AdapterPlan) -> None:
         fmt = resolve_format(adapter)
         if fmt is not None:
             plan.parsers.append(fmt.make_parser_hook(adapter))
+            return fmt
+    return None
+
+
+def _check_template_capacity(fmt, lm, plan: AdapterPlan) -> None:
+    """The bake-time triple check: signature roles x LM capabilities x
+    template capacity.
+
+    ADP-006: every textually-served role-bearing field needs a textual lane
+    in the template — media/tools are per-field questions; a missing lane
+    refuses naming the field+role, the LM, and the template. ADP-007: an
+    explicit template slot naming a natively-hidden field refuses at bake,
+    in the live and example lanes both, never rendering empty. The built-in
+    presets host every role and carry no explicit field slots, so existing
+    programs never trip either check.
+    """
+    from dspy.adapters._engine.presets import effective_capacity
+
+    capacity = effective_capacity(fmt)
+    template_name = fmt.preset_name + (
+        " (system override)" if getattr(fmt, "system_template_message", None) is not None else ""
+    )
+    lm_name = getattr(lm, "model", lm)
+
+    for render_field in (*plan.input_fields, *plan.output_fields):
+        name = render_field.name
+        if render_field.hidden:
+            if name in capacity.field_slots:
+                raise ValueError(
+                    f"template {template_name!r} places field {name!r} in an explicit slot, but the field "
+                    f"is served natively for lm {lm_name!r} and leaves the token stream — an explicit slot "
+                    "referencing a natively-served field refuses at bake, never renders empty (ADP-007)"
+                )
+            if name in capacity.directive_field_slots:
+                raise ValueError(
+                    f"template {template_name!r} places field {name!r} in an explicit slot of its "
+                    f"demos/history patterns, but the field is served natively for lm {lm_name!r} — "
+                    "example turns cannot show a field the live call hides (ADP-007)"
+                )
+            continue
+
+        role = (render_field.metadata or {}).get("semantic_role", "plain")
+        if role == "plain":
+            continue
+        if role in ("media", "tools"):
+            hosted = capacity.hosts_role_textually(role, field=name)
+        elif role == "history":
+            hosted = capacity.hosts_role_textually(role)
+        elif render_field.role == "input":
+            hosted = capacity.iterates_inputs or name in capacity.field_slots
+        else:
+            hosted = capacity.hosts_role_textually(role)
+        if not hosted:
+            raise ValueError(
+                f"no lane for field {name!r} (role {role!r}): lm {lm_name!r} serves it textually, but "
+                f"template {template_name!r} declares no textual hosting for it — the "
+                "(roles x capabilities x capacity) triple refuses at bake instead of degrading (ADP-006)"
+            )
 
 
 def assert_unrendered(plan: AdapterPlan) -> None:

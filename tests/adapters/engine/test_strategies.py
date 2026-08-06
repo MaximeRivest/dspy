@@ -433,6 +433,105 @@ def test_auto_resolution_is_recorded():
     assert built.plan.metadata["strategy_resolution"]["reasoning"]["served"] == "textual"
 
 
+def test_textual_strategies_contribute_template_fragments():
+    """A strategy's fragments flow patch -> plan -> plan_scope -> the
+    preset's positional {fragments(...)} slots (spec section 2: a textual
+    strategy is a template-fragment provider)."""
+    from dspy.adapters._engine.render import plan_scope
+    from dspy.adapters._engine.strategies import register_field_strategy, unregister_field_strategy
+
+    class _CiteNote(dspy.Type):
+        content: str = ""
+
+        @classmethod
+        def description(cls):
+            return "note"
+
+    class _CiteStrategy:
+        name = "citations.span_markers.test"
+        priority = 500
+        exclusive_group = None
+
+        def applies(self, ctx):
+            return True
+
+        def contribute(self, ctx):
+            return AdapterPatch(
+                fragments={
+                    "system": ["When quoting, wrap the quote in <cite>."],
+                    "user": ["Cite your sources."],
+                }
+            )
+
+    class Sig(dspy.Signature):
+        question: str = dspy.InputField()
+        note: _CiteNote = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    adapter = ChatAdapter(native_response_types=[_CiteNote])
+    register_field_strategy(_CiteNote, _CiteStrategy())
+    try:
+        built = build_plan(adapter, _lm(), {}, Sig, {"question": "Q?"})
+        assert built.plan.fragments == {
+            "system": ["When quoting, wrap the quote in <cite>."],
+            "user": ["Cite your sources."],
+        }
+
+        with plan_scope(built.plan):
+            messages = adapter.format(built.render_signature, [], {"question": "Q?"})
+        system, user = messages[0]["content"], messages[-1]["content"]
+        assert "[[ ## completed ## ]]\nWhen quoting, wrap the quote in <cite>.\nIn adhering" in system
+        assert "Cite your sources.\nRespond with the corresponding output fields" in user
+
+        # Outside any scope the slots are empty and cost zero bytes.
+        bare = adapter.format(built.render_signature, [], {"question": "Q?"})
+        assert "<cite>" not in bare[0]["content"]
+        assert "Cite your sources." not in bare[-1]["content"]
+    finally:
+        unregister_field_strategy(_CiteNote)
+
+
+def test_fragments_reach_the_wire_through_the_full_pipeline():
+    """__call__ enters plan_scope around format(), sync and async alike."""
+    from golden.harness import run_adapter_capture
+
+    from dspy.adapters._engine.strategies import register_field_strategy, unregister_field_strategy
+
+    class _NoteType(dspy.Type):
+        content: str = ""
+
+        @classmethod
+        def description(cls):
+            return "note"
+
+    class _FragStrategy:
+        name = "test.fragments"
+        priority = 500
+        exclusive_group = None
+
+        def applies(self, ctx):
+            return True
+
+        def contribute(self, ctx):
+            return AdapterPatch(fragments={"system": ["FRAGMENT LINE."]})
+
+    class Sig(dspy.Signature):
+        question: str = dspy.InputField()
+        note: _NoteType = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    adapter = ChatAdapter(native_response_types=[_NoteType])
+    register_field_strategy(_NoteType, _FragStrategy())
+    try:
+        for mode in ("sync", "async"):
+            recorder = Recorder()
+            run_adapter_capture(adapter, StubLM(recorder), {}, Sig, [], {"question": "Q?"}, mode, recorder)
+            system = recorder.calls[0]["messages"][0]["content"]
+            assert "[[ ## completed ## ]]\nFRAGMENT LINE.\nIn adhering" in system
+    finally:
+        unregister_field_strategy(_NoteType)
+
+
 def test_native_fc_binding_refuses_without_capability():
     import pytest
 

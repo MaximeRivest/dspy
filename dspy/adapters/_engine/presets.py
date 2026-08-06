@@ -38,6 +38,8 @@ from dspy.adapters._engine.template import (
     ContentMessage,
     ParsedTemplate,
     RenderContext,
+    TemplateCapacity,
+    declared_capacity,
     parse_content,
     parse_message_template,
     render_nodes,
@@ -49,6 +51,10 @@ from dspy.adapters._engine.template.vocabulary import VOCABULARY
 @dataclass(frozen=True)
 class Preset:
     """One named adapter-as-data entry.
+
+    ``capacity`` is the template's textual hosting surface, computed
+    eagerly at construction (the D-4 bake triple check consumes it per
+    call, so it is data on the preset, never re-derived).
 
     Serialization lands in D-5 and must carry ``adapter_ir_version`` plus
     the closed-vocabulary versions block from its FIRST dump/load shape
@@ -62,6 +68,7 @@ class Preset:
     codecs: Mapping[str, str]
     strategies: Mapping[str, str]
     config: Mapping[str, Any]
+    capacity: TemplateCapacity
 
 
 def _make_preset(name, template_messages, parser, codecs, strategies, config=None) -> Preset:
@@ -78,6 +85,7 @@ def _make_preset(name, template_messages, parser, codecs, strategies, config=Non
         codecs=MappingProxyType(dict(codecs)),
         strategies=MappingProxyType(dict(strategies)),
         config=MappingProxyType(dict(config or {})),
+        capacity=declared_capacity(parsed),
     )
 
 
@@ -351,6 +359,8 @@ def _content_message(preset: Preset, role: str) -> ContentMessage:
 
 
 def _context(fmt, signature, mode, values=None, missing=None) -> RenderContext:
+    from dspy.adapters._engine.render import active_plan_fragments
+
     return RenderContext(
         signature=signature,
         mode=mode,
@@ -358,8 +368,45 @@ def _context(fmt, signature, mode, values=None, missing=None) -> RenderContext:
         output_codec=fmt.output_codec,
         values=values,
         missing_field_message=missing,
-        fragments={},
+        fragments=active_plan_fragments(),
     )
+
+
+def effective_template(fmt) -> ParsedTemplate:
+    """The template this format actually renders: its preset's messages
+    with the format's system override (the BAML pairing) swapped in."""
+    preset = _preset_for(fmt)
+    override = getattr(fmt, "system_template_message", None)
+    if override is None:
+        return preset.template
+    messages = tuple(
+        override if isinstance(message, ContentMessage) and message.role == "system" else message
+        for message in preset.template.messages
+    )
+    raw = tuple(
+        {"role": "system", "content": override.raw}
+        if isinstance(message, dict) and message.get("role") == "system"
+        else message
+        for message in preset.template.raw
+    )
+    return ParsedTemplate(messages=messages, raw=raw)
+
+
+_EFFECTIVE_CAPACITY_CACHE: dict = {}
+
+
+def effective_capacity(fmt) -> TemplateCapacity:
+    """Capacity of the format's effective template, cached per pairing."""
+    preset = _preset_for(fmt)
+    override = getattr(fmt, "system_template_message", None)
+    if override is None:
+        return preset.capacity
+    key = (preset.name, id(override))
+    capacity = _EFFECTIVE_CAPACITY_CACHE.get(key)
+    if capacity is None:
+        capacity = declared_capacity(effective_template(fmt))
+        _EFFECTIVE_CAPACITY_CACHE[key] = capacity
+    return capacity
 
 
 def render_preset_system(fmt, signature) -> str:

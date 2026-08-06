@@ -171,3 +171,131 @@ def test_render_request_tripwire_rejects_unrendered_content():
     plan.user_parts.append(LMTextPart(text="content nobody will render"))
     with pytest.raises(AssertionError, match="renderer is not wired"):
         assert_unrendered(plan)
+
+
+# ---------------------------------------------------------------------------
+# The bake-time triple check (ADP-006/ADP-007)
+# ---------------------------------------------------------------------------
+
+
+def _with_test_preset(name, messages, parser="chat"):
+    """Temporarily register a preset so a format class can point at it."""
+    from contextlib import contextmanager
+
+    from dspy.adapters._engine.presets import PRESETS, _make_preset
+
+    @contextmanager
+    def scope():
+        PRESETS[name] = _make_preset(
+            name=name,
+            template_messages=messages,
+            parser=parser,
+            codecs={"input": "text_pythonish", "output": "text_pythonish"},
+            strategies={},
+        )
+        try:
+            yield PRESETS[name]
+        finally:
+            del PRESETS[name]
+
+    return scope()
+
+
+def test_builtin_presets_never_trip_the_bake_checks():
+    """Every builtin preset hosts every role and carries no explicit field
+    slots — the triple check is invisible to existing programs."""
+    from dspy.adapters._engine.builder import _check_template_capacity
+    from dspy.adapters._engine.formats.baml import BAMLFormat
+    from dspy.adapters._engine.formats.chat import ChatFormat
+    from dspy.adapters._engine.formats.json import JSONFormat
+    from dspy.adapters._engine.formats.xml import XMLFormat
+
+    built = build_plan(ChatAdapter(), _lm(supports_reasoning=True), {}, ThoughtfulQA, {"question": "Q?"})
+    for fmt in (ChatFormat(), JSONFormat(), XMLFormat(), BAMLFormat()):
+        _check_template_capacity(fmt, _lm(), built.plan)
+
+
+def test_bake_refuses_a_textual_role_with_no_lane():
+    """ADP-006: a template that never iterates outputs cannot host a
+    textually-served reasoning field; the refusal names field+role, the LM,
+    and the template."""
+    from dspy.adapters._engine.builder import _check_template_capacity
+    from dspy.adapters._engine.formats.chat import ChatFormat
+
+    messages = [
+        {"role": "system", "content": "{instruction(style='raw')}"},
+        {"role": "user", "content": "{% for f in inputs %}{f.value}{% endfor %}"},
+    ]
+    with _with_test_preset("_test_no_output_lane", messages):
+
+        class _NoOutputLane(ChatFormat):
+            preset_name = "_test_no_output_lane"
+            system_template_message = None
+
+        built = build_plan(ChatAdapter(), _lm(supports_reasoning=False), {}, ThoughtfulQA, {"question": "Q?"})
+        with pytest.raises(ValueError, match="ADP-006") as excinfo:
+            _check_template_capacity(_NoOutputLane(), _lm(), built.plan)
+        message = str(excinfo.value)
+        assert "'reasoning'" in message and "_test_no_output_lane" in message and "stub/golden-model" in message
+
+
+def test_bake_refuses_an_explicit_slot_on_a_natively_hidden_field():
+    """ADP-007: {reasoning} in the live lane, with reasoning served
+    natively, refuses at bake — never an empty render."""
+    from dspy.adapters._engine.builder import _check_template_capacity
+    from dspy.adapters._engine.formats.chat import ChatFormat
+
+    messages = [
+        {"role": "system", "content": "{instruction(style='raw')}\n{field('reasoning')}"},
+        {"role": "user", "content": "{% for f in inputs %}{f.value}{% endfor %}"},
+    ]
+    with _with_test_preset("_test_slotted", messages):
+
+        class _Slotted(ChatFormat):
+            preset_name = "_test_slotted"
+            system_template_message = None
+
+        built = build_plan(ChatAdapter(), _lm(supports_reasoning=True), {}, ThoughtfulQA, {"question": "Q?"})
+        assert built.plan.find_field("output", "reasoning").hidden
+        with pytest.raises(ValueError, match="ADP-007"):
+            _check_template_capacity(_Slotted(), _lm(), built.plan)
+
+
+def test_bake_refuses_an_example_lane_slot_on_a_natively_hidden_field():
+    """ADP-007, example lane: a demos pattern spelling out a hidden field
+    refuses at bake with the demo-specific message."""
+    from dspy.adapters._engine.builder import _check_template_capacity
+    from dspy.adapters._engine.formats.chat import ChatFormat
+
+    messages = [
+        {"role": "system", "content": "{instruction(style='raw')}"},
+        {
+            "role": "demos",
+            "user": "{% for f in inputs %}{f.value}{% endfor %}",
+            "assistant": "{field('reasoning')}",
+        },
+        {"role": "user", "content": "{% for f in inputs %}{f.value}{% endfor %}{% for f in outputs %}{f.marker}{% endfor %}"},
+    ]
+    with _with_test_preset("_test_demo_slotted", messages):
+
+        class _DemoSlotted(ChatFormat):
+            preset_name = "_test_demo_slotted"
+            system_template_message = None
+
+        built = build_plan(ChatAdapter(), _lm(supports_reasoning=True), {}, ThoughtfulQA, {"question": "Q?"})
+        with pytest.raises(ValueError, match="example turns cannot show"):
+            _check_template_capacity(_DemoSlotted(), _lm(), built.plan)
+
+
+def test_preset_capacity_is_eager_data():
+    from dspy.adapters._engine.formats.baml import BAMLFormat
+    from dspy.adapters._engine.presets import effective_capacity, get_preset
+
+    for name in ("chat", "json", "xml"):
+        capacity = get_preset(name).capacity
+        assert capacity.iterates_inputs and capacity.iterates_outputs
+        assert capacity.fragment_targets == {"system", "user"}
+    baml = effective_capacity(BAMLFormat())
+    assert baml.iterates_inputs and baml.iterates_outputs
+    assert baml.fragment_targets == {"system", "user"}
+    assert effective_capacity(BAMLFormat()) is baml  # cached per pairing

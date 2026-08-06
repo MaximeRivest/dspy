@@ -69,6 +69,7 @@ class AdapterPatch:
     request: LMRequestPatch = field(default_factory=LMRequestPatch)
     field_transforms: list[Any] = field(default_factory=list)
     parsers: list[Any] = field(default_factory=list)
+    fragments: dict[str, list[str]] = field(default_factory=dict)
     debug_links: list[DebugLink] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     strategy_trace: list[StrategyTrace] = field(default_factory=list)
@@ -78,10 +79,14 @@ class AdapterPatch:
         """Return a new patch equal to this patch followed by ``other``."""
         if self.replace_render_signature is not None and other.replace_render_signature is not None:
             raise PatchMergeError("Two contributions both replace the render signature")
+        fragments: dict[str, list[str]] = {k: list(v) for k, v in self.fragments.items()}
+        for target, lines in other.fragments.items():
+            fragments.setdefault(target, []).extend(lines)
         return AdapterPatch(
             request=self.request.merge(other.request),
             field_transforms=[*self.field_transforms, *other.field_transforms],
             parsers=[*self.parsers, *other.parsers],
+            fragments=fragments,
             debug_links=[*self.debug_links, *other.debug_links],
             warnings=[*self.warnings, *other.warnings],
             strategy_trace=[*self.strategy_trace, *other.strategy_trace],
@@ -103,6 +108,8 @@ class AdapterPatch:
         plan.user_parts.extend(self.request.user_parts)
         plan.assistant_prefill_parts.extend(self.request.assistant_parts)
         plan.tools.extend(self.request.tools)
+        for target, lines in self.fragments.items():
+            plan.fragments.setdefault(target, []).extend(lines)
 
         if self.request.config is not None:
             if plan.config is None:

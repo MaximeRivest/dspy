@@ -3,8 +3,9 @@
 The template language is closed precisely so this analysis is possible
 (spec section 2): bake's triple check — signature roles x LM capabilities x
 template capacity — needs to know, without rendering, whether a textual
-strategy has anywhere to land. Nothing consumes this yet; the strategy-
-awareness PR (D-4) does.
+strategy has anywhere to land. Consumed by the plan builder's
+``_check_template_capacity`` (ADP-006/ADP-007) through the eager
+``Preset.capacity`` field.
 
 Two lanes, kept apart on purpose:
 

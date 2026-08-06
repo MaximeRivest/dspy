@@ -350,6 +350,7 @@ class Adapter:
         """
         from dspy.adapters._engine.builder import build_plan
         from dspy.adapters._engine.overrides import resolve_override_verdict
+        from dspy.adapters._engine.render import plan_scope
 
         # Consulted now, acted on once renderer cutovers register classes:
         # with the registry empty every instance is legacy, so this PR is
@@ -358,7 +359,10 @@ class Adapter:
 
         built = build_plan(self, lm, lm_kwargs, signature, inputs)
         processed_signature = built.render_signature
-        messages = self.format(processed_signature, demos, inputs)
+        # The plan travels beside format() (the public signature is frozen):
+        # the scope is what lets strategy fragments reach the template slots.
+        with plan_scope(built.plan):
+            messages = self.format(processed_signature, demos, inputs)
         request = self._render_request(lm, lm_kwargs, messages, plan=built.plan)
         response = self._call_lm(lm, request)
         if resolve_override_verdict(self).engine_eligible:
@@ -380,12 +384,14 @@ class Adapter:
     ) -> list[dict[str, Any]]:
         from dspy.adapters._engine.builder import build_plan
         from dspy.adapters._engine.overrides import resolve_override_verdict
+        from dspy.adapters._engine.render import plan_scope
 
         resolve_override_verdict(self)
 
         built = build_plan(self, lm, lm_kwargs, signature, inputs)
         processed_signature = built.render_signature
-        messages = self.format(processed_signature, demos, inputs)
+        with plan_scope(built.plan):
+            messages = self.format(processed_signature, demos, inputs)
         request = self._render_request(lm, lm_kwargs, messages, plan=built.plan)
         response = await self._acall_lm(lm, request)
         if resolve_override_verdict(self).engine_eligible:

@@ -15,9 +15,36 @@ guard; the textual tool-result fallback through the synthetic
 the same single point, behind one displaceable function.
 """
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from dspy.adapters._engine.formats import Format
+
+#: The plan whose strategy contributions the current format() call renders.
+#: The public ``format(signature, demos, inputs)`` surface is frozen, so
+#: the pipeline threads the plan BESIDE it: ``Adapter.__call__``/``acall``
+#: enter ``plan_scope`` around the format call, and the preset delegation
+#: reads the scoped plan's fragments. A contextvar, not adapter state, so
+#: concurrent calls on one adapter instance cannot cross-thread. Dies with
+#: the format() surface in Epic H.
+_ACTIVE_PLAN: ContextVar = ContextVar("dspy_adapter_active_plan", default=None)
+
+
+@contextmanager
+def plan_scope(plan):
+    """Make ``plan`` the active plan for template rendering in this scope."""
+    token = _ACTIVE_PLAN.set(plan)
+    try:
+        yield
+    finally:
+        _ACTIVE_PLAN.reset(token)
+
+
+def active_plan_fragments() -> dict[str, list[str]]:
+    """The scoped plan's strategy fragments; empty outside any scope."""
+    plan = _ACTIVE_PLAN.get()
+    return plan.fragments if plan is not None else {}
 
 
 def render_messages(adapter, fmt: Format, signature, demos: list[dict[str, Any]], inputs: dict[str, Any]):
