@@ -561,9 +561,15 @@ def _parse_loop_options(options: list[tuple[str, str | None]]) -> tuple[str, boo
     valid = VOCABULARY["loop_options"]
     separator = "\n"
     strip = False
+    seen: set[str] = set()
     for key, value in options:
         if key not in valid:
             raise TemplateError(f"unknown loop option {key!r} — valid options: {spell_out(valid)}")
+        if key in seen:
+            raise TemplateError(
+                f"duplicate loop option {key!r} — each option appears once per '{{% for %}}' tag"
+            )
+        seen.add(key)
         if valid[key]["takes_value"] and value is None:
             raise TemplateError(f"loop option {key!r} requires a quoted value: {key}='...'")
         if not valid[key]["takes_value"] and value is not None:
@@ -652,27 +658,49 @@ def _parse_message_content(content: str, fragment_targets_seen: set) -> tuple:
 # Directive defaults
 # ---------------------------------------------------------------------------
 
-#: The language's default turn patterns (spec section 3): the marker pair a
-#: demos/history directive expands through when it carries no ``user=``/
-#: ``assistant=`` pair and no demos directive exists to inherit from.
-DEFAULT_DIRECTIVE_USER: tuple = parse_content(
+#: The language's default turn patterns (spec section 3), keyed by parser
+#: binding: a demos/history directive with no ``user=``/``assistant=`` pair
+#: and no demos directive to inherit from expands through the pattern pair
+#: matching the parser that will read the shape back (L9). ``None`` is the
+#: no-preset fallback — the chat marker pair.
+_MARKER_USER: tuple = parse_content(
     "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}"
 )
-DEFAULT_DIRECTIVE_ASSISTANT: tuple = parse_content(
+_MARKER_ASSISTANT: tuple = parse_content(
     "{% for f in outputs separator='\\n\\n' strip %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}"
 )
+_XML_TURN_USER: tuple = parse_content(
+    "{% for f in inputs separator='\\n\\n' strip %}<{f.name}>\n{f.value}\n</{f.name}>{% endfor %}"
+)
+_XML_TURN_ASSISTANT: tuple = parse_content(
+    "{% for f in outputs separator='\\n\\n' strip %}<{f.name}>\n{f.value}\n</{f.name}>{% endfor %}"
+)
+
+DEFAULT_DIRECTIVE_PATTERNS: dict = {
+    None: (_MARKER_USER, _MARKER_ASSISTANT),
+    "chat": (_MARKER_USER, _MARKER_ASSISTANT),
+    "json": (_MARKER_USER, parse_content("{outputs(style='json_object')}")),
+    "xml": (_XML_TURN_USER, _XML_TURN_ASSISTANT),
+    "full_text": (
+        _MARKER_USER,
+        parse_content("{% for f in outputs separator='\\n\\n' strip %}{f.value}{% endfor %}"),
+    ),
+}
 
 
-def directive_pair(directive, demos_directive) -> tuple:
+def directive_pair(directive, demos_directive, parser: str | None = None) -> tuple:
     """The user/assistant patterns a directive renders through.
 
     Its own pair when authored; else the demos directive's (history turns
     follow the demo shapes, the historical behavior); else the language's
-    default marker patterns — so every directive that parses can render,
-    and zero demos/turns expand to nothing.
+    default patterns keyed by ``parser`` — the preset's parser binding when
+    rendering through a preset context, the chat marker pair otherwise — so
+    every directive that parses can render, an example turn demonstrates
+    the shape the parser reads back, and zero demos/turns expand to
+    nothing.
     """
     if directive.user is not None:
         return directive.user, directive.assistant
     if demos_directive is not None and demos_directive.user is not None:
         return demos_directive.user, demos_directive.assistant
-    return DEFAULT_DIRECTIVE_USER, DEFAULT_DIRECTIVE_ASSISTANT
+    return DEFAULT_DIRECTIVE_PATTERNS.get(parser, DEFAULT_DIRECTIVE_PATTERNS[None])

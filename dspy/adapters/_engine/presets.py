@@ -85,7 +85,7 @@ def _make_preset(name, template_messages, parser, codecs, strategies, config=Non
         codecs=MappingProxyType(dict(codecs)),
         strategies=MappingProxyType(dict(strategies)),
         config=MappingProxyType(dict(config or {})),
-        capacity=declared_capacity(parsed),
+        capacity=declared_capacity(parsed, parser=parser),
     )
 
 

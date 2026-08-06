@@ -769,6 +769,54 @@ def test_bare_directives_with_zero_demos_and_turns_render_as_no_op():
     ]
 
 
+def test_bare_directive_defaults_key_on_the_parser_binding():
+    """Rendering through a preset context (parser= given), a bare directive
+    demonstrates the shape that parser reads back (spec section 3); chat
+    markers remain the no-preset fallback."""
+    template = [
+        {"role": "system", "content": "S"},
+        {"role": "demos"},
+        {"role": "user", "content": "{question}"},
+    ]
+    demos = [{"question": "1+1?", "answer": "2"}]
+
+    json_messages = preview(template, QA, demos=demos, inputs={"question": "hi"}, parser="json")
+    assert json_messages[1] == {"role": "user", "content": "[[ ## question ## ]]\n1+1?"}
+    assert json_messages[2] == {"role": "assistant", "content": '{\n  "answer": "2"\n}'}
+
+    xml_messages = preview(template, QA, demos=demos, inputs={"question": "hi"}, parser="xml")
+    assert xml_messages[1] == {"role": "user", "content": "<question>\n1+1?\n</question>"}
+    assert xml_messages[2] == {"role": "assistant", "content": "<answer>\n2\n</answer>"}
+
+    full_text_messages = preview(template, QA, demos=demos, inputs={"question": "hi"}, parser="full_text")
+    assert full_text_messages[2] == {"role": "assistant", "content": "2"}
+
+    for parser in (None, "chat"):
+        messages = preview(template, QA, demos=demos, inputs={"question": "hi"}, parser=parser)
+        assert messages[1] == {"role": "user", "content": "[[ ## question ## ]]\n1+1?"}
+        assert messages[2] == {"role": "assistant", "content": "[[ ## answer ## ]]\n2"}
+
+
+def test_authored_directive_patterns_ignore_the_parser_key():
+    template = [
+        {"role": "system", "content": "S"},
+        {"role": "demos", "user": "U {question}", "assistant": "A {answer}"},
+        {"role": "user", "content": "{question}"},
+    ]
+    messages = preview(template, QA, demos=[{"question": "q", "answer": "a"}], inputs={"question": "hi"}, parser="xml")
+    assert messages[1] == {"role": "user", "content": "U q"}
+    assert messages[2] == {"role": "assistant", "content": "A a"}
+
+
+def test_duplicate_loop_options_refuse_with_a_teaching_error():
+    """Matching call-kwargs behavior (spec section 3): each loop option
+    appears once; last-wins lexing is gone."""
+    with pytest.raises(TemplateError, match="duplicate loop option 'separator'"):
+        parse_content("{% for f in inputs separator=',' separator=';' %}{f.name}{% endfor %}")
+    with pytest.raises(TemplateError, match="duplicate loop option 'strip'"):
+        parse_content("{% for f in inputs strip strip %}{f.name}{% endfor %}")
+
+
 def test_orphan_history_directive_expands_turns_through_the_default_patterns():
     class Chatty(dspy.Signature):
         """Chat."""

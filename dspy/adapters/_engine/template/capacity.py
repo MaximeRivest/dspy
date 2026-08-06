@@ -90,13 +90,13 @@ class TemplateCapacity:
         return self.iterates_outputs
 
 
-def declared_capacity(template: ParsedTemplate) -> TemplateCapacity:
+def declared_capacity(template: ParsedTemplate, parser: str | None = None) -> TemplateCapacity:
     """Analyze a parsed template's slots into its textual capacity.
 
     Directive patterns are analyzed through the same resolution rendering
     uses (own pair, else the demos directive's, else the language default
-    patterns), so a bare directive's capacity reflects what it actually
-    renders.
+    patterns keyed by ``parser``), so a bare directive's capacity reflects
+    what it actually renders.
     """
     live = {"iterates_inputs": False, "iterates_outputs": False}
     example = {"iterates_inputs": False, "iterates_outputs": False}
@@ -135,7 +135,7 @@ def declared_capacity(template: ParsedTemplate) -> TemplateCapacity:
                 hosts_demos = True
             else:
                 hosts_history = True
-            user_nodes, assistant_nodes = directive_pair(message, demos_directive)
+            user_nodes, assistant_nodes = directive_pair(message, demos_directive, parser)
             visit(user_nodes, example, example_slots)
             visit(assistant_nodes, example, example_slots)
 

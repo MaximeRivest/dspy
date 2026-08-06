@@ -50,8 +50,15 @@ def render_template_messages(
     input_codec,
     output_codec,
     fragments: dict[str, list[str]] | None = None,
+    parser: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Walk a parsed template into the full chat message list, purely."""
+    """Walk a parsed template into the full chat message list, purely.
+
+    ``parser`` names the preset's parser binding when rendering through a
+    preset context; bare directives then expand through the matching
+    default turn patterns (spec section 3). None keeps the chat marker
+    fallback.
+    """
     inputs = dict(inputs or {})
     fragments = fragments or {}
 
@@ -95,9 +102,9 @@ def render_template_messages(
                 content = render_nodes(message.nodes, ctx("user_values", values=inputs))
                 rendered.append({"role": "assistant", "content": content})
         elif isinstance(message, DemosDirective):
-            rendered.extend(_expand_demos(message, signature, demos, ctx))
+            rendered.extend(_expand_demos(message, signature, demos, ctx, parser))
         elif isinstance(message, HistoryDirective):
-            rendered.extend(_expand_history(message, parsed_demos, history_turns, ctx))
+            rendered.extend(_expand_history(message, parsed_demos, history_turns, ctx, parser))
     return rendered
 
 
@@ -110,8 +117,8 @@ def _history_field_name(signature) -> str | None:
     return None
 
 
-def _expand_demos(directive: DemosDirective, signature, demos, ctx) -> list[dict[str, Any]]:
-    user_nodes, assistant_nodes = directive_pair(directive, None)
+def _expand_demos(directive: DemosDirective, signature, demos, ctx, parser=None) -> list[dict[str, Any]]:
+    user_nodes, assistant_nodes = directive_pair(directive, None, parser)
     incomplete, complete = classify_demos(signature, demos)
     messages = []
     for demo in incomplete:
@@ -135,8 +142,8 @@ def _expand_demos(directive: DemosDirective, signature, demos, ctx) -> list[dict
     return messages
 
 
-def _expand_history(directive: HistoryDirective, demos_directive, turns, ctx) -> list[dict[str, Any]]:
-    user_nodes, assistant_nodes = directive_pair(directive, demos_directive)
+def _expand_history(directive: HistoryDirective, demos_directive, turns, ctx, parser=None) -> list[dict[str, Any]]:
+    user_nodes, assistant_nodes = directive_pair(directive, demos_directive, parser)
     messages = []
     for turn in turns:
         user = render_user_content(user_nodes, ctx("user_values", values=dict(turn)))
@@ -157,11 +164,13 @@ def preview(
     fragments: dict[str, list[str]] | None = None,
     input_codec=None,
     output_codec=None,
+    parser: str | None = None,
 ) -> list[dict[str, Any]]:
     """Render a template against a signature and values with no LM call.
 
     ``template`` is either raw message-list data or an already-parsed
-    ``ParsedTemplate``. Codecs default to the shared text codec.
+    ``ParsedTemplate``. Codecs default to the shared text codec; ``parser``
+    keys bare-directive default patterns when previewing a preset.
     """
     from dspy.adapters._engine.codecs import TEXT_PYTHONISH
 
@@ -174,4 +183,5 @@ def preview(
         input_codec=input_codec or TEXT_PYTHONISH,
         output_codec=output_codec or TEXT_PYTHONISH,
         fragments=fragments,
+        parser=parser,
     )
