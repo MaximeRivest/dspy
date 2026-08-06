@@ -1,8 +1,8 @@
 # Epic D — presets, templates, and the adapter as data
 
-**Status:** DRAFT v2 (2026-08-06) — rescoped after the template ratification
-(D-018/D-019 in `05-decisions.md`); the implementing engineer owns this doc
-and revises before starting (per `04-process.md`).
+**Status:** v3 (2026-08-06) — D-α (PRs D-1/D-2) SHIPPED; this doc now
+records what was actually built plus the D-β/D-γ handoff. Rescoped v2 after
+the template ratification (D-018/D-019 in `05-decisions.md`).
 
 **Ratified design.** An adapter is a **preset**: a named data entry
 `{template, parser binding, codec bindings, strategy bindings, config}`. The
@@ -79,16 +79,119 @@ Add in D-2/D-3: parity tests — preset `chat` renders byte-identical messages
 to `ChatAdapter` for a representative signature+demos; `BAMLAdapter` ≡
 preset `json` + baml codec.
 
-**Suggested PR stack** (revise freely):
-- D-1: template engine, pure and unused (corpus untouched) + xfail #4 revision.
+**PR stack:**
+- D-1: template engine, pure and unused (corpus untouched) + xfail #4
+  revision — **SHIPPED** (see "D-α as built").
 - D-2: presets defined as templates; class adapters delegate (corpus gate at
-  zero diff); parity tests.
+  zero diff); parity tests — **SHIPPED** (see "D-α as built").
 - D-3: BAML-as-codec + compat shim.
 - D-4: strategy awareness + `strategies={}` + double-key registry.
 - D-5: serialization dump/load + derived summary view + loud-refusal loader.
 - D-6: `@role` parser + `dspy.roles` export (public-surface PR).
 - D-7: template authoring surface upstream + docs pass + server examples
   regeneration (docs/corpus-style commits).
+
+## D-α as built (D-1/D-2, 2026-08-06)
+
+**Module layout.** The template engine is a package,
+`dspy/adapters/_engine/template/`: `vocabulary.py` (the ONE vocabulary data
+structure + `describe_template_language()`), `parser.py` (eager parser, AST
+nodes, `TemplateError` teaching errors that enumerate the valid set from
+the vocabulary), `renderer.py` (pure `render_nodes` over a `RenderContext`;
+also the single-source demo-classification helper and the historical demo
+prefix/missing-message strings, referenced by the Format base),
+`capacity.py` (`declared_capacity` → `TemplateCapacity`, the D-4 bake-check
+substrate), `preview.py` (the pure template walker +
+`preview()`). Presets live in `dspy/adapters/_engine/presets.py`; the codec
+name registry (`CODECS`/`resolve_codec`) in `codecs.py`.
+
+**Language deltas the implementation forced (spec section 3 updated
+first):**
+- loop blocks take an optional bare `strip` flag — the historical
+  join-then-`strip()` section shape is unreachable without it (field
+  descriptions, structure sections, and assistant field blocks strip;
+  user-side input loops must NOT, or interior trailing whitespace diverges);
+- `{instruction}` takes `style=` (`raw` | `indented`); `indented` is the
+  dedent-then-8-space objective block, placed inline after
+  `objective is: ` so the historical trailing space falls out of the
+  template text;
+- empty `{fragments(...)}` slots swallow their whole line (slot alone on a
+  line + empty render → the line and its newline vanish) — the zero-byte
+  guarantee made precise;
+- value-presence semantics are direction-aware: `inputs` loops iterate
+  values-present fields in valued positions; `outputs` loops iterate all
+  visible fields (assistant position → missing-field message through the
+  codec; user position → schema-side, which is what makes the
+  output-requirements enumeration render);
+- aggregate `style` names an entry in a per-aggregate closed style
+  vocabulary (not directly a codec); `outputs` gained `json_object`
+  (typed placeholders in schema position, call values in assistant
+  position — exactly `_render_json_object`'s two uses).
+
+**Delegation depth chosen for D-2.** Content-first: ChatFormat gained
+`preset_name` + three delegators (`render_system`, `render_user_content`,
+`render_assistant_content`) that execute the named preset's template;
+JSONFormat/XMLFormat override only `preset_name` (their shadowing legacy
+bodies were deleted). Every content string on the engine path now renders
+from template data. The message SEQUENCE still walks through
+`render.py`'s structural skeleton (demo classification is single-sourced
+with the walker via `classify_demos`); the pure walker
+(`render_template_messages`) exists, and parity tests prove
+walker == forced-legacy `adapter.format()` for chat/json/xml across the
+golden payload shapes — full walker-driven assembly on the engine path is
+deferred to D-4, where strategy fragments force it anyway. The granular
+literal methods (`render_field_description`, `render_field_structure`,
+`render_task_description`, `output_requirements`,
+`render_fields_with_values`) are KEPT: BAML still composes from them
+(`BAMLFormat.render_system` now pins the composed path explicitly), and
+`tests/adapters/engine/test_presets.py` diffs them against the template
+renders so the two sources cannot drift. They go with the `format_*` zoo in
+Epic H.
+
+**Import boundary (D-021).**
+`tests/adapters/engine/test_import_boundary.py` AST-scans every engine
+module (function-local imports included). Allowed prefixes:
+`dspy.adapters._engine`, `dspy.adapters.types`, `dspy.adapters.utils`,
+`dspy.signatures`, `dspy.core`, `dspy.utils.exceptions`. Pre-existing
+back-edges are pinned as a SHRINKING allowlist (new violation fails; stale
+pin fails): `builder/render/postprocess → dspy.adapters.base`,
+`migrated.py → the five adapter-class modules`, `formats/baml.py →
+baml_adapter`, `formats/twostep.py → chat_adapter` (dies with TwoStep's
+lowering, Epic F), `parser_hook.py → dspy.clients.openai_format` (dies with
+the lm15 veneer, Epic E), and three `dspy.experimental` re-export imports
+of Citations (trivially fixable to `dspy.adapters.types.citation`; left
+pinned to keep D-α behavior-neutral).
+
+**Deliberately deferred within D-α (documented limits):** the walker's
+history directive expands plain turns only (native tool-call replay stays
+with the pipeline machinery); `preview()` leaves custom-type markers
+unexpanded (part splitting is the frontend's job); a `SignatureCore`
+neutral datatype is NOT introduced — the engine renders from dspy
+signatures, and the neutral input type arrives with extraction (spec
+section 8 phase 2).
+
+**Handoff to D-β/D-γ:**
+- the strategy seam is live but empty: `RenderContext.fragments` reaches
+  every fragment slot; `declared_capacity()` is ready for the bake triple
+  check; preset `strategies` bindings are recorded data consumed by
+  nothing;
+- codec authority in D-2 is still the Format object (`fmt.input_codec`);
+  the preset bindings are validated-equal by test — D-3/D-5 flip authority
+  to the preset when BAML becomes `preset json + baml codec bindings`
+  (note: BAML already inherits the json preset's assistant delegation;
+  only its system section and input codec remain class-owned);
+- **preset serde (D-5) must carry `adapter_ir_version` + the
+  closed-vocabulary versions block from its FIRST dump/load shape (D-024),
+  and origin-tagged code entries carry `language` (D-025)** — no
+  versionless shape may ever exist (also noted on the `Preset` docstring);
+- the derived 7-key summary view (`literal_table()`) derives from the
+  parsed template — `ParsedTemplate` keeps both `raw` and nodes, so
+  derivation needs no re-parse; xfail #4 already pins
+  `completed_marker == "[[ ## completed ## ]]"`;
+- `render.py`'s skeleton vs the walker: when D-4 makes strategies
+  contribute fragments, route the engine path through
+  `render_template_messages` (or thread `fragments` into the delegators) —
+  the walker parity tests are the safety net for that cutover.
 
 **Non-goals:** lowering substrate (Epic F); lm15 types (Epic E); TwoStep
 expansion; template *optimization* (substrate here, optimizer later);

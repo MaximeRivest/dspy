@@ -97,16 +97,33 @@ A template is a list of messages. Each message is `{role, content}` or a
 directive. Content strings may use:
 
 - **Value slots:** `{field_name}` (rendered through the field's bound input
-  codec), `{instruction}` (3a).
+  codec), `{instruction}` (3a). `{instruction}` takes an optional
+  `style=` from a closed set (`raw` default; `indented` is the historical
+  dedent-then-eight-space objective block) — presentation transforms on
+  the instruction are declared styles, never renderer magic.
 - **Aggregate slots:** `{inputs(style=…)}`, `{outputs(style=…)}`,
-  `{demos(style=…)}`, `{history(style=…)}` — `style` names a codec.
-- **Loop blocks:** `{% for f in inputs|outputs [separator='…'] %} … {% endfor %}`
-  with the closed `f.*` vocabulary: `i/index, name, type, desc, desc_suffix,
-  value, placeholder, typed_placeholder, marker, chat_type_hint`.
+  `{demos(style=…)}`, `{history(style=…)}` — `style` names an entry in
+  that aggregate's closed style vocabulary (codec-aligned names; e.g.
+  `outputs` styles include `json_object`, which renders typed placeholders
+  in schema position and the call's values in assistant position).
+- **Loop blocks:** `{% for f in inputs|outputs [separator='…'] [strip] %} …
+  {% endfor %}` with the closed `f.*` vocabulary: `i/index, name, type,
+  desc, desc_suffix, value, placeholder, typed_placeholder, marker,
+  chat_type_hint`. The bare `strip` flag applies `str.strip()` to the
+  joined result — the historical join-then-strip section shape, carried as
+  declared data (D-2 proved byte parity is unreachable without it).
+- **Value-presence semantics (normative, corpus-pinned):** in valued
+  positions, `inputs` loops iterate only fields present in the values
+  dict (the historical skip of absent inputs), while `outputs` loops
+  iterate every visible field — assistant positions render absent values
+  through the missing-field message, user positions render schema-side
+  (the output-requirements enumeration names every field). Schema
+  positions iterate everything and refuse `{f.value}`.
 - **Fragment slots (positional):** `{fragments('system')}` and
   `{fragments('user')}` — placed once per preset; a textual strategy's
-  fragment names the slot it targets. Empty slots render as nothing, so a
-  preset pays zero bytes when no textual strategy fires (this is what
+  fragment names the slot it targets. Empty slots render as nothing — a
+  slot alone on its line removes the whole line, including its newline —
+  so a preset pays zero bytes when no textual strategy fires (this is what
   keeps byte-parity with the historical adapters satisfiable).
 - **Escapes:** `{{`/`}}` literal braces; `{{{f.name}}}` literal placeholder.
 

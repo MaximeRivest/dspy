@@ -102,39 +102,46 @@ same slot position. Empty patches. Same prediction shape back.
 
 ## The preset `chat` template (one artifact, all three renders)
 
+This is the artifact as shipped in `dspy/adapters/_engine/presets.py` (D-2,
+byte-proven against the golden corpus). Three details the first hand-written
+draft got wrong, now normative in the spec: the section loops carry the
+`strip` flag (the historical join-then-strip shape), the objective line uses
+`{instruction(style='indented')}` on one line after `objective is: ` (the
+trailing space and the 8-space indent both come out exactly), and
+`{fragments('system')}` sits directly after the completed marker with no
+blank line (its empty render removes the whole line).
+
 ```python
 CHAT = Preset(
     name="chat",
     template=[
         {"role": "system", "content": """\
 Your input fields are:
-{% for f in inputs %}
+{% for f in inputs strip %}
 {f.i}. `{f.name}` ({f.type}):{f.desc_suffix}
 {% endfor %}
 Your output fields are:
-{% for f in outputs %}
+{% for f in outputs strip %}
 {f.i}. `{f.name}` ({f.type}):{f.desc_suffix}
 {% endfor %}
 All interactions will be structured in the following way, with the appropriate values filled in.
 
-{% for f in inputs separator='\\n\\n' %}
+{% for f in inputs separator='\\n\\n' strip %}
 [[ ## {f.name} ## ]]
 {{{f.name}}}
 {% endfor %}
 
-{% for f in outputs separator='\\n\\n' %}
+{% for f in outputs separator='\\n\\n' strip %}
 [[ ## {f.name} ## ]]
 {f.typed_placeholder}
 {% endfor %}
 
 [[ ## completed ## ]]
-
 {fragments('system')}
-In adhering to this structure, your objective is:
-        {instruction}"""},
+In adhering to this structure, your objective is: {instruction(style='indented')}"""},
         {"role": "demos",
-         "user": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}",
-         "assistant": "{% for f in outputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n[[ ## completed ## ]]"},
+         "user": "{% for f in inputs separator='\\n\\n' %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}",
+         "assistant": "{% for f in outputs separator='\\n\\n' strip %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}\n\n[[ ## completed ## ]]\n"},
         {"role": "history"},
         {"role": "user", "content": """\
 {% for f in inputs separator='\\n\\n' %}
