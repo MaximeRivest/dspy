@@ -12,6 +12,19 @@
 5. Cutover PR 1b from `epic-C-semantic-roles.md`: the `@role` string shorthand (pre-tokenization hazards documented there §2a) + public `dspy.roles` export. This is the epic's one sanctioned public-surface change; flag it in every report.
 6. **Oracle:** regenerate server examples 01–04's manifests (`maxime@192.168.2.24:~/docmaker/examples-build/`) from the real exporter; `explain` renders them unchanged; the roundtrip check (same rendered prompts, same parses, reconstructed from the manifest alone) passes. Update the spec's stale "absent on this branch" section when done.
 
+**Pre-written acceptance tests.** `tests/adapters/test_end_to_end.py` carries
+five strict-xfail tests (`test_epic_d_*`) encoding this epic's surface; they
+flip to hard failures the moment the surface exists, forcing the xfail
+markers off. Where the epic left a call shape undecided, the tests propose
+one — treat these as proposals to ratify or revise in D-1/D-2:
+- `adapter.literal_table() -> dict` (keys ⊆ the fixed vocabulary;
+  `output_structure` values per spec).
+- `adapter.dump_entry() -> dict` / `dspy.adapters.load_entry(dict) -> Adapter`
+  for the component-4 serialize→load roundtrip.
+- `ChatAdapter(strategies={"reasoning": "textual_field"})` for the per-role
+  binding surface; `dspy.Signature("q -> a: str @citations")` and
+  `dspy.roles` for the D-5 public surface.
+
 **Suggested PR stack** (revise freely):
 - D-1: literal-table/format-identity export + vocabulary-enforcement test (corpus untouched — export only reads).
 - D-2: component-4 entry serializer (plan refs + config) + loader with loud refusal; roundtrip tests.
