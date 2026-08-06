@@ -248,7 +248,12 @@ Canonical JSON; tuples/ordering preserved; serde is exact (absent ≠ null).
 `"auto"` strategies resolve against LM capabilities at bake and the
 resolution is recorded into `config` (declare-don't-discover). Loading a
 preset resolves every `CodecRef`/`StrategyRef` against the pools; a dangling
-reference is a link error naming the reference (ADP-005). Built-in presets:
+reference is a link error naming the reference (ADP-005). A loaded entry's
+strategy bindings govern the loaded adapter exactly as constructor bindings
+govern a constructed one — source and loaded plan identically under the
+same LM — and load-time binding validation admits exactly the set
+construction admits (a declared-but-unimplemented name refuses at load
+with the construction-time teaching error). Built-in presets:
 `chat`, `json`, `xml` — each defined AS a template in this language,
 byte-reproducing the historical class adapters (the corpus proves it).
 `full_text` requires exactly one plain output field. BAML is **not** a
@@ -277,7 +282,12 @@ unimplementable and vocabulary extension is silent drift.
 - **Strategies (per role, initial):** reasoning `native_channel |
   textual_field | prefill`; tools `native_fc | textual_json | xml_dispatch`;
   citations `native | span_markers | json_quotes`; media `native_parts |
-  url_reference`; history `directive_turns | inline`.
+  url_reference`; history `directive_turns | inline`. Double-key resolution
+  (role first, annotation fallback) is containment-bounded: a builtin role
+  entry answers only for the annotation that natively carries the role, so
+  resolution is identical to the annotation-keyed path wherever that path
+  answered — the role key only adds resolution where the annotation path
+  had none.
 - **Codecs (initial):** `text_pythonish` (the historical implicit pair),
   `pydantic_json` (indented model dumps), `baml` (indented-pydantic value
   spelling + the simplified schema-prose schema spelling — ``Output field
