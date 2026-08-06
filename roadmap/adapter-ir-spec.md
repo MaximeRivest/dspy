@@ -231,3 +231,36 @@ extract to a standalone library — rendering/parsing over any backend
 the first dspy-free consumer and the utility proof; this document graduates
 to the contract repo. dspy keeps a thin compat layer; the engine (Epic F)
 depends on the library, not the reverse.
+
+## 9. Extension & shipping (customization contract)
+
+Third parties extend the system at the pools; what ships depends on what
+the extension *is*:
+
+- **Templates/presets are pure data — always baked, never trusted-code.**
+  The constrained language means a custom template serializes into the
+  artifact as JSON and loads with no exec and no flags. Programs may carry
+  prompt shapes that do not exist in the host implementation.
+- **Codecs, strategies, and authored parsers are code — three-origin rule**
+  (mirrors ProgramIR §e0-class / tool bodies):
+  `builtin` (named ref, resolved internally) · `packaged` (import path +
+  dist/version; the program's PEP 723 env manifest provides it; trust flows
+  from the baked lockfile; entry-point registration, pytest-plugin style) ·
+  `authored` (source baked into the artifact, exec'd in an isolated
+  namespace at load, identity-verified, `authored_by` + provenance —
+  ADP-011).
+- **Registration is the API and carries an admission gate**:
+  `register_codec/strategy/preset(...)` (public with Epic D). Codec
+  registration runs the schema-generated round-trip probe battery
+  (ADP-003) — a codec failing `parse(render(x)) == x` on adversarial
+  probes is refused at registration, before it touches any program.
+  Strategies self-declare capability requirements and which shapes they
+  serve; presets validate their templates eagerly (§3 discoverability).
+- **In the ProgramIR**: component-4 pools hold origin-tagged entries;
+  bindings reference by name; **load is the link step** — builtin resolves
+  internally, packaged must import at the declared version (mismatch
+  refuses loudly naming the entry), authored execs baked source and
+  verifies identity; dangling refs are link errors (ADP-005). An
+  optimizer-discovered template or codec ships identically with
+  `authored_by: optimizer` — a search result becomes a distributable
+  artifact through the same door.
