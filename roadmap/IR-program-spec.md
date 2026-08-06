@@ -579,17 +579,23 @@ the sacred line (§d-sacred):
   the two directions as distinct named things for the same reason.
 
   ```mermaid
-  flowchart LR
+  flowchart TB
     subgraph CONTRACT["typed LM contract (lm15 parts / deltas)"]
-      direction TB
-      P1["Thinking"] ; P2["ToolCall / ToolResult"] ; P3["Citation"] ; P4["Image·Audio·Video·Doc"] ; P5["Text"] ; P6["Refusal (anticipated)"]
+      direction LR
+      P1["Thinking"] ; P2["ToolCall /<br/>ToolResult"] ; P3["Citation"]
+      P4["Image · Audio ·<br/>Video · Doc"] ; P5["Text"] ; P6["Refusal<br/>(anticipated)"]
+      P1 ~~~ P2 ~~~ P3
+      P4 ~~~ P5 ~~~ P6
     end
     subgraph ROLES["role vocabulary (component 2)"]
-      direction TB
-      R1["reasoning"] ; R2["tools / tool_calls"] ; R3["citations"] ; R4["media"] ; R5["plain"]
+      direction LR
+      R1["reasoning"] ; R2["tools /<br/>tool_calls"] ; R3["citations"]
+      R4["media"] ; R5["plain"]
+      R1 ~~~ R2 ~~~ R3
+      R4 ~~~ R5
     end
     P1 --> R1 ; P2 --> R2 ; P3 --> R3 ; P4 --> R4 ; P5 --> R5
-    ROLES -->|"per role, a bound STRATEGY<br/>(native channel or textual polyfill)"| STRAT["component 4<br/>strategies block"]
+    ROLES -->|"per role, a bound STRATEGY<br/>(native channel or textual polyfill)"| STRAT["component 4 · strategies block"]
     classDef c fill:#0d47a1,stroke:#90caf9,color:#fff;
     classDef r fill:#4a148c,stroke:#ce93d8,color:#fff;
     classDef s fill:#1b5e20,stroke:#a5d6a7,color:#fff;
