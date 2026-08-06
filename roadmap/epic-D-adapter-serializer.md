@@ -1,38 +1,100 @@
-# Epic D — the adapter serializer (component 4 as data)
+# Epic D — presets, templates, and the adapter as data
 
-**Status:** DRAFT — scoped by the coordinator; the implementing engineer owns this doc and should revise it before starting (per `04-process.md`).
+**Status:** DRAFT v2 (2026-08-06) — rescoped after the template ratification
+(D-018/D-019 in `05-decisions.md`); the implementing engineer owns this doc
+and revises before starting (per `04-process.md`).
 
-**Goal.** The engine's in-RAM half is complete (plans, formats, strategies, codecs, roles); the as-data half does not exist — zero serialization surface in `_engine/` (no `literal_table`, no `format_identity`, no dump/load). Server examples 01–04 hand-authored their component-4 manifests, which is where the literal-table key drift came from. Epic D makes the adapter fully self-describing as data, exported by dspy itself.
+**Ratified design.** An adapter is a **preset**: a named data entry
+`{template, parser binding, codec bindings, strategy bindings, config}`. The
+template — a message list with interpolation slots, constrained loop blocks,
+and directive roles — is the literal table's full form; the old 7-key
+vocabulary survives only as a derived summary view. The class adapters become
+thin constructors over presets `chat`/`json`/`xml`; **BAML becomes a real
+codec** (indented-pydantic input + schema-prose schema) bindable to any
+preset, with `BAMLAdapter` as a compat shim; the `format_*` method zoo
+(`format_system_message`, `format_field_description`,
+`format_field_structure`, …) is a legacy override surface headed for the
+kill list (deprecate here — there is finally a replacement to point at;
+delete in Epic H).
+
+**Reference implementation to upstream:**
+`/home/maxime/Projects/dspy-community-org/dspy_template_adapter/` (~1.6k
+lines: slot/loop/directive template rendering, parse modes, **exact
+ChatAdapter message parity proven declaratively** (its README carries the
+parity template), image content-block splitting, finetune export, optimizer
+compat). Upstream its semantics, not necessarily its code verbatim — it
+predates strategies/roles and must become strategy-aware (gap #4 below).
 
 **Definition of done (mechanical).**
-1. Every format exports `format_identity` + a `literal_table` in the fixed key vocabulary (`IR-program-spec.md` §Adapter-notes: `input_field_render, output_field_render, field_separator, output_structure, completed_marker, output_requirement, parse_pattern`; absent key = no such construct, never a synonym). The vocabulary becomes an enforced contract (a test walks all formats and rejects unknown keys) — key drift dies permanently.
-2. Adapter entries serialize to a component-4 JSON block: plan operator refs (transforms, parser identities), format identity + literal table, `strategies` per-role block, codec bindings, resolved `config` (capability-checked decisions, e.g. `response_format_routing`).
-3. A loader reconstructs a working adapter from that block alone — zero `dspy.settings` reads; dangling strategy/codec/format references are link errors refused loudly naming the reference (L5).
-4. **Binding surfaces land here** (they're the serializer's shapes anyway): per-role `strategies={...}` on adapters; named codec pool with registration + per-field overrides; double-key registry resolution (role first, annotation fallback, `strategy_trace` records which key resolved — roles become load-bearing, byte-identical by construction).
-5. Cutover PR 1b from `epic-C-semantic-roles.md`: the `@role` string shorthand (pre-tokenization hazards documented there §2a) + public `dspy.roles` export. This is the epic's one sanctioned public-surface change; flag it in every report.
-6. **Oracle:** regenerate server examples 01–04's manifests (`maxime@192.168.2.24:~/docmaker/examples-build/`) from the real exporter; `explain` renders them unchanged; the roundtrip check (same rendered prompts, same parses, reconstructed from the manifest alone) passes. Update the spec's stale "absent on this branch" section when done.
+1. **Template engine in `_engine/`**: slots (`{instruction}`, `{field}`,
+   `{inputs(style=…)}`, `{outputs(style=…)}`, `{demos(style=…)}`,
+   `{history(style=…)}`), loop blocks (`{% for f in inputs/outputs %}` with
+   the `f.*` vocabulary), directive roles (`demos`, `history`), brace
+   escaping. Constrained language — no general Jinja; every construct
+   analyzable, diffable, serializable.
+2. **Presets**: `chat`, `json`, `xml` defined AS templates + parser + codec
+   bindings, reproducing today's adapters **byte-identically** (golden
+   corpus is the gate). Class adapters become constructors resolving to
+   presets; `format_*` methods delegate to the template path and are marked
+   legacy.
+3. **BAML-as-codec**: schema-prose + indented-pydantic becomes a named codec
+   entry; preset `json` + that binding == today's BAMLAdapter bytes;
+   `BAMLAdapter` class = compat shim.
+4. **Strategy awareness** (what the reference lacks): `{outputs()}` and loop
+   blocks render only textually-served fields; natively-served roles
+   contribute no block. Per-role `strategies={...}` binding surface +
+   double-key registry (role first, annotation fallback, trace records
+   which key resolved) land here — roles become load-bearing,
+   byte-identical by construction.
+5. **Serialization**: a preset dumps to a component-4 JSON entry (template
+   as data + bindings + resolved config) and loads back with zero
+   `dspy.settings` reads; dangling strategy/codec/preset references are
+   link errors refused loudly naming the reference (L5). The 7-key summary
+   view derives from the template for explain/cross-language readers.
+6. **`@role` + public surface**: the `@role` string shorthand
+   (pre-tokenization hazards documented in `epic-C-semantic-roles.md` §2a)
+   + public `dspy.roles` export + the upstreamed template authoring surface
+   (`TemplateAdapter(messages=[...], parse_mode=...)`-style; exact name/API
+   for the engineer to ratify). These are the epic's sanctioned
+   public-surface changes; flag each in every report.
+7. **Oracle**: golden corpus byte-identical for presets replacing the class
+   adapters; the reference repo's README examples run against the
+   upstreamed surface; server examples 01–04 manifests
+   (`maxime@192.168.2.24:~/docmaker/examples-build/`) regenerate from the
+   preset exporter with `explain` rendering unchanged; the E2E xfails flip
+   green. Update the spec's stale "absent on this branch" section when done.
 
-**Pre-written acceptance tests.** `tests/adapters/test_end_to_end.py` carries
-five strict-xfail tests (`test_epic_d_*`) encoding this epic's surface; they
-flip to hard failures the moment the surface exists, forcing the xfail
-markers off. Where the epic left a call shape undecided, the tests propose
-one — treat these as proposals to ratify or revise in D-1/D-2:
-- `adapter.literal_table() -> dict` (keys ⊆ the fixed vocabulary;
-  `output_structure` values per spec).
-- `adapter.dump_entry() -> dict` / `dspy.adapters.load_entry(dict) -> Adapter`
-  for the component-4 serialize→load roundtrip.
-- `ChatAdapter(strategies={"reasoning": "textual_field"})` for the per-role
-  binding surface; `dspy.Signature("q -> a: str @citations")` and
-  `dspy.roles` for the D-5 public surface.
+**Pre-written acceptance tests.** `tests/adapters/test_end_to_end.py`
+carries five strict-xfail tests (`test_epic_d_*`); they flip to hard
+failures the moment the surface exists. Post-rescope status:
+1. `dspy.roles` public import — unchanged.
+2. `dspy.Signature("q -> a: str @citations")` — unchanged.
+3. `ChatAdapter(strategies={"reasoning": "textual_field"})` — unchanged.
+4. `adapter.literal_table()` — **REVISE in D-1**: preset export exposes the
+   template; `literal_table()` becomes the derived summary view (keys ⊆ the
+   fixed vocabulary still holds).
+5. `dump_entry()`/`load_entry()` roundtrip rendering identical messages —
+   unchanged in spirit; the entry now carries the template.
+Add in D-2/D-3: parity tests — preset `chat` renders byte-identical messages
+to `ChatAdapter` for a representative signature+demos; `BAMLAdapter` ≡
+preset `json` + baml codec.
 
 **Suggested PR stack** (revise freely):
-- D-1: literal-table/format-identity export + vocabulary-enforcement test (corpus untouched — export only reads).
-- D-2: component-4 entry serializer (plan refs + config) + loader with loud refusal; roundtrip tests.
-- D-3: double-key registry + per-role `strategies` binding surface (byte-identical: role key resolves to the same strategy the annotation key did; corpus is the gate).
-- D-4: codec pool + registration + per-field bindings.
-- D-5: `@role` parser + `dspy.roles` export (public-surface PR, eager validation, zero change to signatures not using it).
-- D-6: examples 01–04 regeneration on the server + spec refresh (docs/ corpus-style commit).
+- D-1: template engine, pure and unused (corpus untouched) + xfail #4 revision.
+- D-2: presets defined as templates; class adapters delegate (corpus gate at
+  zero diff); parity tests.
+- D-3: BAML-as-codec + compat shim.
+- D-4: strategy awareness + `strategies={}` + double-key registry.
+- D-5: serialization dump/load + derived summary view + loud-refusal loader.
+- D-6: `@role` parser + `dspy.roles` export (public-surface PR).
+- D-7: template authoring surface upstream + docs pass + server examples
+  regeneration (docs/corpus-style commits).
 
-**Non-goals:** lowering substrate (Epic F); lm15 types (Epic E); TwoStep expansion; deprecation signaling on the legacy hook (needs the public seam to point at — decide in D-3 whether it's ready); any optimizer.
+**Non-goals:** lowering substrate (Epic F); lm15 types (Epic E); TwoStep
+expansion; template *optimization* (substrate here, optimizer later);
+deleting `format_*` outright (Epic H); `dspy-session` projections from the
+reference README (`outer_history`, `node_memory`, …) — session territory,
+not adapter territory.
 
-**Gates:** L8 corpus discipline throughout (D-1..D-4 byte-identical; D-5 additive); full `dspy-ci` matrix; stacked commits; no push/PR without Maxime's word.
+**Gates:** L8 corpus discipline throughout; full `dspy-ci` matrix (stage new
+files first); stacked commits; no push/PR without Maxime's word.

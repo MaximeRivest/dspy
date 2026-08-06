@@ -35,3 +35,7 @@ Dated, one entry each, with the why. This is the don't-relitigate file: reopenin
 - **D-016 (2026-08-05)** — **Campaign order: D (serializer) → E (lm15) → F (engine) → G (runtime) → H (deletion).** *Why:* D has zero LM-layer dependency; the veneer deserves its own design pass; the engine needs D's serialization and E's contract.
 
 - **D-017 (2026-08-05)** — **Strategy registry and codec seam stay engine-private until Epic D.** *Why:* public shapes get designed deliberately with the serializer, not leaked incrementally.
+
+- **D-018 (2026-08-06)** — **The literal table's full form is a template; an adapter is a preset** `{template, parser, codec bindings, strategy bindings, config}`. Proof: `dspy-template-adapter` reproduces exact ChatAdapter message parity declaratively; its slots map 1:1 onto the IR (`{instruction}`=3a, `{demos()}`=3b, directives=plan slots, `{inputs(style)}`=codecs). Constrained template language, not general Jinja. The 7-key vocabulary survives as a derived summary view. Class adapters = thin constructors over presets; the `format_*` method zoo = legacy override surface, deprecate in D, delete in H. Templates must be strategy-aware (natively-served roles render no block).
+
+- **D-019 (2026-08-06)** — **BAML is a codec, not an adapter.** Preset `json` + {indented-pydantic input, schema-prose schema} codec bindings ≡ today's BAMLAdapter bytes; the class becomes a compat shim. *Why:* Epic B already proved BAMLFormat = JSONFormat + input-codec; this completes the reclassification user-visibly.
