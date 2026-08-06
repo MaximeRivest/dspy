@@ -314,11 +314,15 @@ def test_epic_d_strategies_binding_surface():
     assert result.answer == "x"
 
 
-@pytest.mark.xfail(strict=True, reason="epic D: literal_table export in the fixed vocabulary (D-1)")
+@pytest.mark.xfail(strict=True, reason="epic D: literal_table as the summary view derived from the preset template (D-5)")
 def test_epic_d_literal_table_export():
+    # Post-rescope (D-018): the preset template is the literal table's full
+    # form; literal_table() survives as the DERIVED 7-key summary view —
+    # never authored, always computed from the template.
     table = dspy.ChatAdapter().literal_table()
     assert set(table) <= LITERAL_TABLE_KEYS
     assert table["output_structure"] == "markers"
+    assert table["completed_marker"] == "[[ ## completed ## ]]"
 
 
 @pytest.mark.xfail(strict=True, reason="epic D: adapter serialize->load roundtrip (D-2)")
