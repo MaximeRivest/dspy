@@ -1,8 +1,9 @@
 # Epic D — presets, templates, and the adapter as data
 
-**Status:** v3 (2026-08-06) — D-α (PRs D-1/D-2) SHIPPED; this doc now
-records what was actually built plus the D-β/D-γ handoff. Rescoped v2 after
-the template ratification (D-018/D-019 in `05-decisions.md`).
+**Status:** v4 (2026-08-06) — D-α (PRs D-1/D-2) and D-β (PRs D-3/D-4/D-5)
+SHIPPED; this doc records what was actually built plus the D-γ handoff.
+Rescoped v2 after the template ratification (D-018/D-019 in
+`05-decisions.md`).
 
 **Ratified design.** An adapter is a **preset**: a named data entry
 `{template, parser binding, codec bindings, strategy bindings, config}`. The
@@ -84,9 +85,11 @@ preset `json` + baml codec.
   revision — **SHIPPED** (see "D-α as built").
 - D-2: presets defined as templates; class adapters delegate (corpus gate at
   zero diff); parity tests — **SHIPPED** (see "D-α as built").
-- D-3: BAML-as-codec + compat shim.
-- D-4: strategy awareness + `strategies={}` + double-key registry.
-- D-5: serialization dump/load + derived summary view + loud-refusal loader.
+- D-3: BAML-as-codec + compat shim — **SHIPPED** (see "D-β as built").
+- D-4: strategy awareness + `strategies={}` + double-key registry —
+  **SHIPPED** (see "D-β as built").
+- D-5: serialization dump/load + derived summary view + loud-refusal
+  loader — **SHIPPED** (see "D-β as built").
 - D-6: `@role` parser + `dspy.roles` export (public-surface PR).
 - D-7: template authoring surface upstream + docs pass + server examples
   regeneration (docs/corpus-style commits).
@@ -170,28 +173,28 @@ neutral datatype is NOT introduced — the engine renders from dspy
 signatures, and the neutral input type arrives with extraction (spec
 section 8 phase 2).
 
-**Handoff to D-β/D-γ:**
-- the strategy seam is live but empty: `RenderContext.fragments` reaches
-  every fragment slot; `declared_capacity()` is ready for the bake triple
-  check; preset `strategies` bindings are recorded data consumed by
-  nothing;
-- codec authority in D-2 is still the Format object (`fmt.input_codec`);
-  the preset bindings are validated-equal by test — D-3/D-5 flip authority
-  to the preset when BAML becomes `preset json + baml codec bindings`
-  (note: BAML already inherits the json preset's assistant delegation;
-  only its system section and input codec remain class-owned);
-- **preset serde (D-5) must carry `adapter_ir_version` + the
-  closed-vocabulary versions block from its FIRST dump/load shape (D-024),
-  and origin-tagged code entries carry `language` (D-025)** — no
-  versionless shape may ever exist (also noted on the `Preset` docstring);
-- the derived 7-key summary view (`literal_table()`) derives from the
-  parsed template — `ParsedTemplate` keeps both `raw` and nodes, so
-  derivation needs no re-parse; xfail #4 already pins
-  `completed_marker == "[[ ## completed ## ]]"`;
-- `render.py`'s skeleton vs the walker: when D-4 makes strategies
-  contribute fragments, route the engine path through
-  `render_template_messages` (or thread `fragments` into the delegators) —
-  the walker parity tests are the safety net for that cutover.
+**Handoff to D-γ (post-D-β):**
+- version constants: import from `_engine/versions.py`
+  (`ADAPTER_IR_VERSION`, `versions_block()`, `check_version_compatible`) —
+  the exporter's manifest `versions` block (D-024) mirrors these; never
+  restate a number;
+- the entry shape is `serde.ENTRY_KEYS` in canonical order; the exporter
+  wraps `Adapter.dump_entry()` per bound adapter and `explain` can render
+  any entry through `load_entry(...).format(...)` / `literal_table()`;
+- registration APIs (spec §9) plug into the refusal sites already in
+  `_check_codec_ref` (origin-tagged entries) and the engine-private
+  `register_codec`-shaped seams (`CODECS`, `register_field_strategy`/
+  `register_role_strategy`, `PRESETS`) — admission gates (round-trip probe
+  battery) are D-γ's to build;
+- the template authoring surface should construct entries through
+  `_make_preset` (eager parse + eager capacity) and serialize through
+  `serde.build_entry` — nothing else mints entry shapes;
+- `@role` parser (epic-C §2a hazards) and `dspy.roles` export are
+  untouched; xfails #1/#2 are the acceptance tests;
+- pending Maxime ratifications from D-β: the D-019 letter refinement (BAML
+  system arrangement as template data), the `strategies=` kwarg, the
+  `{field('name')}` spelling, and the `load_entry`/`dump_entry`/
+  `literal_table` surface.
 
 ## Review fixes (D-α adversarial review, 2026-08-06)
 
@@ -245,6 +248,115 @@ section 3 edits landed before the code). What changed and why:
 
 Corpus: zero fixture changes; every parity fix proven against
 forced-legacy subclasses, never regenerated fixtures.
+
+## D-β as built (D-3/D-4/D-5, 2026-08-06)
+
+**D-3 — BAML as codec; codec authority flips.** The codec contract grew
+its third surface: `render_typed_placeholder(name, field_info)` — the
+SCHEMA spelling — with the shared text codec rendering the historical
+placeholder-plus-type-note and `{f.typed_placeholder}` routing through the
+direction's bound codec. The schema-prose machinery moved from
+`baml_adapter.py` into `_engine/codecs.py` (`render_schema_prose`; the
+adapter module re-imports under the historical names, retiring the
+`formats/baml.py` import-boundary pin), and `BAMLCodec` = indented-pydantic
+values + schema-prose placeholders, registered as `baml`. Codec AUTHORITY
+flipped **generally**: `Format.input_codec/output_codec` resolve NAMES —
+preset bindings, layered class/instance `codec_binding_overrides`, registry
+resolution — and the corpus stayed at zero drift. `BAMLFormat` is now the
+pairing declaration itself: `preset_name="json"` +
+`codec_binding_overrides={input: baml, output: baml}` +
+`system_template_message` (the schema-prose arrangement as template data in
+`presets.BAML_SYSTEM`, whose self-bracketing empty-separator loops
+reproduce the legacy `"\n".join(sections)` collapse byte-for-byte, pinned
+by empty-field-set parity tests). Its `render_system`/`render_user_content`
+method bodies are GONE; the composed legacy structure body remains only as
+the frozen parity reference. **D-019 letter refinement (needs Maxime's
+ratification):** "preset json + baml codec bindings ≡ BAMLAdapter bytes" is
+implementable only with the system ARRANGEMENT as template data — the
+sentences/markers/completed-marker placement is D-018 literal-table
+territory and cannot hide inside a shape-generic codec. Spec §4 now states
+the pairing as codec spelling + template arrangement; no `baml` preset name
+exists, and the pairing serializes as an ordinary entry named `baml`.
+
+**D-4 — roles load-bearing; strategies bound; fragments live; bake
+checks.** The double-key registry (`strategy_for(role, annotation)`,
+epic-C §6 stage 2): resolution order registered-role → registered-annotation
+→ builtin-role → builtin-annotation → legacy hook, with built-ins the SAME
+instances under both keys (byte-identical by construction) and
+`StrategyTrace.resolved_by` recording which key answered. Admission to the
+strategy loop stays annotation-gated (`native_response_types`) — widening
+admission by role is a later, deliberate act. The `strategies={role: name}`
+constructor kwarg (base + ChatAdapter + JSONAdapter; XML/BAML inherit)
+validates eagerly against `strategies/vocabulary.py` — ONE data structure:
+names, descriptions, implemented subset, native/textual classification,
+`STRATEGIES_VERSION`. Bake semantics: textual binding stands the native
+strategy down (field stays visible, traced `bound:`); explicit native
+binding the LM cannot serve refuses loudly naming role+field, strategy, LM;
+`auto` = today's bytes with per-field resolution recorded in
+`plan.metadata["strategy_resolution"]`; a tools binding must agree with
+`use_native_function_calling` (disagreement refuses at construction) until
+the kwarg deprecates. Fragments: `AdapterPatch.fragments` →
+`AdapterPlan.fragments` → a contextvar `plan_scope` entered by
+`__call__`/`acall` around the frozen `format()` surface → the preset
+delegation's `RenderContext.fragments`. **Walker-cutover depth (recorded
+decision):** fragments thread through the DELEGATORS; `render.py`'s
+structural skeleton stays (native tool-call history replay lives there and
+the walker deliberately does plain turns only); the pure walker remains the
+parity/preview surface AND became the loaded-entry render path (D-5), which
+is the cutover that mattered. The bake triple check runs on every
+engine-rendered plan via eager `Preset.capacity` (+
+`effective_capacity` for the BAML pairing): ADP-006 refuses a
+textually-served role-bearing field with no textual lane (per-field for
+media/tools) naming field+role, LM, and template; ADP-007 refuses explicit
+slots on natively-hidden fields in live AND example lanes. Builtin presets
+host every role and carry no explicit field slots — existing programs never
+trip either check. The `{field('name')}` escape spelling landed
+(`field` reserved; every reserved-collision refusal teaches it). Xfail #3
+flipped.
+
+**D-5 — serde, rulings, summary view.** Both coordinator rulings, spec §3
+first: duplicate loop options REFUSE (call-kwargs parity; last-wins is
+gone), and bare-directive defaults key on the preset's parser binding
+(json → marker user + `json_object` assistant, xml → tag pairs, full_text
+→ bare-value assistant; chat markers stay the no-preset fallback) threaded
+through walker/preview/capacity. Versions: per-vocabulary constants beside
+their data (`SEMANTIC_ROLES_VERSION` in `dspy/signatures/field.py`,
+`STRATEGIES_VERSION`, `CODECS_VERSION`, `TEMPLATE_LANGUAGE_VERSION`)
+aggregated in **`_engine/versions.py`** with `ADAPTER_IR_VERSION = 0.1.0`
+(semver-0: minors breaking) — D-γ's exporter builds on this module.
+`_engine/serde.py` owns the entry (`ENTRY_KEYS` canonical order: name,
+adapter_ir_version, versions, template, parser, codecs, strategies,
+config): exact serde (unknown keys refuse, absent ≠ null, canonical JSON,
+ordering preserved), D-024 version refusals naming both sides, ADP-005
+link errors naming refs, D-025 language validation on origin-tagged codec
+entries (then refusal until the §9 registration API ships). Zero
+`dspy.settings` reads, mechanically tested. `Adapter.dump_entry()` dumps
+the effective preset (BAML dumps under entry name `baml`; declared
+`strategies` bindings layer over the preset's); `dspy.adapters.load_entry`
+links back into `PresetAdapter` (in `dspy/adapters/serde.py`, outside the
+engine boundary) rendering through the pure walker + parsing through the
+parser binding bound to the entry's codecs (full_text implemented:
+exactly-one-output-field, refused otherwise). `literal_table()` derives
+the 7-key view from the template (symbolic per-field patterns, structure
+classification markers/tags/json_object/values, marker + requirement
+literals, parser regex) — never authored. Xfails #4 and #5 flipped; #1/#2
+remain for D-6. Round trips proven: identical entries, byte-identical
+messages across the golden payloads, identical parses, identical derived
+tables.
+
+**Public-surface changes in D-β (each needs flagging at review):** the
+`strategies=` constructor kwarg (the sanctioned addition);
+`dspy.adapters.load_entry` + `Adapter.dump_entry()`/`literal_table()`
+(demanded by acceptance test #5 — the pinned-surface test records them);
+the `{field('name')}` template spelling (language addition, spec'd).
+
+**Deliberately deferred within D-β:** per-field codec overrides
+(`per_field` in the preset codec shape) — the serde refuses non-{input,
+output} keys, so the shape can only grow deliberately; strategy-binding
+resolution recorded into preset `config` at export (needs an LM-bound
+export step — D-γ); `PresetAdapter` runs the legacy postprocess path (its
+format/parse overrides are its contract; engine postprocess needs
+registration, an Epic-H-adjacent decision).
 
 **Non-goals:** lowering substrate (Epic F); lm15 types (Epic E); TwoStep
 expansion; template *optimization* (substrate here, optimizer later);
