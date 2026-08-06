@@ -8,8 +8,10 @@ and the codec bindings — plus the strategy-fragment lists that positional
 
 Value-presence semantics, byte-pinned by the golden corpus:
 
-- ``schema`` mode (system messages): loops iterate every field; ``f.value``
-  needs call values and refuses without them.
+- ``schema`` mode (system messages): loops iterate every field, and the
+  message renders without call values — ``f.value`` refuses in this mode
+  regardless of what the context carries, so every surface (the engine
+  delegation path and the preview walker alike) shows the same bytes.
 - ``user_values`` / ``assistant_values`` modes (user and assistant turns):
   ``inputs`` loops iterate only fields present in the values dict — absent
   fields contribute no block (the historical ``if k in inputs`` skip) —
@@ -201,17 +203,17 @@ def _loop_attr(attr: str, ctx: RenderContext) -> str:
 
 
 def _loop_value(ctx: RenderContext, name: str, info, collection: str) -> str:
-    codec = _codec_for(ctx, collection)
-    if ctx.mode == "assistant_values" and collection == "outputs":
-        values = ctx.values or {}
-        return codec.render_value(values.get(name, ctx.missing_field_message), info)
-    if ctx.values is None:
+    if ctx.mode == "schema":
         raise TemplateRenderError(
-            "{f.value} needs call values, and this message renders without them — "
+            "{f.value} needs call values, and schema positions render without them — "
             "use {f.placeholder} or {f.typed_placeholder} in schema positions"
         )
-    if name in ctx.values:
-        return codec.render_value(ctx.values[name], info)
+    codec = _codec_for(ctx, collection)
+    values = ctx.values or {}
+    if ctx.mode == "assistant_values" and collection == "outputs":
+        return codec.render_value(values.get(name, ctx.missing_field_message), info)
+    if name in values:
+        return codec.render_value(values[name], info)
     return ""
 
 

@@ -28,6 +28,7 @@ from dspy.adapters._engine.template import (
     DemosDirective,
     HistoryDirective,
     declared_capacity,
+    preview,
     render_template_messages,
 )
 from dspy.adapters.chat_adapter import ChatAdapter
@@ -173,6 +174,29 @@ def test_template_walker_matches_legacy_adapter_format(fmt_name, payload_name):
         output_codec=fmt.output_codec,
     )
     assert walked == legacy.format(payload["signature"], list(payload["demos"]), dict(payload["inputs"]))
+
+
+ENGINE_ADAPTERS = {"chat": ChatAdapter(), "json": JSONAdapter(), "xml": XMLAdapter()}
+
+
+@pytest.mark.parametrize("fmt_name", sorted(FORMATS))
+@pytest.mark.parametrize("payload_name", sorted(PAYLOADS))
+def test_preview_matches_the_engine_adapter_format(fmt_name, payload_name):
+    """preview() is contract surface: its message list must be byte-equal to
+    what the engine-backed adapter sends for the same preset and inputs."""
+    fmt = FORMATS[fmt_name]
+    payload = PAYLOADS[payload_name]()
+
+    previewed = preview(
+        get_preset(fmt_name).template,
+        payload["signature"],
+        demos=payload["demos"],
+        inputs=dict(payload["inputs"]),
+        input_codec=fmt.input_codec,
+        output_codec=fmt.output_codec,
+    )
+    engine = ENGINE_ADAPTERS[fmt_name].format(payload["signature"], list(payload["demos"]), dict(payload["inputs"]))
+    assert previewed == engine
 
 
 # ---------------------------------------------------------------------------

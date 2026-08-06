@@ -76,8 +76,10 @@ def render_template_messages(
         if isinstance(message, ContentMessage):
             if message.role == "system":
                 # Schema position renders against the full signature (the
-                # history field is described even though its turns expand).
-                content = render_nodes(message.nodes, ctx("schema", values=inputs, sig=signature))
+                # history field is described even though its turns expand)
+                # and WITHOUT call values — the same context the engine
+                # delegation path builds, so preview bytes are engine bytes.
+                content = render_nodes(message.nodes, ctx("schema", sig=signature))
                 rendered.append({"role": "system", "content": content})
             elif message.role == "user":
                 content = render_user_content(message.nodes, ctx("user_values", values=inputs))

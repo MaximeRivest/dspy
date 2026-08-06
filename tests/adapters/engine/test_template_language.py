@@ -469,3 +469,42 @@ def test_preview_accepts_parsed_templates():
     assert isinstance(parsed, ParsedTemplate)
     messages = preview(parsed, QA, inputs={"question": "hi"})
     assert messages == [{"role": "user", "content": "hi"}]
+
+
+# ---------------------------------------------------------------------------
+# Preview == engine: schema positions render without call values
+# ---------------------------------------------------------------------------
+
+
+def test_preview_refuses_loop_value_in_schema_position_like_the_engine():
+    """{f.value} in a system message refuses in preview exactly as the
+    engine delegation context (schema mode, values=None) does."""
+    hostile = [
+        {"role": "system", "content": "Context:\n{% for f in inputs %}{f.value}{% endfor %}"},
+        {"role": "user", "content": "{question}"},
+    ]
+    with pytest.raises(TemplateRenderError, match="schema positions render without"):
+        preview(hostile, QA, inputs={"question": "CALL_VALUE"})
+    parsed = parse_message_template(hostile)
+    with pytest.raises(TemplateRenderError, match="schema positions render without"):
+        render_nodes(parsed.messages[0].nodes, ctx())
+
+
+def test_loop_value_refuses_in_schema_mode_even_with_values_present():
+    with pytest.raises(TemplateRenderError, match="schema positions render without"):
+        render("{% for f in inputs %}{f.value}{% endfor %}", values={"question": "leak"})
+
+
+def test_preview_renders_system_value_slots_and_aggregates_without_call_values():
+    """Bare value slots and aggregates in schema position render the same
+    bytes on the preview walker and the engine schema context."""
+    template = [
+        {"role": "system", "content": "Context: {question}\n{inputs()}"},
+        {"role": "user", "content": "{question}"},
+    ]
+    parsed = parse_message_template(template)
+    engine_side = render_nodes(parsed.messages[0].nodes, ctx())
+    previewed = preview(parsed, QA, inputs={"question": "SECRET-INPUT"})
+    assert previewed[0]["content"] == engine_side
+    assert "SECRET-INPUT" not in previewed[0]["content"]
+    assert previewed[1]["content"] == "SECRET-INPUT"
