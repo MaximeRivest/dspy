@@ -80,15 +80,17 @@ It checks `lm.supported_params` and falls through tiers: OpenAI-style `response_
 
 For reasoning models that produce free-form text but format unreliably. Stage one: the main LM gets the task as plain prose, no field markers, and produces whatever shape it wants. Stage two: a smaller extractor LM with ChatAdapter reads the output and pulls out the declared fields. Useful for o1, o3-mini, and similar models where formatting reliability is the bottleneck. It is openly a two-call design — you configure the extraction model explicitly.
 
-### 10. How a value is written is a codec, not an adapter
+### 10. How a value is written is a codec, not an adapter — and BAML is a codec
 
-When a field holds an object — a pydantic model, a list, a dict — someone decides how to *write it into* the prompt and what syntax to ask for back. That decision is a **codec**: a render/parse pair for values, separate from the adapter's overall prompt shape. The clearest illustration is BAMLAdapter: it is the JSON prompt shape plus a different *input* codec — pydantic models render as indented, readable JSON instead of compact dumps — and a schema presentation the model finds easier to follow for deeply nested types. Same exchange structure, different value encoding.
+When a field holds an object — a pydantic model, a list, a dict — someone decides how to *write it into* the prompt and what syntax to ask for back. That decision is a **codec**: a render/parse pair for values, separate from the adapter's overall prompt shape.
+
+BAML is the ratified example: it is **not a peer prompt shape but a codec** — indented, readable pydantic rendering on the input side plus a compact schema presentation the model follows more easily for deeply nested types. The `BAMLAdapter` class is simply today's packaging of "the JSON prompt shape with the BAML codec bound"; as the preset system lands (see *Arriving* below) it becomes a compatibility shim over exactly that pairing. Same exchange structure, different value encoding.
 
 Today the codec pairing is fixed per adapter. The named concept matters anyway, because it tells you where to look when a rendered value surprises you: the adapter decides the message structure; the codec decides how your object appears inside it.
 
 ### 11. Field marker format is hard-coded
 
-`[[ ## name ## ]]` is the pattern, chosen for low collision and clean regex. The brackets-plus-hashes shape is unlikely to appear in real text or code, and the symmetry makes the parser simple. There's no config knob to change it. JSONAdapter and XMLAdapter use their own formats; if you want a different chat-style format, subclass `Adapter`.
+`[[ ## name ## ]]` is the pattern, chosen for low collision and clean regex. The brackets-plus-hashes shape is unlikely to appear in real text or code, and the symmetry makes the parser simple. There's no config knob to change it. JSONAdapter and XMLAdapter use their own formats; if you want a different prompt shape entirely, that's what templates are for (see *Arriving* below).
 
 ### 12. Predictions carry exactly what you declared
 
@@ -119,35 +121,26 @@ Outputs structured JSON. Formatting is similar to ChatAdapter on the input side,
 Two LM calls per inference. Use it when the main LM is a reasoning model that's bad at formatting — the extractor is usually a cheap general-purpose LM with ChatAdapter. Doesn't support finetuning yet.
 
 **`BAMLAdapter`** (import from `dspy.adapters.baml_adapter`)  
-The JSON prompt shape with a friendlier value encoding: pydantic inputs render as indented JSON, and the output schema is presented in BAML-style commented-Pydantic form. Worth trying when JSONAdapter's raw JSON schema is too verbose for complex nested types. (See decision 10 — this is a codec difference, not a new exchange structure.)
+The JSON prompt shape with the BAML *codec* bound: pydantic inputs render as indented JSON, and the output schema is presented in BAML-style commented-Pydantic form. Worth trying when JSONAdapter's raw JSON schema is too verbose for complex nested types. Per decision 10, BAML is a codec, not a prompt shape — this class is the current packaging of that pairing and will become a compatibility shim once codecs are independently bindable.
 
 **`dspy.Adapter`**  
-The base class. Subclass it when you want a new prompt shape — implement `format()`, `parse()`, and (optionally) `format_finetune_data()`.
+The base class every adapter extends. Subclassing it remains possible (implement `format()`, `parse()`, and optionally `format_finetune_data()`), but for new prompt shapes prefer waiting for templates — a subclass hand-maintains what a template declares as data (see *Customizing the prompt* above).
 
-### Adapter lifecycle
-
-You'll only override these methods when writing a custom adapter, but reading them helps when debugging a malformed prompt or a parse failure.
+### The call path, and customizing the prompt
 
 **`Adapter.__call__(lm, lm_kwargs, signature, demos, inputs)` / `Adapter.acall(...)`**  
 Public entry. The flow inside is plan → render → LM call → parse (decision 3). `lm_kwargs` (temperature, max_tokens, response_format, etc.) is where planning records requests for structured output or function calling.
 
 **`Adapter.format(signature, demos, inputs)` → `list[dict]`**  
-Turns the signature, demos, and inputs into chat messages. The pieces it composes from:
-
-- `format_system_message(signature)` — the system message: field descriptions + format template + instructions.
-- `format_field_description(signature)` — the per-field list with types and constraints.
-- `format_field_structure(signature)` — the explanation of the marker format.
-- `format_task_description(signature)` — `signature.instructions`.
-- `format_demos(signature, demos)` — each demo becomes a user/assistant pair.
-- `format_user_message_content(signature, inputs)` — the current call's inputs.
-- `format_assistant_message_content(signature, outputs)` — used inside demos.
-- `format_conversation_history(signature, history)` — when a field has type `dspy.History`, expand it into turn messages instead of stuffing it into one field's value.
+Renders the signature, demos, and inputs into the chat messages that would be sent — call it directly to inspect the prompt without spending a token.
 
 **`Adapter.parse(signature, completion)` → `dict`**  
 Extracts typed field values from the LM's response. ChatAdapter regex-matches the marker pattern, splits by field, and delegates each value to `parse_value`. JSONAdapter parses the JSON object and pulls values by key. XMLAdapter walks tags.
 
 **`Adapter.format_finetune_data(signature, demos, inputs, outputs)`**  
 Serializes a demo into the LM provider's finetune format. ChatAdapter writes OpenAI message format. Other adapters raise `NotImplementedError`.
+
+**Customizing the prompt.** The intended authoring surface for "I want the messages to look exactly like *this*" is the **template**: your prompt as a literal message list with interpolation slots, arriving with the preset system (see *Arriving* below). Until it lands, know that the built-in adapters compose their prompts from a family of `format_*` helper methods (`format_system_message`, `format_field_description`, `format_demos`, …) that you can technically override in a subclass. They still work and existing subclasses keep working — but this is the legacy customization surface, scheduled for deprecation once presets land, so don't build new prompt customization on it. If you need a different prompt *today* and can't wait, overriding `format()` wholesale is the least entangled option.
 
 ### Type coercion
 
@@ -230,14 +223,33 @@ Safe in-memory inputs such as data URIs, bytes, PIL images, audio arrays, and st
 - **`with dspy.context(adapter=dspy.XMLAdapter()): ...`** — scoped override.
 - **No automatic LM-based selection.** ChatAdapter is the default and stays the default until you set otherwise. Some teleprompts (e.g., `BootstrapFinetune`) accept an `adapter` dict keyed by LM, so different LMs in a finetuning loop can use different adapters.
 
-## Arriving: the adapter as data
+## Arriving: presets and templates
 
 This section describes ratified, in-progress work — none of it is callable today. It is documented here so the direction is public and so the pieces above make sense as parts of a whole.
 
-- **Per-role strategy bindings.** `dspy.ChatAdapter(strategies={"reasoning": "native_channel", "tools": "textual_json"})` — choose *how each role is served* per adapter, with an `"auto"` default that resolves against the LM's declared capabilities. Today the engine makes these choices internally; the binding surface makes them explicit, swappable, and testable.
-- **A named codec pool.** Register value codecs and bind them per field, including asymmetric pairs (render inputs as compact Python literals, request outputs as JSON).
+The destination: **an adapter is a preset** — a named data entry bundling five things: a *template* (the prompt shape), a *parser binding*, *codec bindings* (decision 10), *strategy bindings* (decision 6), and resolved config. The built-in adapters become thin constructors over presets named `chat`, `json`, and `xml`; classes stay as the convenient handles, data becomes the truth.
+
+**The template is the piece that changes how you'll customize prompts.** Instead of subclassing and overriding methods, you write your prompt as a literal message list with interpolation slots — the signature stays the I/O contract, the template decides exactly what the model sees:
+
+```python
+# Arriving — illustrative, not callable today.
+adapter = TemplateAdapter(
+    messages=[
+        {"role": "system", "content": "You are a concise assistant. {instruction}"},
+        {"role": "user", "content": "Summarize:\n\n{text}"},
+    ],
+    parse_mode="full_text",
+)
+```
+
+`{instruction}` interpolates the signature docstring, `{text}` the input field, and the full response maps to the output field — nothing added that you didn't write. Richer slots cover the general case: `{inputs(style=...)}` / `{outputs(style=...)}` render field blocks through a codec style, `{demos()}` and `{history()}` expand few-shot examples and conversation turns into real message pairs, and constrained loop blocks iterate fields with their names, types, and markers. The language is deliberately small — slots, loops, directives, not general templating — so a prompt shape stays analyzable, diffable data. The built-in `chat` prompt shape is expressible in it exactly, which is the proof the design rests on.
+
+The rest of the arriving surface rides on presets:
+
+- **Per-role strategy bindings.** `strategies={"reasoning": "native_channel", "tools": "textual_json"}` — choose *how each role is served*, with an `"auto"` default resolving against the LM's declared capabilities. Templates are strategy-aware: a natively-served role simply renders no block.
+- **A named codec pool.** Register value codecs and bind them per field, including asymmetric pairs (render inputs as compact Python literals, request outputs as JSON). BAML becomes an ordinary named codec, bindable to any preset.
 - **The `@role` string-signature shorthand.** `"question -> answer: str @citations"` — the fourth spelling of decision 5, plus a public `dspy.roles` import path.
-- **Adapter serialization.** Every adapter exports its identity and full literal vocabulary as data, and can be reconstructed from that data alone — the foundation for saving programs whose exact prompt behavior travels with them.
+- **Preset serialization.** A preset dumps to data — template, bindings, config — and reconstructs from that data alone: the foundation for saving programs whose exact prompt behavior travels with them.
 
 ## Cross-links
 
