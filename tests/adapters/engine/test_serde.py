@@ -102,6 +102,81 @@ def test_strategies_bindings_ride_the_entry():
     assert entry["strategies"]["citations"] == "auto"
 
 
+def test_loaded_entry_strategy_bindings_govern_the_loaded_adapter():
+    """The entry's strategies block binds the loaded adapter exactly as the
+    constructor kwarg bound the source: a textual reasoning binding must
+    not silently re-enable the native channel under a live call."""
+    from golden.harness import Recorder, StubLM
+
+    from dspy.adapters._engine.builder import build_plan
+
+    class Sig(dspy.Signature):
+        question: str = dspy.InputField()
+        reasoning: dspy.Reasoning = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    source = dspy.ChatAdapter(strategies={"reasoning": "textual_field"})
+    loaded = load_entry(source.dump_entry())
+    assert loaded.strategies["reasoning"] == "textual_field"
+
+    source_kwargs, loaded_kwargs = {}, {}
+    source_built = build_plan(source, StubLM(Recorder(), supports_reasoning=True), source_kwargs, Sig, {"question": "Q?"})
+    loaded_built = build_plan(loaded, StubLM(Recorder(), supports_reasoning=True), loaded_kwargs, Sig, {"question": "Q?"})
+
+    assert source_kwargs == loaded_kwargs == {}  # the native channel stood down on BOTH
+    assert loaded_built.plan.find_field("output", "reasoning").hidden is False
+    assert list(loaded_built.render_signature.output_fields) == list(source_built.render_signature.output_fields)
+    assert loaded.format(loaded_built.render_signature, [], {"question": "Q?"}) == source.format(
+        source_built.render_signature, [], {"question": "Q?"}
+    )
+
+
+def test_loaded_entry_auto_bindings_still_resolve_native():
+    """`auto` stays auto through the round trip: an unbound entry on a
+    reasoning-capable LM serves the channel natively, like its source."""
+    from golden.harness import Recorder, StubLM
+
+    from dspy.adapters._engine.builder import build_plan
+
+    class Sig(dspy.Signature):
+        question: str = dspy.InputField()
+        reasoning: dspy.Reasoning = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    source = dspy.ChatAdapter()
+    loaded = load_entry(source.dump_entry())
+
+    source_kwargs, loaded_kwargs = {}, {}
+    source_built = build_plan(source, StubLM(Recorder(), supports_reasoning=True), source_kwargs, Sig, {"question": "Q?"})
+    loaded_built = build_plan(loaded, StubLM(Recorder(), supports_reasoning=True), loaded_kwargs, Sig, {"question": "Q?"})
+
+    assert source_kwargs == loaded_kwargs == {"reasoning_effort": "low"}
+    assert loaded_built.plan.find_field("output", "reasoning").hidden is True
+    assert list(loaded_built.render_signature.output_fields) == list(source_built.render_signature.output_fields)
+
+
+def test_loaded_tools_native_binding_enables_native_function_calling():
+    """A tools=native_fc entry loads with native function calling on — the
+    binding is the declaration, and the two surfaces must agree (L5)."""
+    source = dspy.JSONAdapter(use_native_function_calling=True, strategies={"tools": "native_fc"})
+    entry = source.dump_entry()
+    assert entry["strategies"]["tools"] == "native_fc"
+    loaded = load_entry(entry)
+    assert loaded.use_native_function_calling is True
+    assert loaded.strategies["tools"] == "native_fc"
+    assert loaded.dump_entry() == entry
+
+
+def test_declared_but_unimplemented_strategy_refuses_at_load():
+    """Load-time validation admits exactly what construction admits: a
+    vocabulary name with no implementation refuses with the same teaching
+    error the constructor gives."""
+    entry = _entry()
+    entry["strategies"]["reasoning"] = "prefill"
+    with pytest.raises(PresetSerdeError, match="not implemented.*implemented reasoning strategies"):
+        load_preset(entry)
+
+
 def test_full_text_entry_loads_and_round_trips():
     base = dspy.ChatAdapter().dump_entry()
     base["parser"] = "full_text"

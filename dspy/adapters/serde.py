@@ -33,12 +33,22 @@ class PresetAdapter(Adapter):
 
     Rendering walks the entry's template (``render_template_messages``)
     with the entry's codec bindings and parser-keyed directive defaults;
-    parsing dispatches on the entry's parser binding. Everything the
-    adapter does is stated by the entry — nothing resolves ambiently.
+    parsing dispatches on the entry's parser binding, and the entry's
+    strategy bindings feed the same surface the constructor kwarg feeds —
+    the plan builder consults a loaded adapter and its source identically.
+    Everything the adapter does is stated by the entry — nothing resolves
+    ambiently.
     """
 
     def __init__(self, preset, **kwargs):
-        super().__init__(**kwargs)
+        # Non-"auto" bindings from the entry ARE constructor bindings: a
+        # dumped `reasoning: textual_field` must stand the native channel
+        # down under a live call exactly as it did on the source adapter.
+        bindings = {role: name for role, name in preset.strategies.items() if name != "auto"}
+        if bindings.get("tools") == "native_fc":
+            # The binding is the declaration; the legacy kwarg must agree.
+            kwargs.setdefault("use_native_function_calling", True)
+        super().__init__(strategies=bindings or None, **kwargs)
         self.preset = preset
         self._parser_impl = _parser_for(preset)
 

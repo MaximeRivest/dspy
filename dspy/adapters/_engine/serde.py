@@ -19,7 +19,7 @@ from copy import deepcopy
 from typing import Any
 
 from dspy.adapters._engine.presets import Preset, _make_preset
-from dspy.adapters._engine.strategies.vocabulary import STRATEGIES_VOCABULARY
+from dspy.adapters._engine.strategies.vocabulary import IMPLEMENTED_STRATEGIES, STRATEGIES_VOCABULARY
 from dspy.adapters._engine.template.parser import (
     AggregateSlot,
     Loop,
@@ -154,6 +154,14 @@ def load_preset(entry: dict) -> Preset:
             raise PresetSerdeError(
                 f"preset entry {name!r}: unknown {role} strategy {strategy_name!r} — valid: auto, "
                 f"{', '.join(STRATEGIES_VOCABULARY[role])}"
+            )
+        implemented = IMPLEMENTED_STRATEGIES[role]
+        if strategy_name != "auto" and strategy_name not in implemented:
+            # Load-time validation admits exactly what construction admits
+            # (the constructor's teaching error, with the entry named).
+            raise PresetSerdeError(
+                f"preset entry {name!r}: {role} strategy {strategy_name!r} is declared in the vocabulary "
+                f"but not implemented — implemented {role} strategies: auto, {', '.join(implemented)}"
             )
 
     config = entry["config"]
