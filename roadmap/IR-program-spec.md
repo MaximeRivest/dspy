@@ -307,10 +307,10 @@ nothing").
 
 ```mermaid
 sequenceDiagram
-  participant Author as optimizer / author
+  participant Opt as optimizer / author
   participant IR as ProgramIR (artifact)
   participant Bob as receiver (fresh machine)
-  Author->>IR: compile — resolve + bake everything<br/>(checkpoint = save, one code path)
+  Opt->>IR: compile — resolve + bake everything<br/>(checkpoint = save, one code path)
   Note over IR: manifest.json · weights/ · tools/ · uv.lock<br/>credentials = names only
   IR-->>Bob: ship the directory
   Bob->>Bob: uv sync  (rebuild exact interpreter + deps)
@@ -418,6 +418,51 @@ construct", never a synonym):
 A format populates exactly this vocabulary; readers and cross-language runtimes
 key on it without guessing. Extending the set is a versioned change to the
 vocabulary, not a free-form per-adapter addition.
+
+**Superseded upward (ratified 2026-08-06): the literal table's full form is a
+TEMPLATE, and an adapter is a PRESET.** The 7-key vocabulary is a cramped
+projection of the real thing. The proof is `dspy-template-adapter` (Maxime's
+library), whose declarative template reproduces **exact ChatAdapter message
+parity** — the entire chat prompt shape as data: a message list with
+interpolation slots (`{instruction}`, `{field_name}`, `{inputs(style=…)}`,
+`{outputs(style=…)}`, `{demos(style=…)}`, `{history(style=…)}`), constrained
+loop blocks (`{% for f in outputs separator=… %}` with `f.name/f.type/f.desc/
+f.value/f.marker/f.typed_placeholder`), and **directive roles** (`{"role":
+"demos"}`, `{"role": "history"}`) that expand into message pairs at render
+time. The slots map one-to-one onto the IR: `{instruction}` = component 3a,
+`{demos()}` = 3b, directive roles = the plan's request slots, `{inputs(style)}`
+= codec application, `parse_mode` = the parser half of the render/parse pair.
+The template language is deliberately constrained (slots, for-blocks,
+directives — not general Jinja) so it stays analyzable, diffable, and
+optimizable data. Consequences:
+
+- **Component 4's entry shape becomes a `preset`**: `{template (messages with
+  slots), parser binding (parse mode or authored parser with provenance),
+  codec bindings, strategy bindings, config}`. The 7-key table survives as a
+  *derived summary view* (explain/cross-language readers), no longer the
+  storage form.
+- **The class adapters become thin constructors over named presets** —
+  `chat`, `json`, `xml` — classes as compat, data as truth. **BAML is not an
+  adapter but a codec entry** (indented-pydantic input rendering +
+  schema-prose schema presentation) bindable to any preset; `BAMLAdapter` ≡
+  preset `json` + those codec bindings.
+- **The `format_*` method zoo** (`format_system_message`,
+  `format_field_description`, `format_field_structure`,
+  `format_task_description`, …) is a legacy override surface on the kill
+  list — the override-detection registry already guards exactly these
+  methods. Custom prompt shapes are authored as templates, not subclasses;
+  the TemplateAdapter UX is the intended authoring surface, upstreamed.
+- **Templates must be strategy-aware**: `{outputs()}` renders only
+  *textually-served* fields — a natively-served role contributes no template
+  block (its content arrives on the typed channel). The template says where
+  things go; strategies decide native-vs-textual; the single-shot law is
+  untouched (templates render, parsers recover, nothing calls an LM).
+- **Optimization falls out**: the template *is* the per-preset literal
+  table, `text`-optimizable under the existing rules (render/parse pair
+  mutation, round-trip gate, adversarial probes), and the `{instruction}`/
+  `{demos()}` slots are exactly where MIPRO/GEPA already write — a template
+  makes the optimizable surface of a prompt *visibly declared* instead of
+  buried in method bodies.
 
 **Adapters are pure — the TwoStep test, and the single-shot law.** `format`
 and `parse` are functions over data; nothing in component 4 may call an LM,

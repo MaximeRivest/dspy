@@ -36,7 +36,7 @@ What exists right now and its load-bearing status. **Regenerate this page at the
 - Chat→JSON fallback + structured-output retry inside `base.Adapter.__call__` — become error-policy lowerings (same dependency).
 - `adapt_to_native_lm_feature` legacy hook — wrapped (Epic A); deprecation after public strategy seam ships.
 - Legacy adapter method bodies retained for subclass-override compat — the removal epic's list.
-- litellm dependency — retired by lm15 adoption (ratified; sequenced after Epic D).
+- litellm dependency — retired by lm15 (~/Projects/lm15-dev/lm15-python) adoption (ratified; sequenced after Epic D).
 - In-repo `LMRequest`/`LMResponse` parallel contract — same arc.
 - Callback plumbing — absorbed by the engine's run overlay, eventually (upstream #10119/#10120 are the polyfill of that overlay; accept freely).
 
