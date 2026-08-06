@@ -346,7 +346,6 @@ def test_strategies_binding_refuses_unknown_names_eagerly():
         dspy.JSONAdapter(strategies={"tools": "textual_json"})  # JSONAdapter defaults native FC on
 
 
-@pytest.mark.xfail(strict=True, reason="epic D: literal_table as the summary view derived from the preset template (D-5)")
 def test_epic_d_literal_table_export():
     # Post-rescope (D-018): the preset template is the literal table's full
     # form; literal_table() survives as the DERIVED 7-key summary view —
@@ -357,7 +356,6 @@ def test_epic_d_literal_table_export():
     assert table["completed_marker"] == "[[ ## completed ## ]]"
 
 
-@pytest.mark.xfail(strict=True, reason="epic D: adapter serialize->load roundtrip (D-2)")
 def test_epic_d_adapter_serialize_load_roundtrip():
     adapter = dspy.ChatAdapter()
     entry = adapter.dump_entry()

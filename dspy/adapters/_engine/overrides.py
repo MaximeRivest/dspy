@@ -94,6 +94,11 @@ ORCHESTRATION_ALLOWLIST = frozenset(
         "_get_tool_call_input_field_name",
         "_get_tool_call_output_field_name",
         "_json_adapter_call_common",
+        # Serde surface (D-5): reads preset data, participates in neither
+        # rendering nor parsing.
+        "_effective_preset_view",
+        "dump_entry",
+        "literal_table",
         # Fallback decision: consulted by the orchestration wrappers, which
         # run identically around both the engine and legacy pipelines.
         "_should_reraise_instead_of_fallback",

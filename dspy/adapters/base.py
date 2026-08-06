@@ -494,6 +494,52 @@ class Adapter:
 
         return [_expand_legacy_custom_type_markers_in_chat_message(message) for message in messages]
 
+    def _effective_preset_view(self, action: str):
+        """Resolve this adapter's (template, parser, format) for the serde
+        surface, refusing loudly when there is no preset to speak for it."""
+        from dspy.adapters._engine.formats import resolve_format
+        from dspy.adapters._engine.overrides import resolve_override_verdict
+        from dspy.adapters._engine.presets import effective_template, get_preset
+
+        verdict = resolve_override_verdict(self)
+        if not verdict.engine_eligible:
+            raise ValueError(
+                f"{type(self).__name__} cannot {action}: the instance renders through legacy method "
+                f"overrides, not preset data — non-engine surface: {sorted(verdict.reasons)}"
+            )
+        fmt = resolve_format(self)
+        if fmt is None or not fmt.preset_name:
+            raise ValueError(f"{type(self).__name__} cannot {action}: it declares no preset")
+        return effective_template(fmt), get_preset(fmt.preset_name), fmt
+
+    def dump_entry(self) -> dict:
+        """Serialize this adapter as one component-4 preset entry.
+
+        The entry is pure data — template, parser binding, codec bindings,
+        strategy bindings, config — versioned from birth (D-024). Load it
+        back with `dspy.adapters.load_entry`; the loaded adapter renders
+        byte-identical messages.
+        """
+        from dspy.adapters._engine.serde import build_entry
+
+        template, preset, fmt = self._effective_preset_view("dump_entry")
+        return build_entry(
+            name=getattr(fmt, "entry_name", None) or fmt.preset_name,
+            template_raw=template.raw,
+            parser=preset.parser,
+            codecs=fmt.codec_bindings(),
+            strategies={**preset.strategies, **self.strategies},
+            config=dict(preset.config),
+        )
+
+    def literal_table(self) -> dict:
+        """The 7-key summary view of this adapter's rendering, derived from
+        its preset template — never authored (spec section 5)."""
+        from dspy.adapters._engine.serde import derive_literal_table
+
+        template, preset, _ = self._effective_preset_view("literal_table")
+        return derive_literal_table(template, preset.parser)
+
     def format_system_message(self, signature: type[Signature]) -> str:
         """Format the system message for the LM call.
 

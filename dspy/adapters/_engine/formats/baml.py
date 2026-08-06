@@ -21,6 +21,7 @@ from dspy.adapters._engine.presets import BAML_SYSTEM_MESSAGE
 class BAMLFormat(JSONFormat):
     codec_binding_overrides = {"input": "baml", "output": "baml"}
     system_template_message = BAML_SYSTEM_MESSAGE
+    entry_name = "baml"
 
     def render_field_structure(self, signature) -> str:
         sections = []

@@ -45,6 +45,11 @@ class Format:
     #: None for formats not defined as presets (TwoStep).
     preset_name: str | None = None
 
+    #: Name this format's serialized component-4 entry carries; defaults to
+    #: the preset name. The BAML pairing dumps as "baml" — an entry name,
+    #: not a preset name (spec section 4: no baml preset exists).
+    entry_name: str | None = None
+
     #: Named codec-binding overrides layered over the preset's bindings
     #: (the BAML pairing overrides both directions to the ``baml`` codec);
     #: None keeps the preset bindings as-is.

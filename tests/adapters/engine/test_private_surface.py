@@ -12,8 +12,8 @@ import types
 import dspy.adapters
 
 # The exact public (non-module) surface of dspy.adapters before the engine
-# existed. Submodule attributes are import-order noise, not API, so they are
-# excluded from the comparison.
+# existed, plus Epic D's sanctioned additions. Submodule attributes are
+# import-order noise, not API, so they are excluded from the comparison.
 EXPECTED_PUBLIC_SURFACE = {
     "Adapter",
     "Audio",
@@ -30,6 +30,9 @@ EXPECTED_PUBLIC_SURFACE = {
     "TwoStepAdapter",
     "Type",
     "XMLAdapter",
+    # Epic D-5 (epic-D-adapter-serializer.md, acceptance test #5): the
+    # component-4 entry loader. Its dump twin lives on Adapter instances.
+    "load_entry",
 }
 
 
