@@ -116,6 +116,13 @@ directive. Content strings may use:
   chat_type_hint`. The bare `strip` flag applies `str.strip()` to the
   joined result — the historical join-then-strip section shape, carried as
   declared data (D-2 proved byte parity is unreachable without it).
+  `{f.value}` spells the value through the direction's bound codec;
+  `{f.typed_placeholder}` spells the field's *schema* through the same
+  binding (the codec's schema spelling — the shared text codec renders the
+  historical placeholder-plus-type-note, the `baml` codec renders
+  schema prose). A codec is a render/parse/schema triple: how a value is
+  shown, how an emission is recovered, and how the expected shape is
+  described.
 - **Section blocks:** `{% section strip %} … {% endsection %}` — the
   enclosed content renders and the joined result is `str.strip()`'d: the
   historical join-then-strip *region* shape, which is what lets a trailing
@@ -221,7 +228,14 @@ reference is a link error naming the reference (ADP-005). Built-in presets:
 `chat`, `json`, `xml` — each defined AS a template in this language,
 byte-reproducing the historical class adapters (the corpus proves it).
 `full_text` requires exactly one plain output field. BAML is **not** a
-preset: it is preset `json` + the `baml` codec bindings.
+preset: it is preset `json` + the `baml` codec bindings + the pairing's
+schema-prose system arrangement, carried as template data. The split
+follows the layer law exactly: the codec owns the schema-prose *spelling*
+(shape-generic, any annotation), the template owns the *arrangement* (which
+sentences appear, where the markers and the completed marker sit — D-018's
+literal-table territory, which is why the arrangement cannot hide inside a
+codec). No `baml` preset name exists; the pairing serializes as an ordinary
+component-4 entry whose template carries the arrangement.
 
 Serialized presets carry a `versions` block — this contract's version plus
 the versions of the §5 vocabularies in force, mirroring the ProgramIR
@@ -241,8 +255,10 @@ unimplementable and vocabulary extension is silent drift.
   citations `native | span_markers | json_quotes`; media `native_parts |
   url_reference`; history `directive_turns | inline`.
 - **Codecs (initial):** `text_pythonish` (the historical implicit pair),
-  `pydantic_json` (indented model dumps), `baml` (schema-prose + indented
-  input), `json`, `xml`, `yaml`. Codecs are shape-generic by law.
+  `pydantic_json` (indented model dumps), `baml` (indented-pydantic value
+  spelling + the simplified schema-prose schema spelling — ``Output field
+  `name` should be of type: …`` over any annotation), `json`, `xml`,
+  `yaml`. Codecs are shape-generic by law.
 - **Derived summary view:** the 7-key literal table
   (`input_field_render, output_field_render, field_separator,
   output_structure, completed_marker, output_requirement, parse_pattern`)
