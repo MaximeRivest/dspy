@@ -1,6 +1,15 @@
 from dspy.adapters.base import Adapter
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.adapters.json_adapter import JSONAdapter
+from dspy.adapters.registry import (
+    describe_template_language,
+    register_codec,
+    register_preset,
+    register_strategy,
+    unregister_codec,
+    unregister_preset,
+    unregister_strategy,
+)
 from dspy.adapters.serde import load_entry
 from dspy.adapters.template_adapter import TemplateAdapter
 from dspy.adapters.two_step_adapter import TwoStepAdapter
@@ -25,4 +34,11 @@ __all__ = [
     "ToolCallResults",
     "Reasoning",
     "load_entry",
+    "describe_template_language",
+    "register_codec",
+    "register_preset",
+    "register_strategy",
+    "unregister_codec",
+    "unregister_preset",
+    "unregister_strategy",
 ]

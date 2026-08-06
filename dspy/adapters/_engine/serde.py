@@ -19,7 +19,7 @@ from copy import deepcopy
 from typing import Any
 
 from dspy.adapters._engine.presets import Preset, _make_preset
-from dspy.adapters._engine.strategies.vocabulary import IMPLEMENTED_STRATEGIES, STRATEGIES_VOCABULARY
+from dspy.adapters._engine.strategies.vocabulary import check_binding_name
 from dspy.adapters._engine.template.parser import (
     AggregateSlot,
     Loop,
@@ -145,24 +145,12 @@ def load_preset(entry: dict) -> Preset:
     if not isinstance(strategies, dict):
         raise PresetSerdeError(f"preset entry {name!r}: 'strategies' must be a dict, got {type(strategies).__name__}")
     for role, strategy_name in strategies.items():
-        if role not in STRATEGIES_VOCABULARY:
-            raise PresetSerdeError(
-                f"preset entry {name!r}: unknown strategy-binding role {role!r} — bindable roles: "
-                f"{', '.join(STRATEGIES_VOCABULARY)}"
-            )
-        if strategy_name != "auto" and strategy_name not in STRATEGIES_VOCABULARY[role]:
-            raise PresetSerdeError(
-                f"preset entry {name!r}: unknown {role} strategy {strategy_name!r} — valid: auto, "
-                f"{', '.join(STRATEGIES_VOCABULARY[role])}"
-            )
-        implemented = IMPLEMENTED_STRATEGIES[role]
-        if strategy_name != "auto" and strategy_name not in implemented:
-            # Load-time validation admits exactly what construction admits
-            # (the constructor's teaching error, with the entry named).
-            raise PresetSerdeError(
-                f"preset entry {name!r}: {role} strategy {strategy_name!r} is declared in the vocabulary "
-                f"but not implemented — implemented {role} strategies: auto, {', '.join(implemented)}"
-            )
+        # Load-time validation admits exactly what construction admits —
+        # the shared check, with the entry named (L5 applied to loading).
+        try:
+            check_binding_name(role, strategy_name)
+        except ValueError as error:
+            raise PresetSerdeError(f"preset entry {name!r}: {error}") from None
 
     config = entry["config"]
     if not isinstance(config, dict):
@@ -187,8 +175,15 @@ def load_preset(entry: dict) -> Preset:
 
 
 def _check_codec_ref(entry_name: str, direction: str, ref) -> None:
-    """Link one codec reference; origin-tagged code entries are validated
-    per D-025 and refused until the registration API ships (spec §9)."""
+    """Link one codec reference eagerly.
+
+    A string names a registered codec (a dangling ref is a link error,
+    ADP-005). A dict is an origin-tagged code entry and materializes NOW
+    through the three-origin loader (spec section 9) — import, identity
+    verification, and the round-trip battery all refuse at link, never at
+    render.
+    """
+    from dspy.adapters._engine.admission import materialize_codec_entry
     from dspy.adapters._engine.codecs import CODECS
 
     if isinstance(ref, str):
@@ -199,23 +194,14 @@ def _check_codec_ref(entry_name: str, direction: str, ref) -> None:
             )
         return
     if isinstance(ref, dict):
-        origin = ref.get("origin")
-        if origin in ("packaged", "authored"):
-            if "language" not in ref:
-                raise PresetSerdeError(
-                    f"preset entry {entry_name!r}: {origin} codec entry for {direction!r} carries no "
-                    "'language' — malformed (D-025: packaged and authored code entries declare their language)"
-                )
-            raise PresetSerdeError(
-                f"preset entry {entry_name!r}: {origin} codec entries load through the registration API "
-                "(spec section 9), which ships in a later PR — builtin name references only for now"
-            )
-        raise PresetSerdeError(
-            f"preset entry {entry_name!r}: codec reference for {direction!r} must be a builtin name or an "
-            f"origin-tagged entry (origin: builtin, packaged, authored), got {ref!r}"
-        )
+        try:
+            materialize_codec_entry(ref)
+        except ValueError as error:
+            raise PresetSerdeError(f"preset entry {entry_name!r}: {error}") from None
+        return
     raise PresetSerdeError(
-        f"preset entry {entry_name!r}: codec reference for {direction!r} must be a string name, got {ref!r}"
+        f"preset entry {entry_name!r}: codec reference for {direction!r} must be a string name or an "
+        f"origin-tagged entry (origin: builtin, packaged, authored), got {ref!r}"
     )
 
 

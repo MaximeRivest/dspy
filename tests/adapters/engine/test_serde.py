@@ -257,11 +257,11 @@ def test_unknown_parser_refuses_naming_the_valid_set():
 
 def test_origin_tagged_codec_entries_carry_language():
     entry = _entry()
-    entry["codecs"]["input"] = {"origin": "authored", "source": "..."}
+    entry["codecs"]["input"] = {"origin": "authored", "name": "x", "source": "..."}
     with pytest.raises(PresetSerdeError, match="carries no 'language'"):
         load_preset(entry)
-    entry["codecs"]["input"] = {"origin": "authored", "source": "...", "language": "python"}
-    with pytest.raises(PresetSerdeError, match="registration API"):
+    entry["codecs"]["input"] = {"origin": "authored", "name": "x", "source": "...", "language": "go"}
+    with pytest.raises(PresetSerdeError, match="python only"):
         load_preset(entry)
 
 

@@ -33,8 +33,17 @@ EXPECTED_PUBLIC_SURFACE = {
     # Epic D-5 (epic-D-adapter-serializer.md, acceptance test #5): the
     # component-4 entry loader. Its dump twin lives on Adapter instances.
     "load_entry",
-    # Epic D-7 (sanctioned public surface): the template authoring adapter.
+    # Epic D-7 (sanctioned public surface): the template authoring adapter,
+    # the section-9 registration APIs with admission gates, and the
+    # language-discoverability call the contract requires.
     "TemplateAdapter",
+    "describe_template_language",
+    "register_codec",
+    "register_preset",
+    "register_strategy",
+    "unregister_codec",
+    "unregister_preset",
+    "unregister_strategy",
 }
 
 

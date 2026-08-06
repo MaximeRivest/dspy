@@ -293,6 +293,9 @@ XML = _make_preset(
 
 PRESETS: dict[str, Preset] = {preset.name: preset for preset in (CHAT, JSON, XML)}
 
+#: The names no registration may shadow and no unregistration may remove.
+BUILTIN_PRESET_NAMES = frozenset(PRESETS)
+
 
 def get_preset(name: str) -> Preset:
     """A preset by name; a dangling ref refuses naming itself (ADP-005)."""

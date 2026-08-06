@@ -271,19 +271,30 @@ BAML = BAMLCodec()
 CODECS_VERSION = "1.0.0"
 
 #: Named codec entries preset bindings resolve against (spec section 5's
-#: initial vocabulary, populated as codecs land). Engine-private until the
-#: registration API ships with its round-trip admission gate (spec
-#: section 9).
+#: initial vocabulary). ``dspy.adapters.register_codec`` is the public door
+#: and gates admission with the round-trip probe battery (spec section 9).
 CODECS: dict[str, ValueCodec] = {
     TEXT_PYTHONISH.name: TEXT_PYTHONISH,
     PYDANTIC_JSON.name: PYDANTIC_JSON,
     BAML.name: BAML,
 }
 
+#: The names no registration may shadow and no unregistration may remove.
+BUILTIN_CODEC_NAMES = frozenset(CODECS)
 
-def resolve_codec(name: str) -> ValueCodec:
-    """A codec by registry name; a dangling ref refuses naming itself."""
+
+def resolve_codec(ref) -> ValueCodec:
+    """A codec by registry name or origin-tagged entry.
+
+    A string names a registered codec; a dangling ref refuses naming
+    itself. A dict is an origin-tagged code entry (spec section 9) and
+    materializes through the three-origin loader, admission gate included.
+    """
+    if isinstance(ref, dict):
+        from dspy.adapters._engine.admission import materialize_codec_entry
+
+        return materialize_codec_entry(ref)
     try:
-        return CODECS[name]
+        return CODECS[ref]
     except KeyError:
-        raise KeyError(f"unknown codec {name!r} — registered codecs: {', '.join(CODECS)}") from None
+        raise KeyError(f"unknown codec {ref!r} — registered codecs: {', '.join(CODECS)}") from None
