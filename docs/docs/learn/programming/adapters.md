@@ -347,6 +347,32 @@ result.reasoning            # still works, but warns: it's not a declared field
 
 If you *want* the reasoning as a real output, declare it — add `reasoning: str = dspy.OutputField()` to your signature and it becomes contractual: present in the prediction, no warning.
 
+## Common tasks
+
+The [adapters deep-dive](../../diving-deeper/adapters.md#how-to) has a full how-to cookbook; the three you'll want first:
+
+**Switch adapters** — process-wide or scoped, signature untouched:
+
+```python
+dspy.configure(adapter=dspy.JSONAdapter())
+with dspy.context(adapter=dspy.XMLAdapter()):
+    result = predictor(question="...")
+```
+
+**Get chain-of-thought as a real output** — declare it:
+
+```python
+cot = dspy.ChainOfThought("question -> reasoning, answer")   # contractual
+# vs. "question -> answer": reasoning lands in result._trajectory instead
+```
+
+**Debug the exact prompt** — render without calling, or inspect after:
+
+```python
+dspy.ChatAdapter().format(signature, demos=[], inputs={"question": "..."})
+dspy.inspect_history()
+```
+
 ## Summary
 
 Adapters are a crucial component of DSPy that bridge the gap between structured DSPy signatures and language model APIs.

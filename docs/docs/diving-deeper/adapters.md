@@ -251,6 +251,191 @@ The rest of the arriving surface rides on presets:
 - **The `@role` string-signature shorthand.** `"question -> answer: str @citations"` — the fourth spelling of decision 5, plus a public `dspy.roles` import path.
 - **Preset serialization.** A preset dumps to data — template, bindings, config — and reconstructs from that data alone: the foundation for saving programs whose exact prompt behavior travels with them.
 
+## How to
+
+One recipe per task. Everything under **Today** runs as written; everything under **Arriving (Epic D)** is the ratified design, illustrative only.
+
+### Today
+
+**1. Switch adapters.** Process-wide, scoped, or per-call — the signature never changes.
+
+```python
+dspy.configure(adapter=dspy.JSONAdapter())          # process-wide default
+
+with dspy.context(adapter=dspy.XMLAdapter()):       # scoped override
+    result = predictor(question="...")               # this call uses XML
+```
+
+**2. Pick the adapter for the model family.**
+
+| Model | Use | Why |
+| --- | --- | --- |
+| General instruction-following | `ChatAdapter` (default) | needs no special features; broadest compatibility |
+| Supports `response_format` (OpenAI-style) | `JSONAdapter` | decode-time constraint beats instruction-only |
+| Prefers XML (some Claude workflows) | `XMLAdapter` | tags over markers |
+| Reasoning model, unreliable formatting | `TwoStepAdapter` | let it think free-form; a cheap model extracts |
+| Deep nested pydantic outputs | `BAMLAdapter` | friendlier schema presentation (recipe 10) |
+
+**3. Declare a semantic role** — three spellings, one meaning; pick by taste.
+
+```python
+from typing import Annotated
+from dspy.signatures.roles import citations
+
+class QA(dspy.Signature):
+    question: str = dspy.InputField()
+    a1: Annotated[str, citations] = dspy.OutputField()   # canonical
+    a2: citations[str] = dspy.OutputField()              # subscript sugar
+    a3: str = dspy.OutputField(role="citations")         # kwarg
+
+# In string signatures, pass the marker through custom_types:
+sig = dspy.Signature(
+    "question -> answer: Annotated[str, citations]",
+    custom_types={"Annotated": Annotated, "citations": citations},
+)
+```
+
+Unknown roles raise immediately; two spellings disagreeing on one field raise rather than guess.
+
+**4. Use structured shapes.** Any type with a JSON-schema meaning works — no blessed list.
+
+```python
+class Item(pydantic.BaseModel):
+    name: str
+    score: float
+
+class Extract(dspy.Signature):
+    text: str = dspy.InputField()
+    facts: list[Item] = dspy.OutputField()
+    mood: Literal["happy", "sad"] = dspy.OutputField()
+    note: str | None = dspy.OutputField()
+```
+
+You get real `Item` instances back, not dicts. A shape with *no* JSON-schema meaning (`Callable[[int], int]` as an output annotation, say) is refused with a typed `UnserializableTypeError` naming the field and pointing at `dspy.Tool` — a callable is a tool, not data. The refusal fires when the adapter renders the field's schema, so you see it on the first call, not deep in a parse.
+
+!!! warning "Avoid output fields named like dict methods"
+    `Prediction` supports the mapping protocol, so an output field named `items`, `keys`, or `values` is shadowed by the method on attribute access (`result.items` is the method, `result["items"]` is your value). Pick another name.
+
+**5. Make reasoning contractual — or read it as exhaust.** Want it? Declare it.
+
+```python
+cot = dspy.ChainOfThought("question -> answer")
+r = cot(question="...")
+r._trajectory["reasoning"]        # exhaust: debugging channel, not an output
+r.reasoning                       # works, but DeprecationWarning
+
+cot = dspy.ChainOfThought("question -> reasoning, answer")
+r = cot(question="...")
+r.reasoning                       # declared: real output, no warning
+```
+
+**6. Read the trajectory channel for debugging.** Agent modules put their run structure there:
+
+```python
+r = react_agent(question="...")
+r._trajectory["trajectory"]       # ReAct's tool-call/observation record
+# RLM: r._trajectory["trajectory"] (REPL steps) and ["final_reasoning"]
+```
+
+It never appears in `r.keys()`, item access, or saved state.
+
+**7. Keep using the legacy semantic types.** Each is the fused spelling of a shape plus its role, and they aren't going anywhere: `dspy.Reasoning` ≡ role `reasoning` on `str`; `dspy.Image`/`Audio`/`File`/`Document` ≡ `media`; `dspy.Tool` ≡ `tools`; `Citations` ≡ `citations`. Prefer the split spelling (recipe 3) when your shape isn't the type's pinned one — `citations[list[Quote]]` has no fused equivalent.
+
+**8. Inspect the prompt without spending a token.**
+
+```python
+messages = dspy.ChatAdapter().format(signature, demos=[], inputs={"question": "..."})
+# ...or after a real call:
+dspy.inspect_history()
+```
+
+(An engine-level `preview()` with the same guarantee is part of the arriving contract.)
+
+**9. Hard errors instead of silent fallback in tests.**
+
+```python
+adapter = dspy.ChatAdapter(use_json_adapter_fallback=False)
+```
+
+Malformed model output now raises a parse error instead of silently retrying through JSONAdapter — one call means one call.
+
+**10. Use BAML's encoding for deep nested pydantic.**
+
+```python
+from dspy.adapters.baml_adapter import BAMLAdapter   # not a top-level export
+dspy.configure(adapter=BAMLAdapter())
+```
+
+Inputs render as indented JSON and the output schema as compact commented-Pydantic — helps exactly when JSONAdapter's raw schema dump overwhelms the model.
+
+**11. TwoStep with a cheap extractor.**
+
+```python
+adapter = dspy.TwoStepAdapter(extraction_model=dspy.LM("openai/gpt-4o-mini"))
+dspy.configure(lm=dspy.LM("openai/o3-mini"), adapter=adapter)
+```
+
+The main model answers free-form; the mini model extracts your declared fields. Two calls by design.
+
+**12. Export finetune data.** ChatAdapter only:
+
+```python
+data = dspy.ChatAdapter().format_finetune_data(signature, demos, inputs, outputs)
+```
+
+Other adapters raise `NotImplementedError` — stay on ChatAdapter for `BootstrapFinetune`.
+
+### Arriving (Epic D) — illustrative, not callable today
+
+Syntax below matches the ratified contract (`roadmap/adapter-ir-spec.md`); details may still shift as the epic lands.
+
+**13. Author an exact-control template.** Your messages are the prompt — nothing added you didn't write:
+
+```python
+adapter = TemplateAdapter(
+    messages=[
+        {"role": "system", "content": "You are a concise assistant. {instruction}"},
+        {"role": "user", "content": "Summarize:\n\n{text}"},
+    ],
+    parse_mode="full_text",
+)
+```
+
+`{instruction}` interpolates the docstring, `{text}` the input field; the full response maps to your single output field.
+
+**14. Reproduce ChatAdapter declaratively.** The entire built-in chat prompt shape is expressible as one template — loop blocks over fields, demo/history directives, fragment slots — reproducing today's bytes exactly. See the parity template in `roadmap/adapter-ir-examples.md` ("The preset `chat` template"); it's the proof the design rests on, and the starting point to copy-and-modify.
+
+**15. Choose strategies per role.**
+
+```python
+adapter = ChatAdapter(strategies={"reasoning": "textual_field", "tools": "native_fc"})
+```
+
+Unset roles default to `"auto"`: resolve against the LM's declared capabilities at bake, record the decision. Same signature, different serving — swap and re-evaluate.
+
+**16. Bind codecs, or register your own.**
+
+```python
+register_codec("compact_yaml", MyYamlCodec())        # admission gate:
+# parse(render(x)) == x over schema-generated adversarial probes, or refused.
+
+adapter = JSONAdapter(codecs={"input": "compact_yaml", "output": "json"})
+```
+
+Directional and independent: render inputs one way, request outputs another.
+
+**17. Ship a custom preset or codec inside a program.** Templates are pure data — they bake into the saved program as JSON and load with no exec, no flags. Code (codecs, strategies, authored parsers) follows the three-origin rule: `builtin` resolves internally; `packaged` declares an import path + version that the program's env manifest provides; `authored` bakes the source itself, exec'd in an isolated namespace and identity-verified at load, carrying `authored_by` provenance. Dangling references refuse loudly at load, naming the reference.
+
+**18. Learn the template language interactively.** The language is closed and enumerable, and the contract requires it be discoverable: `describe_template_language()` returns the full vocabulary as data; errors teach (`unknown slot {outpts()} — valid slots: instruction, inputs, outputs, demos, history, fragments`); and `preview()` renders any preset against a signature with no LM call, so the learn-by-looking loop always works.
+
+**19. The `@role` string shorthand.**
+
+```python
+sig = dspy.Signature("question -> answer: str @citations")
+```
+
+The fourth spelling of recipe 3, plus a public `dspy.roles` import path — no `custom_types` plumbing needed.
+
 ## Cross-links
 
 - [Signatures in depth](signatures-in-depth.md) — what the adapter consumes.
