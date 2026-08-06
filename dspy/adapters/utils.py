@@ -233,23 +233,39 @@ def get_annotation_name(annotation):
         return f"{get_annotation_name(origin)}[{args_str}]"
 
 
+def get_field_description_suffix(field_name: str, field_info) -> str:
+    """Everything after ``N. `name` (type):`` in a field-description line.
+
+    Single source for the per-field remainder shared by
+    ``get_field_description_string`` and the template engine's
+    ``f.desc_suffix`` loop variable: a leading space, the description (with
+    any custom-type descriptions appended), and the constraints line when
+    present. Empty descriptions keep the historical trailing space.
+    """
+    desc = (
+        field_info.json_schema_extra["desc"] if field_info.json_schema_extra["desc"] != f"${{{field_name}}}" else ""
+    )
+
+    custom_types = DspyType.extract_custom_type_from_annotation(field_info.annotation)
+    for custom_type in custom_types:
+        if len(custom_type.description()) > 0:
+            desc += f"\n    Type description of {get_annotation_name(custom_type)}: {custom_type.description()}"
+
+    suffix = f" {desc}"
+    suffix += (
+        f"\nConstraints: {field_info.json_schema_extra['constraints']}"
+        if field_info.json_schema_extra.get("constraints")
+        else ""
+    )
+    return suffix
+
+
 def get_field_description_string(fields: dict) -> str:
     field_descriptions = []
     for idx, (k, v) in enumerate(fields.items()):
-        field_message = f"{idx + 1}. `{k}`"
-        field_message += f" ({get_annotation_name(v.annotation)})"
-        desc = v.json_schema_extra["desc"] if v.json_schema_extra["desc"] != f"${{{k}}}" else ""
-
-        custom_types = DspyType.extract_custom_type_from_annotation(v.annotation)
-        for custom_type in custom_types:
-            if len(custom_type.description()) > 0:
-                desc += f"\n    Type description of {get_annotation_name(custom_type)}: {custom_type.description()}"
-
-        field_message += f": {desc}"
-        field_message += (
-            f"\nConstraints: {v.json_schema_extra['constraints']}" if v.json_schema_extra.get("constraints") else ""
+        field_descriptions.append(
+            f"{idx + 1}. `{k}` ({get_annotation_name(v.annotation)}):{get_field_description_suffix(k, v)}"
         )
-        field_descriptions.append(field_message)
     return "\n".join(field_descriptions).strip()
 
 
