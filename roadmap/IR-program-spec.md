@@ -319,7 +319,7 @@ sequenceDiagram
   Bob->>Bob: materialize tools (exec source, verify identity)
   Bob->>Bob: load LM weights in-process (honor tying.json,<br/>apply binding deltas over entry bases)
   Bob->>Bob: VERIFY declared tier — refuse loudly on mismatch
-  Bob->>Bob: (optional) resume training — optimizable ⊆ baked
+  Bob->>Bob: (optional) resume training — optimizable is a subset of baked
 ```
 
 ### A forward as restricted-Python AST (worked example: ReAct)
