@@ -1,6 +1,6 @@
 # State Map
 
-What exists right now and its load-bearing status. **Regenerate this page at the end of every epic.** Last updated: 2026-08-06, mid-Epic-D (after D-β; light review + D-γ in flight).
+What exists right now and its load-bearing status. **Regenerate this page at the end of every epic.** Last updated: 2026-08-06, after **Epic D complete** (checkpoint C1 pending: public-name ratification + push + upstream-sync decision).
 
 ## Shipped on `programir-main`
 
@@ -8,57 +8,58 @@ What exists right now and its load-bearing status. **Regenerate this page at the
 
 **The `_trajectory` migration** (`9998a00f1`, `1d43627db`, `1809f8037`): `Prediction._trajectory` channel; ReAct/CodeAct/RLM/CoT/ReActV2 exhaust routed; dot-access deprecation shim; declared-`reasoning` stays contractual; flex bridge merges channel for generated code.
 
-**Epic A — engine closed** (`14cfc3bda`, `1c6b1622e`): field-strategy registry (`field_strategy_for()` single resolution path), `LegacyTypeHookStrategy` auto-wrap, `AdapterPatch.replace_render_signature` compat channel. Zero `TODO(adapters-plan)` markers remain.
+**Epic A — engine closed** (`14cfc3bda`, `1c6b1622e`): field-strategy registry (`field_strategy_for()` single resolution path), `LegacyTypeHookStrategy` auto-wrap, `AdapterPatch.replace_render_signature` compat channel.
 
-**Epic B — shapes + codecs** (`4f99265ff`, `478fc0db5`, `eb17d119b`, `2d8fa218e`, `805cf0902`): `_engine/codecs.py` (`ValueCodec`, `TextPythonishCodec`, `PYDANTIC_JSON`); directional `input_codec`/ `output_codec` on `Format`; BAMLFormat = JSONFormat + input-codec binding; `shapes--` corpus family (25 fixtures + parse-coercion); typed `UnserializableTypeError` for Callable-in-signature.
+**Epic B — shapes + codecs** (`4f99265ff`..`805cf0902`): `_engine/codecs.py` (`ValueCodec`, `TextPythonishCodec`, `PYDANTIC_JSON`); directional codec bindings on `Format`; `shapes--` corpus family; typed `UnserializableTypeError`.
 
-**Epic C — semantic roles** (`0240cc738`, `8cc3d37e6`, `c0daccd53`, `9fb957375`, `106a9ad25`): `SEMANTIC_ROLES` vocabulary; validated `role=` kwarg; `dspy/signatures/roles.py` marker objects with `citations[str]` sugar; derivation table (legacy types + `Annotated` unwrapping both nesting orders); roles recorded onto `RenderField.metadata`; design doc `epic-C-semantic-roles.md`.
+**Epic C — semantic roles** (`0240cc738`..`106a9ad25`): `SEMANTIC_ROLES` vocabulary; validated `role=` kwarg; marker objects with `citations[str]` sugar; derivation table; roles recorded onto `RenderField.metadata`.
 
-**Epic D fork D-α — template engine + presets** (`77116604c`, `ef9bf14ac`, `2d1b0837f`, `567ed8a4c`, `19ab69e02`): mechanical engine import-boundary test with pinned back-edges (shrinking allowlist in `tests/adapters/engine/test_import_boundary.py`); the constrained template language in `_engine/template/` (vocabulary-as-data + `describe_template_language()`, eager teaching-error parser, pure renderer, `declared_capacity()`, `preview()`); presets `chat`/`json`/`xml` defined as templates in `_engine/presets.py` with formats rendering every content string through them (`render_template_messages` walker parity-tested against forced-legacy `format()`); codec registry (`CODECS`/`resolve_codec`) in `codecs.py`. Corpus zero-drift; full matrix green; zero public-surface change. Spec §3 grammar refined as-proven (bare `strip` flag, `{instruction}` styles, fragment line-swallow, direction-aware value presence, per-aggregate style vocabulary); epic doc at v3 with as-built + D-β handoff. E2E xfail #4 revised (literal_table = derived summary view, targets D-5).
+**Epic D — presets, templates, the adapter as data** (four waves: D-α `77116604c`..`19ab69e02`; adversarial review + fixes `57ffdf5ad`..`282e5d777`; D-β `c0e9675e6`..`55b9f666d`; D-γ `19f974a1f`..`b13ce00cd`):
 
-**Cross-language doctrine** (`d97d3d2ea`, `e5fb3f071`, `d5f0208bf`, Maxime): D-022..D-028 ratified; `roadmap/cross-language.md` question bank; §e0-lang in the program spec. Binding on Epic D: D-024 (versions block in artifact + preset serde) and D-025 (`language` on origin-tagged entries) are byte-shape constraints that MUST precede the exporter — D-5/D-γ serde carries `adapter_ir_version` + vocabulary versions. D-029 (Maxime, `814f29db4`): four manifest-schema rulings from the examples audit.
+- **Template language** in `_engine/template/`: vocabulary-as-data + `describe_template_language()`, eager teaching-error parser, pure renderer, `{% section strip %}` blocks, `{field('name')}` escape spelling, reserved-name collision refusal, capacity in live/example lanes (per-field media/tools), `preview()` (format()-identical bytes, no LM call).
+- **Presets** `chat`/`json`/`xml` defined AS templates; formats render through them; **codec authority lives in preset binding data**; a codec is a render/parse/**schema** triple; BAML = the `baml` codec + a pairing declaration (arrangement as template data), `BAMLFormat` render bodies gone.
+- **Strategies**: double-key registry (`strategy_for(role, annotation)`) — roles load-bearing, builtin role entries containment-bounded so admitted subclass hooks are never shadowed; `strategies={}` per-role constructor binding with `"auto"` resolved + recorded at bake; strategy fragments flow to template fragment slots; ADP-006/ADP-007 bake checks on every engine plan.
+- **Serde** (D-024/D-025 from first shape): canonical component-4 entry `{name, adapter_ir_version, versions, template, parser, codecs, strategies, config}`; exact (unknown keys refuse, absent ≠ null); dangling refs = link errors naming the ref; `dump_entry`/`load_entry`/`literal_table` (derived 7-key view); **loaded bindings govern** (byte-parity source-vs-loaded); version constants single-sourced, aggregated in `_engine/versions.py`.
+- **Public surface (C1 ratification pending)**: `dspy.roles`; the `@role` string shorthand; `dspy.TemplateAdapter(messages, parse_mode=...)`; `PresetAdapter.preview()`; `register_codec/strategy/preset` + unregister trio with §9 admission gates (codec round-trip probe battery, strategy capability declarations, eager preset validation; three-origin loading for codecs); `describe_template_language()`; `load_entry` listed in `__all__`; `strategies=` kwarg on core adapters.
+- **Proof**: acceptance suite fully green, zero xfails (`tests/adapters/test_end_to_end.py`); corpus zero-drift through all four waves; mechanical import boundary with shrinking pinned allowlist; server examples 01–03 manifests regenerated from the real exporter (`explain` renders unchanged, `load.py` roundtrips bit-for-bit; 04 refused by design — authored legacy-override adapter); DD adapters page: recipes 13–19 are Today.
 
-**Adversarial review + review-fix fork** (`57ffdf5ad`..`282e5d777`, 11 commits): the specced post-D-α review (four attack lenses, adversarial verification) confirmed 21 findings collapsing to nine defects; all nine fixed tests-first. Highlights: schema positions render without call values on every surface incl. `preview()` (preview now byte-matches `adapter.format()` across the golden payloads); reserved-name collisions refuse loudly (scoped to bare `{instruction}` vs a colliding field — legacy signatures with reserved field names still render byte-identically); new `{% section strip %}` language construct (spec'd first) restoring XML byte-parity on empty visible output sets (a corpus-invisible, production-reachable break via native-FC ToolCalls-only signatures); bare demos/history directives render through default marker patterns (zero items = no-op); quote/escape-aware option+kwarg lexing with acceptance reading the vocabulary; import-boundary test now resolves relative imports; capacity split into live/example lanes with per-field media/tools hosting (unconsumed until D-4). Corpus zero-drift; full matrix green; zero public-surface change. **Pending rulings (D-β/D-5 adjacent):** the `{field('name')}` escape spelling for reserved-colliding fields (proposed, not implemented); re-keying bare-directive default patterns on the preset's parser binding (chat markers today); duplicate-loop-options last-wins vs call-kwargs refuse-duplicates asymmetry (matters when author templates serialize verbatim).
+**Cross-language doctrine** (Maxime, in parallel): D-022..D-029 ratified; `roadmap/cross-language.md` question bank; exemplar programs (`0e9cfb479`); §e0-lang. D-024/D-025 are implemented in the preset serde; D-029's manifest rulings await the exporter (programir-contract).
 
-**Epic D fork D-β — codecs, strategies, serialization** (`c0e9675e6`..`55b9f666d`, 14 commits): `baml` codec entry (codec = render/parse/**schema** triple; `{f.typed_placeholder}` routes through the direction's codec); **codec authority flipped generally to preset binding data**; `BAMLFormat` = pairing declaration (preset json + baml bindings + schema-prose arrangement as template data), render bodies gone. Double-key `strategy_for(role, annotation)` — roles load-bearing for resolution, `StrategyTrace.resolved_by` records the key. `strategies={}` per-role constructor binding, `"auto"` resolved at bake and recorded; fragments channel live end-to-end (patch → plan → contextvar plan_scope → preset fragment slots); ADP-006/ADP-007 bake checks on every engine plan. Versioned preset serde from first shape (D-024/D-025): entry `{name, adapter_ir_version, versions, template, parser, codecs, strategies, config}`, exact serde, dangling refs = link errors; `dump_entry`/`load_entry`/`literal_table` — adapters round-trip as data, loaded entries render through the pure walker. Version constants single-sourced, aggregated in `_engine/versions.py`. `{field('name')}` escape spelling; duplicate loop options refuse; directive defaults key on parser binding. Corpus zero-drift; matrix green ×2; xfails #3/#4/#5 flipped (only #1/#2 remain, D-6). **Public surface added (flag for C1):** `strategies=` kwarg (sanctioned), `{field('name')}` spelling (needs ratification), `load_entry` import in `dspy.adapters` (demanded by acceptance xfail #5). **Needs Maxime:** ratify the D-019 as-built reading — "preset json + baml codec ≡ BAMLAdapter bytes" is literally unimplementable (arrangement is literal-table territory); split delivered as codec-owns-spelling / template-owns-arrangement, recorded in spec §4.
-
-**Docs:** `IR-program-spec.md` snapshot (source of truth: docmaker), epic docs A/B/C, this doc set.
+**Docs:** `IR-program-spec.md` (reuse inventory refreshed post-D; "absent" list now a "built" list), epic docs A–D (D at v5 with per-wave as-built sections), this doc set.
 
 ## Recorded but not load-bearing (deliberate)
 
-- **Semantic roles** — on every plan; consulted by nothing. Strategies still resolve by annotation type.
-- **Codecs** — named registry exists (`CODECS`/`resolve_codec`); codec *authority* in rendering is still the Format object, preset bindings test-asserted equal (authority flips in D-3/D-5). No per-field overrides, no public registration.
-- **Strategy registry** — engine-private; no public exposure, no deprecation signaling on the legacy hook.
-- **Preset `strategies` bindings** — recorded on every preset; consumed by nothing (D-4).
-- **Template capacity + fragments** — `declared_capacity()` computed, `RenderContext.fragments` plumbed to every fragment slot; both unconsumed until D-4's bake-time triple check.
-- **Message-sequence walker** — `render_template_messages` exists and is parity-tested; the engine path still walks `render.py`'s skeleton (content-first delegation). Cutover to the pure walker lands with D-4's fragments.
+- **`"auto"` strategy resolutions** are recorded per-call (`plan.metadata`) but not into entry `config`; entry config also lacks `use_native_function_calling` — both need the LM-bound export step (Epic F linker territory).
+- **`per_field` codec overrides** — absent from the entry shape; exact serde refuses unknown keys, so it can only grow deliberately.
+- **Authored parsers** (spec §4 `AuthoredParser`) — callables refuse with a teaching error; the three-origin loader shipped for codecs only.
 
 ## Spec'd but not built
 
-- `@role` string-signature shorthand (parser hazards documented in epic-C doc §2a; assigned to D-6 with public `dspy.roles` export).
-- Per-role `strategies={...}` adapter binding surface; double-key (role-then-annotation) registry resolution; strategy awareness in templates (D-4).
-- BAML-as-codec + compat shim (D-3; BAML already inherits the json preset's assistant delegation — only its system section and input codec remain class-owned).
-- Preset dump/load + derived 7-key summary view + loud-refusal loader (D-5; serde must carry `adapter_ir_version` + vocabulary versions per D-024, `language` per D-025).
-- Role-based CoT declared-reasoning check (name-based today; aliasing hole documented).
-- Validity enforcement for role/direction/multiplicity/shape rules.
+- Role-based CoT declared-reasoning check (name-based today; epic-C §9 PR 3).
+- Validity enforcement for role/direction/multiplicity/shape (epic-C §3 table; cutover epic).
+- Annotation-keyed strategy lookup demotion (warn, then remove — epic-C §6 stage 3; the public seam now exists, so the deprecation arc is unblocked, its own decision).
+- Authored parsers; `per_field` codec bindings.
 
 ## Kill list (retire deliberately, each its own decision)
 
-- `ParseContext.lm` — exists only for TwoStep's in-adapter extraction call; dies when TwoStep is expanded as a lowering (needs the lowering substrate).
-- Chat→JSON fallback + structured-output retry inside `base.Adapter.__call__` — become error-policy lowerings (same dependency).
-- `adapt_to_native_lm_feature` legacy hook — wrapped (Epic A); deprecation after public strategy seam ships.
-- Legacy adapter method bodies retained for subclass-override compat — the removal epic's list.
-- litellm dependency — retired by lm15 (~/Projects/lm15-dev/lm15-python) adoption (ratified; sequenced after Epic D).
-- In-repo `LMRequest`/`LMResponse` parallel contract — same arc.
-- Callback plumbing — absorbed by the engine's run overlay, eventually (upstream #10119/#10120 are the polyfill of that overlay; accept freely).
+- `ParseContext.lm` — dies when TwoStep expands as a lowering (Epic F).
+- Chat→JSON fallback + structured-output retry inside `base.Adapter.__call__` — become error-policy lowerings (Epic F).
+- `adapt_to_native_lm_feature` legacy hook — the public strategy seam shipped (D-γ), so deprecation signaling is now unblocked; its own decision.
+- Legacy adapter method bodies + the `format_*` zoo — docs now point at templates; deletion is Epic H.
+- litellm dependency; in-repo `LMRequest`/`LMResponse` parallel contract — the lm15 arc (Epic E).
+- Boundary-test pinned back-edges: `parser_hook.py → clients.openai_format` dies with E; `formats/twostep.py → chat_adapter` dies with F; adapter-class back-edges die with H.
+- Callback plumbing — absorbed by the engine's run overlay eventually (upstream #10119/#10120 are the polyfill).
 
-## Known deferred items (consolidated from epic reports)
+## Known deferred items
 
-- Silent-degrade shape fixes (`serialize_for_json`'s `str()` fallback) — alters bytes; needs a deliberate byte-changing commit.
-- Schema-prose as a first-class codec (BAML's structure section).
-- `direction` rename (`role` key on RenderField means input/output — naming collision with semantic roles, resolved in spec, not in code).
-- Media-as-output roles; `Video` shape; `refusal` role (anticipated, vocabulary-ready).
+- Silent-degrade shape fixes (`serialize_for_json`'s `str()` fallback) — byte-changing; dedicated corpus-gated commit.
+- `direction` rename (`role` key on RenderField) — resolved in spec, not in code.
+- Media-as-output roles; `Video` shape; `refusal` role (vocabulary-ready).
 - ReAct-family `_trajectory` key unification (v1 `trajectory` vs v2 `history`/`termination_reason`).
-- Guillemet list-in-str-field quirk (pinned as documented behavior).
-- Refine/BestOfN redo (metric leaf + retry loop) — blocked on lowering substrate; **do not start**.
-- Optimizers over the new axes (strategy/codec/structure search, seed regimes) — substrate first; **do not start**.
+- Guillemet list-in-str quirk (pinned); the codec admission battery excludes bare `(Optional[T], None)` probes for the same pinned quirk.
+- Refine/BestOfN redo; optimizers over the new axes — blocked on Epic F substrate; **do not start**.
+- Flex redo on the IR (F-γ; scope negotiated with Maxime).
+
+## Checkpoint C1 (pending — Maxime)
+
+Ratify: the D-γ public-name set (above); the two language additions (`{% section strip %}`, `{field('name')}`); the **D-019 as-built reading** (codec owns spelling / template owns arrangement — the decision's letter was unimplementable); the D-β surface (`strategies=` kwarg, `dump_entry`/`load_entry`/`literal_table`). Then: **push** (first attempt was blocked by the known flake failing the pre-push matrix; retry in flight) and the **upstream-sync-before-E** decision.
