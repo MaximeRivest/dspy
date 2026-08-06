@@ -72,9 +72,12 @@ class ChatAdapter(Adapter):
     def _make_json_adapter_fallback(self):
         from dspy.adapters.json_adapter import JSONAdapter
 
+        # Declared strategy bindings survive the retry: dropping them here
+        # would silently re-enable a native channel the user bound textual.
         return JSONAdapter(
             use_native_function_calling=self.use_native_function_calling,
             parallel_tool_calls=self.parallel_tool_calls,
+            strategies=dict(self.strategies) or None,
         )
 
     def _should_reraise_instead_of_fallback(self, error: Exception) -> bool:

@@ -333,6 +333,15 @@ def test_strategies_binding_forces_the_textual_lane():
     assert "reasoning" in rendered  # the field is textually hosted
 
 
+def test_strategies_bindings_survive_the_json_adapter_fallback():
+    """The retry adapter carries the declared bindings — a forced-textual
+    channel must not silently go native on fallback."""
+    adapter = dspy.ChatAdapter(strategies={"reasoning": "textual_field"})
+    fallback = adapter._make_json_adapter_fallback()
+    assert fallback.strategies == {"reasoning": "textual_field"}
+    assert dspy.ChatAdapter()._make_json_adapter_fallback().strategies == {}
+
+
 def test_strategies_binding_refuses_unknown_names_eagerly():
     with pytest.raises(ValueError, match="bindable roles"):
         dspy.ChatAdapter(strategies={"vibes": "auto"})
