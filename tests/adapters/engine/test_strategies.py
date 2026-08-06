@@ -307,6 +307,75 @@ def test_builtins_resolve_through_the_uniform_path():
     assert isinstance(field_strategy_for(Citations), NativeCitationsStrategy)
 
 
+# --- The double-key registry (epic-C §6 stage 2) ---------------------------------
+
+
+def test_double_key_role_first_annotation_fallback():
+    from dspy.adapters._engine.strategies import field_strategy_for, strategy_for
+
+    strategy, resolved_by = strategy_for("reasoning", Reasoning)
+    assert resolved_by == "role"
+    assert strategy is field_strategy_for(Reasoning)  # same instance under both keys
+
+    strategy, resolved_by = strategy_for("citations", Citations)
+    assert resolved_by == "role"
+    assert strategy is field_strategy_for(Citations)
+
+    # A plain role never hits the role table: annotation key resolves.
+    strategy, resolved_by = strategy_for("plain", _BadgeNative)
+    assert resolved_by == "annotation"
+    assert strategy.name == "type_hook:_BadgeNative"
+
+
+def test_registered_annotation_strategy_still_beats_the_builtin_role_entry():
+    """Compat pin: register_field_strategy kept its today-semantics — a
+    registered annotation entry outranks built-ins under either key."""
+    from dspy.adapters._engine.strategies import (
+        register_field_strategy,
+        strategy_for,
+        unregister_field_strategy,
+    )
+
+    custom = _BadgeStrategy()
+    register_field_strategy(Reasoning, custom)
+    try:
+        strategy, resolved_by = strategy_for("reasoning", Reasoning)
+        assert strategy is custom
+        assert resolved_by == "annotation"
+    finally:
+        unregister_field_strategy(Reasoning)
+
+
+def test_registered_role_strategy_wins_and_unknown_role_refuses():
+    from dspy.adapters._engine.strategies import (
+        register_role_strategy,
+        strategy_for,
+        unregister_role_strategy,
+    )
+
+    custom = _BadgeStrategy()
+    register_role_strategy("reasoning", custom)
+    try:
+        strategy, resolved_by = strategy_for("reasoning", Reasoning)
+        assert strategy is custom
+        assert resolved_by == "role"
+    finally:
+        unregister_role_strategy("reasoning")
+
+    import pytest
+
+    with pytest.raises(ValueError, match="valid roles"):
+        register_role_strategy("vibes", custom)
+
+
+def test_builder_trace_records_which_key_resolved():
+    lm_kwargs = {}
+    built = build_plan(ChatAdapter(), _lm(supports_reasoning=True), lm_kwargs, ThoughtfulQA, {"question": "Q?"})
+    trace = [t for t in built.plan.strategy_trace if t.field == "reasoning"]
+    assert len(trace) == 1
+    assert trace[0].resolved_by == "role"
+
+
 def test_legacy_wrapper_no_effects_reports_skipped():
     """A hook that does nothing must trace 'skipped' — the observed-effects
     decision rule, byte-identical to the inline block it replaced."""

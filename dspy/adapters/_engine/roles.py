@@ -7,10 +7,13 @@ derives the implied role for the legacy semantic-type annotations
 (``Reasoning`` implies ``reasoning``, ``list[Tool]`` implies ``tools``, ...)
 so existing programs participate in the role system unchanged.
 
-Derive-and-record only: roles are threaded onto ``RenderField.metadata`` by
-``AdapterPlan.from_signature`` and consulted by nothing yet. Strategy
-resolution stays annotation-keyed until the cutover epic
-(roadmap/epic-C-semantic-roles.md §6).
+Roles are threaded onto ``RenderField.metadata`` by
+``AdapterPlan.from_signature`` and are load-bearing for strategy
+resolution since D-4: the builder resolves ``strategy_for(role,
+annotation)`` role-first with the annotation key as fallback
+(roadmap/epic-C-semantic-roles.md §6, stage 2). Admission to the strategy
+loop stays annotation-gated (``native_response_types``), so the role key
+selects among admitted fields without widening the set.
 """
 
 from types import UnionType

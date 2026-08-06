@@ -37,12 +37,18 @@ class DebugLink:
 
 @dataclass(frozen=True)
 class StrategyTrace:
-    """One strategy-selection decision, recorded for explainability."""
+    """One strategy-selection decision, recorded for explainability.
+
+    ``resolved_by`` records which registry key answered the double-key
+    lookup (``"role"`` or ``"annotation"``, epic-C §6 stage 2); None for
+    entries that predate resolution or self-reported traces.
+    """
 
     strategy: str
     field: str | None
     decision: Literal["candidate", "selected", "skipped", "fallback", "conflict"]
     reason: str
+    resolved_by: str | None = None
 
 
 class PatchMergeError(ValueError):

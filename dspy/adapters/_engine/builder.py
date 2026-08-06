@@ -47,7 +47,7 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     # level (importing dspy must not load the engine), so the dependency
     # points this way only.
     from dspy.adapters import base as adapter_base
-    from dspy.adapters._engine.strategies import NativeFunctionCallingStep, field_strategy_for
+    from dspy.adapters._engine.strategies import NativeFunctionCallingStep, strategy_for
     from dspy.adapters._engine.strategy import CallContext, FieldContext
     from dspy.adapters.types import Type
 
@@ -78,8 +78,9 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
         ):
             continue
 
-        strategy = field_strategy_for(field.annotation)
         render_field = plan.find_field("output", name)
+        semantic_role = (render_field.metadata or {}).get("semantic_role", "plain")
+        strategy, resolved_by = strategy_for(semantic_role, field.annotation)
         ctx = FieldContext(
             adapter=adapter,
             plan=plan,
@@ -100,11 +101,23 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
             # builder records the standard applies-based entry otherwise.
             if not self_traced:
                 plan.strategy_trace.append(
-                    StrategyTrace(strategy=strategy.name, field=name, decision="selected", reason="applies")
+                    StrategyTrace(
+                        strategy=strategy.name,
+                        field=name,
+                        decision="selected",
+                        reason="applies",
+                        resolved_by=resolved_by,
+                    )
                 )
         else:
             plan.strategy_trace.append(
-                StrategyTrace(strategy=strategy.name, field=name, decision="skipped", reason="applies=False")
+                StrategyTrace(
+                    strategy=strategy.name,
+                    field=name,
+                    decision="skipped",
+                    reason="applies=False",
+                    resolved_by=resolved_by,
+                )
             )
 
     plan.input_fields, plan.output_fields, transform_warnings = apply_field_transforms(
