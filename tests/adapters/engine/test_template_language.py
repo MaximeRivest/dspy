@@ -565,10 +565,77 @@ def test_declared_capacity_on_a_static_template():
     assert not capacity.iterates_outputs
     assert capacity.field_slots == {"question"}
     assert not capacity.hosts_role_textually("reasoning")
-    assert capacity.hosts_role_textually("media")
     assert not capacity.hosts_role_textually("history")
     with pytest.raises(ValueError, match="valid roles"):
         capacity.hosts_role_textually("vibes")
+
+
+def test_media_and_tools_capacity_is_per_field():
+    """A field lands textually only where an inputs iteration or its own
+    slot places it — an unrelated slot must not claim hosting for a field
+    that provably reaches no message."""
+    template = parse_message_template([{"role": "user", "content": "{question}"}])
+    capacity = declared_capacity(template)
+    assert capacity.hosts_role_textually("media", field="question")
+    assert not capacity.hosts_role_textually("media", field="photo")
+    assert not capacity.hosts_role_textually("tools", field="tools")
+    with pytest.raises(ValueError, match="per-field"):
+        capacity.hosts_role_textually("media")
+
+    iterating = declared_capacity(
+        parse_message_template([{"role": "user", "content": "{% for f in inputs %}{f.value}{% endfor %}"}])
+    )
+    assert iterating.hosts_role_textually("media", field="photo")
+
+
+def test_output_only_slots_claim_no_media_hosting():
+    """An assistant-prefill template whose only slot is an output field has
+    nowhere for any input to land."""
+    template = parse_message_template(
+        [
+            {"role": "system", "content": "Answer."},
+            {"role": "assistant", "content": "{answer}"},
+        ]
+    )
+    capacity = declared_capacity(template)
+    assert not capacity.hosts_role_textually("media", field="photo")
+    assert capacity.field_slots == {"answer"}
+
+
+def test_declared_capacity_descends_into_directive_patterns():
+    template = parse_message_template(
+        [
+            {"role": "system", "content": "Be brief."},
+            {
+                "role": "demos",
+                "user": "{% for f in inputs %}{f.marker}\n{f.value}{% endfor %}\n{secret_reasoning}",
+                "assistant": "{% for f in outputs %}{f.marker}\n{f.value}{% endfor %}",
+            },
+            {"role": "user", "content": "{question}"},
+        ]
+    )
+    capacity = declared_capacity(template)
+    # The example lane is visible as its own data...
+    assert capacity.directive_iterates_inputs and capacity.directive_iterates_outputs
+    assert capacity.directive_field_slots == {"secret_reasoning"}
+    # ...and never counts as live-lane hosting: a demo pattern cannot
+    # place the live call's fields.
+    assert not capacity.iterates_inputs and not capacity.iterates_outputs
+    assert capacity.field_slots == {"question"}
+    assert not capacity.hosts_role_textually("reasoning")
+
+
+def test_bare_directives_declare_their_default_pattern_capacity():
+    template = parse_message_template(
+        [
+            {"role": "system", "content": "S"},
+            {"role": "demos"},
+            {"role": "user", "content": "{question}"},
+        ]
+    )
+    capacity = declared_capacity(template)
+    assert capacity.hosts_demos
+    assert capacity.directive_iterates_inputs and capacity.directive_iterates_outputs
 
 
 # ---------------------------------------------------------------------------
