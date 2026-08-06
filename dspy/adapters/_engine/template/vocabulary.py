@@ -15,6 +15,11 @@ messages enumerate.
 
 from copy import deepcopy
 
+#: Version of the template language's vocabulary; carried in every
+#: serialized preset's versions block (D-024). Extending the language is a
+#: versioned act.
+TEMPLATE_LANGUAGE_VERSION = "1.0.0"
+
 VOCABULARY: dict = {
     "value_slots": {
         "{field_name}": "a signature field's value, spelled by the direction's bound codec; unknown names refuse at render, missing values render empty",

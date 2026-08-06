@@ -17,6 +17,10 @@ SEMANTIC_ROLES = frozenset(
     ["plain", "reasoning", "tools", "tool_calls", "citations", "history", "media", "code"]
 )
 
+# Version of the role vocabulary; carried in every serialized preset's
+# versions block (D-024). Extending SEMANTIC_ROLES is a versioned act.
+SEMANTIC_ROLES_VERSION = "1.0.0"
+
 _DEPRECATED_FIELD_ARGS = {
     "prefix": (
         "The 'prefix' argument in InputField/OutputField is deprecated and has no effect in DSPy. "

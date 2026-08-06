@@ -265,6 +265,11 @@ TEXT_PYTHONISH = TextPythonishCodec()
 PYDANTIC_JSON = PydanticJSONCodec()
 BAML = BAMLCodec()
 
+#: Version of the codec vocabulary; carried in every serialized preset's
+#: versions block (D-024). Adding or changing a codec entry is a versioned
+#: act.
+CODECS_VERSION = "1.0.0"
+
 #: Named codec entries preset bindings resolve against (spec section 5's
 #: initial vocabulary, populated as codecs land). Engine-private until the
 #: registration API ships with its round-trip admission gate (spec
