@@ -229,6 +229,10 @@ flowchart TB
       ENV["9 · env manifest<br/>PEP 723 + lock"]
       AMB["11 · ambient policy<br/>max_errors, workers, …"]
       MET["12 · metric<br/>identity + source + deps<br/>(droppable in ship object)"]
+      MT ~~~ SIG ~~~ LEARN
+      ADP ~~~ FWD ~~~ TOOL
+      INT ~~~ W ~~~ ENV
+      AMB ~~~ MET
     end
     subgraph DECL["DECLARED · verified at load, refused loudly"]
       direction TB
@@ -238,6 +242,7 @@ flowchart TB
     subgraph CRED["CREDENTIAL · name only, never a value"]
       SEC["10 · credentials<br/>name + scope only"]
     end
+    BAKE ~~~ DECL ~~~ CRED
   end
 
   classDef bake fill:#1b5e20,stroke:#a5d6a7,color:#fff;
