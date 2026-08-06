@@ -307,10 +307,10 @@ nothing").
 
 ```mermaid
 sequenceDiagram
-  participant Opt as optimizer / author
+  participant Author as optimizer / author
   participant IR as ProgramIR (artifact)
   participant Bob as receiver (fresh machine)
-  Opt->>IR: compile — resolve + bake everything<br/>(checkpoint = save, one code path)
+  Author->>IR: compile — resolve + bake everything<br/>(checkpoint = save, one code path)
   Note over IR: manifest.json · weights/ · tools/ · uv.lock<br/>credentials = names only
   IR-->>Bob: ship the directory
   Bob->>Bob: uv sync  (rebuild exact interpreter + deps)
