@@ -66,8 +66,21 @@ SignatureCore + LM capabilities + preset
 Consequences, all normative:
 
 - Slot iterators (`{inputs()}`, `{outputs()}`, loop blocks) iterate the
-  plan's **visible** fields only. A natively-served field contributes no
-  text; its parser fills it from the typed channel.
+  plan's **visible** fields only. **Only non-token-stream channels hide**
+  (native reasoning, native citation assembly) — inputs essentially never
+  hide, because every input goes *somewhere* in the request and the
+  template says where.
+- **Message content is a part list; slots decide which part kind they
+  emit.** A text slot emits TextParts; a media field's slot emits media
+  parts (DocumentPart/ImagePart, citable when the strategy says so) at its
+  template position — the `{image}` content-splitting mechanism of the
+  reference implementation, promoted to the rule. There is no separate
+  part-contribution side channel: `slot_codecs` on the plan decide the
+  emission kind per field.
+- Strategies may emit **field transforms** into the plan (e.g. native
+  citations renames the text target to `answer_text` so the text parser
+  and the native assembler compose) — the transform machinery is the
+  strategy's to use, recorded like everything else.
 - A **textual strategy is a template-fragment provider**; preset templates
   carry the slots its fragments fill.
 - **Declared capacity:** a template statically declares which roles it can
@@ -90,8 +103,11 @@ directive. Content strings may use:
 - **Loop blocks:** `{% for f in inputs|outputs [separator='…'] %} … {% endfor %}`
   with the closed `f.*` vocabulary: `i/index, name, type, desc, desc_suffix,
   value, placeholder, typed_placeholder, marker, chat_type_hint`.
-- **Strategy slots:** where textual-strategy fragments land (exact naming
-  ratified in D-1; per-role, e.g. `{tools.instructions}`).
+- **Fragment slots (positional):** `{fragments('system')}` and
+  `{fragments('user')}` — placed once per preset; a textual strategy's
+  fragment names the slot it targets. Empty slots render as nothing, so a
+  preset pays zero bytes when no textual strategy fires (this is what
+  keeps byte-parity with the historical adapters satisfiable).
 - **Escapes:** `{{`/`}}` literal braces; `{{{f.name}}}` literal placeholder.
 
 Directive messages expand at render time: `{"role": "demos"}` → user/
@@ -103,6 +119,26 @@ they are the textual strategies of the `history` and demo machinery.
 user-defined control flow. Analyzability (capacity derivation, diffing,
 optimization) is a spec requirement. Registered helper functions are an
 authored-code escape hatch and carry provenance (ADP-011).
+
+**Discoverability (normative).** Because the language is closed, its entire
+vocabulary is enumerable — and the contract requires that it be enumerable
+*as data, from one source*:
+
+- **The vocabulary is a data structure** (slots, loop variables, directive
+  roles, codec/style names, parse modes, fragment slot names), defined once
+  in the implementation; the validator, the error messages, the docs table,
+  and `describe_template_language()` (a public introspection call returning
+  the vocabulary) all read the same structure. A conformance test asserts
+  the docs table equals the data — vocabulary drift dies the way
+  literal-table key drift did.
+- **Errors teach.** Templates parse eagerly at preset construction; every
+  unknown construct refuses loudly naming itself AND the valid set in its
+  category (`unknown slot {outpts()} — valid slots: instruction, inputs,
+  outputs, demos, history, fragments; valid fields here: question, answer`).
+  Learning the language by making mistakes must work.
+- **`preview()` is part of the contract**: render a preset against a
+  SignatureCore + values with no LM call (ADP-002 guarantees this is
+  possible), so the learn-by-looking loop is always available.
 
 ## 4. Presets (the canonical entry)
 
