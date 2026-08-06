@@ -307,11 +307,43 @@ def test_epic_d_role_string_shorthand():
     assert _role_of(signature, "answer") == "citations"
 
 
-@pytest.mark.xfail(strict=True, reason="epic D: per-role strategies binding (D-3)")
 def test_epic_d_strategies_binding_surface():
     adapter = dspy.ChatAdapter(strategies={"reasoning": "textual_field"})
     result = _predict(adapter, "question -> answer", [{"answer": "x"}], question="q")
     assert result.answer == "x"
+
+
+def test_strategies_binding_forces_the_textual_lane():
+    """An explicit textual binding keeps the reasoning field in the prompt
+    and out of the provider channel, whatever the LM supports."""
+
+    class Thoughtful(dspy.Signature):
+        question: str = dspy.InputField()
+        reasoning: dspy.Reasoning = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter(strategies={"reasoning": "textual_field"})
+    lm = DummyLM([{"reasoning": "because", "answer": "42"}], adapter=adapter)
+    with dspy.context(lm=lm, adapter=adapter):
+        result = dspy.Predict(Thoughtful)(question="q")
+
+    assert result.answer == "42"
+    assert str(result.reasoning) == "because"
+    rendered = str(lm.history[-1]["messages"])
+    assert "reasoning" in rendered  # the field is textually hosted
+
+
+def test_strategies_binding_refuses_unknown_names_eagerly():
+    with pytest.raises(ValueError, match="bindable roles"):
+        dspy.ChatAdapter(strategies={"vibes": "auto"})
+    with pytest.raises(ValueError, match="valid reasoning strategies"):
+        dspy.ChatAdapter(strategies={"reasoning": "quantum"})
+    with pytest.raises(ValueError, match="not implemented"):
+        dspy.ChatAdapter(strategies={"reasoning": "prefill"})
+    with pytest.raises(ValueError, match="must agree"):
+        dspy.ChatAdapter(strategies={"tools": "native_fc"})  # use_native_function_calling defaults False
+    with pytest.raises(ValueError, match="must agree"):
+        dspy.JSONAdapter(strategies={"tools": "textual_json"})  # JSONAdapter defaults native FC on
 
 
 @pytest.mark.xfail(strict=True, reason="epic D: literal_table as the summary view derived from the preset template (D-5)")

@@ -54,6 +54,7 @@ class Adapter:
         use_native_function_calling: bool = False,
         native_response_types: list[type[Type]] | None = None,
         parallel_tool_calls: bool | None = None,
+        strategies: dict[str, str] | None = None,
     ):
         """
         Args:
@@ -67,11 +68,24 @@ class Adapter:
                 (e.g., Anthropic's citation feature). Defaults to `[Citations]`.
             parallel_tool_calls: Whether to request provider-side parallel tool-call generation when native function
                 calling is active. If None, the adapter does not set the provider option. Defaults to None.
+            strategies: Per-role strategy bindings, e.g. `{"reasoning": "textual_field"}`. Keys name semantic
+                roles, values name entries in that role's closed strategy vocabulary; `"auto"` (the default for
+                every role) resolves against the LM's capabilities when the call plan is built, and the
+                resolution is recorded on the plan. Unknown roles, unknown strategy names, and bindings the LM
+                cannot honor refuse loudly instead of degrading. Defaults to None (all roles `"auto"`).
         """
         self.callbacks = callbacks or []
         self.use_native_function_calling = use_native_function_calling
         self.parallel_tool_calls = parallel_tool_calls
         self.native_response_types = native_response_types or _DEFAULT_NATIVE_RESPONSE_TYPES
+        if strategies:
+            from dspy.adapters._engine.strategies.vocabulary import validate_strategy_bindings
+
+            self.strategies = validate_strategy_bindings(
+                strategies, use_native_function_calling=use_native_function_calling
+            )
+        else:
+            self.strategies = {}
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)

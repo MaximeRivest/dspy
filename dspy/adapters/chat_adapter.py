@@ -45,6 +45,7 @@ class ChatAdapter(Adapter):
         native_response_types: list[type[type]] | None = None,
         use_json_adapter_fallback: bool = True,
         parallel_tool_calls: bool | None = None,
+        strategies: dict[str, str] | None = None,
     ):
         """
         Args:
@@ -56,12 +57,15 @@ class ChatAdapter(Adapter):
                 JSONAdapter. Defaults to True.
             parallel_tool_calls: Whether to request provider-side parallel tool-call generation when native function
                 calling is active. If None, the adapter does not set the provider option.
+            strategies: Per-role strategy bindings, e.g. `{"reasoning": "textual_field"}`; `"auto"` per role is
+                the default. See `dspy.Adapter`.
         """
         super().__init__(
             callbacks=callbacks,
             use_native_function_calling=use_native_function_calling,
             parallel_tool_calls=parallel_tool_calls,
             native_response_types=native_response_types,
+            strategies=strategies,
         )
         self.use_json_adapter_fallback = use_json_adapter_fallback
 

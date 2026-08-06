@@ -376,6 +376,85 @@ def test_builder_trace_records_which_key_resolved():
     assert trace[0].resolved_by == "role"
 
 
+# --- The strategies={} binding surface at bake -----------------------------------
+
+
+def test_textual_binding_stands_the_native_strategy_down():
+    adapter = ChatAdapter(strategies={"reasoning": "textual_field"})
+    lm_kwargs = {}
+    built = build_plan(adapter, _lm(supports_reasoning=True), lm_kwargs, ThoughtfulQA, {"question": "Q?"})
+
+    assert lm_kwargs == {}  # no reasoning_effort: the native channel stood down
+    assert "reasoning" in built.render_signature.output_fields
+    trace = [t for t in built.plan.strategy_trace if t.field == "reasoning"]
+    assert len(trace) == 1
+    assert trace[0].strategy == "reasoning.textual_field"
+    assert trace[0].reason == "bound: textual_field"
+    assert trace[0].resolved_by == "binding"
+    assert built.plan.metadata["strategy_bindings"] == {"reasoning": "textual_field"}
+    assert built.plan.metadata["strategy_resolution"]["reasoning"] == {
+        "role": "reasoning",
+        "binding": "textual_field",
+        "served": "textual",
+    }
+
+
+def test_explicit_native_binding_refuses_when_the_lm_cannot_serve_it():
+    import pytest
+
+    adapter = ChatAdapter(strategies={"reasoning": "native_channel"})
+    with pytest.raises(ValueError, match="cannot be honored"):
+        build_plan(adapter, _lm(supports_reasoning=False), {}, ThoughtfulQA, {"question": "Q?"})
+
+
+def test_explicit_native_binding_matches_auto_when_the_lm_serves_it():
+    auto_kwargs, bound_kwargs = {}, {}
+    auto = build_plan(ChatAdapter(), _lm(supports_reasoning=True), auto_kwargs, ThoughtfulQA, {"question": "Q?"})
+    bound = build_plan(
+        ChatAdapter(strategies={"reasoning": "native_channel"}),
+        _lm(supports_reasoning=True),
+        bound_kwargs,
+        ThoughtfulQA,
+        {"question": "Q?"},
+    )
+    assert auto_kwargs == bound_kwargs == {"reasoning_effort": "low"}
+    assert list(auto.render_signature.output_fields) == list(bound.render_signature.output_fields)
+    assert bound.plan.metadata["strategy_resolution"]["reasoning"]["served"] == "native"
+
+
+def test_auto_resolution_is_recorded():
+    built = build_plan(ChatAdapter(), _lm(supports_reasoning=True), {}, ThoughtfulQA, {"question": "Q?"})
+    assert built.plan.metadata["strategy_resolution"]["reasoning"] == {
+        "role": "reasoning",
+        "binding": "auto",
+        "served": "native",
+    }
+    built = build_plan(ChatAdapter(), _lm(supports_reasoning=False), {}, ThoughtfulQA, {"question": "Q?"})
+    assert built.plan.metadata["strategy_resolution"]["reasoning"]["served"] == "textual"
+
+
+def test_native_fc_binding_refuses_without_capability():
+    import pytest
+
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    class ToolSig(dspy.Signature):
+        question: str = dspy.InputField()
+        tools: list[dspy.Tool] = dspy.InputField()
+        tool_calls: dspy.ToolCalls = dspy.OutputField()
+
+    adapter = ChatAdapter(use_native_function_calling=True, strategies={"tools": "native_fc"})
+    inputs = {"question": "2+2?", "tools": [dspy.Tool(add)]}
+    with pytest.raises(ValueError, match="does not support function calling"):
+        build_plan(adapter, _lm(supports_function_calling=False), {}, ToolSig, inputs)
+    # With the capability, the binding matches auto exactly.
+    lm_kwargs = {}
+    built = build_plan(adapter, _lm(supports_function_calling=True), lm_kwargs, ToolSig, inputs)
+    assert "tools" in lm_kwargs
+    assert "tool_calls" not in built.render_signature.output_fields
+
+
 def test_legacy_wrapper_no_effects_reports_skipped():
     """A hook that does nothing must trace 'skipped' — the observed-effects
     decision rule, byte-identical to the inline block it replaced."""

@@ -43,12 +43,14 @@ class JSONAdapter(ChatAdapter):
         callbacks: list[BaseCallback] | None = None,
         use_native_function_calling: bool = True,
         parallel_tool_calls: bool | None = None,
+        strategies: dict[str, str] | None = None,
     ):
         # JSONAdapter uses native function calling by default.
         super().__init__(
             callbacks=callbacks,
             use_native_function_calling=use_native_function_calling,
             parallel_tool_calls=parallel_tool_calls,
+            strategies=strategies,
         )
 
     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):

@@ -48,13 +48,29 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     # points this way only.
     from dspy.adapters import base as adapter_base
     from dspy.adapters._engine.strategies import NativeFunctionCallingStep, strategy_for
+    from dspy.adapters._engine.strategies.vocabulary import NATIVE_BINDINGS, TEXTUAL_BINDINGS
     from dspy.adapters._engine.strategy import CallContext, FieldContext
     from dspy.adapters.types import Type
 
     plan = AdapterPlan.from_signature(signature, inputs)
     render_signature = signature
 
+    # Per-role strategy bindings (constructor-validated); every unbound role
+    # is "auto". Declared bindings are recorded so the plan states them.
+    bindings = getattr(adapter, "strategies", None) or {}
+    if bindings:
+        plan.metadata["strategy_bindings"] = dict(bindings)
+
     # --- Native function-calling planning (call-level step) ----------------
+    if bindings.get("tools") == "native_fc":
+        # An explicit native binding refuses where "auto" silently rendered
+        # tools textually (declare-don't-discover, ADP-006).
+        if adapter._get_tool_call_output_field_name(signature) and not lm.supports_function_calling:
+            raise ValueError(
+                f"strategies binding tools='native_fc' cannot be honored: lm {getattr(lm, 'model', lm)!r} "
+                "does not support function calling — an explicit native binding refuses instead of "
+                "silently rendering tools textually"
+            )
     step = NativeFunctionCallingStep()
     step_ctx = CallContext(
         adapter=adapter, plan=plan, signature=render_signature, inputs=inputs, lm=lm, lm_kwargs=lm_kwargs
@@ -80,6 +96,23 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
 
         render_field = plan.find_field("output", name)
         semantic_role = (render_field.metadata or {}).get("semantic_role", "plain")
+        binding = bindings.get(semantic_role, "auto")
+
+        if binding in TEXTUAL_BINDINGS.get(semantic_role, ()):
+            # Bound textual: the native strategy stands down and the field
+            # stays visible for the template to host.
+            plan.strategy_trace.append(
+                StrategyTrace(
+                    strategy=f"{semantic_role}.{binding}",
+                    field=name,
+                    decision="selected",
+                    reason=f"bound: {binding}",
+                    resolved_by="binding",
+                )
+            )
+            _record_resolution(plan, name, semantic_role, binding, served="textual")
+            continue
+
         strategy, resolved_by = strategy_for(semantic_role, field.annotation)
         ctx = FieldContext(
             adapter=adapter,
@@ -109,7 +142,14 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
                         resolved_by=resolved_by,
                     )
                 )
+                _record_resolution(plan, name, semantic_role, binding, served="native")
         else:
+            if binding == NATIVE_BINDINGS.get(semantic_role):
+                raise ValueError(
+                    f"strategies binding {semantic_role}={binding!r} cannot be honored for field {name!r}: "
+                    f"{strategy.name} does not apply for lm {getattr(lm, 'model', lm)!r} — an explicit "
+                    "native binding refuses instead of silently falling back to the textual lane"
+                )
             plan.strategy_trace.append(
                 StrategyTrace(
                     strategy=strategy.name,
@@ -119,6 +159,7 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
                     resolved_by=resolved_by,
                 )
             )
+            _record_resolution(plan, name, semantic_role, binding, served="textual")
 
     plan.input_fields, plan.output_fields, transform_warnings = apply_field_transforms(
         plan.input_fields, plan.output_fields, plan.field_transforms
@@ -150,6 +191,17 @@ def _apply_patch(plan: AdapterPlan, patch, render_signature, source_name: str):
         render_signature = render_signature.delete(name)
     patch.merge_into(plan)
     return render_signature
+
+
+def _record_resolution(plan: AdapterPlan, field_name: str, role: str, binding: str, served: str) -> None:
+    """Record how one field's role resolved at bake (declare-don't-discover):
+    the declared binding and the lane it landed in. Self-traced legacy hooks
+    record through their own trace instead."""
+    plan.metadata.setdefault("strategy_resolution", {})[field_name] = {
+        "role": role,
+        "binding": binding,
+        "served": served,
+    }
 
 
 def _record_kwargs_delta(plan: AdapterPlan, type_name: str, before: dict, after: dict) -> None:
