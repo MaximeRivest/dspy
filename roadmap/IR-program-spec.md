@@ -1751,6 +1751,18 @@ The portable customization path is templates/presets-as-data (adapter-ir-spec
 an internal upgrade (ADP-002 purity is what makes that sound), but the
 artifact can never require it (D-026).
 
+**The IR is the product (ratified 2026-08-06, D-028).** This section reads
+as if engines were the port; they are grade 2 of two. **Grade 1 — hold the
+object**: parse, validate, version-check, link-check, diff, explain — a pure
+data library any language implements from the programir contract alone, and
+all an *optimizer* needs: propose → score → keep runs over IR snapshots
+(checkpoint = save), and the execute oracle may be a remote engine in
+another language. Frontends, syntaxes, evals, and optimizers are periphery —
+functions that produce, execute, or rewrite the one central object. The
+contract stack (lm15-contract → adapter-ir contract → programir-contract)
+is what makes the center language-neutral; the top repo is a first-class
+deliverable (contents and state: `roadmap/cross-language.md`).
+
 <a name="e0-binding"></a>
 ### (e0-binding) Identity is baked; bindings are the receiver's; deviations are recorded and re-scored
 

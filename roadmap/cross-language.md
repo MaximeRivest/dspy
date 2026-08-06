@@ -9,20 +9,46 @@ TypeScript/Go port campaign — it decides nothing; decisions get D-numbers.
 
 ---
 
-## The three postures — "port" means one of these, and they cost differently
+## The ratified frame (D-028): the IR is the product
 
-1. **IR executor** — an engine that loads and runs shipped `ProgramIR`
-   artifacts. The declared-tier profile (D-023) is its v1; the rung-walk rule
-   (D-022) is its growth path. Feasible against today's specs + corpora once
-   the promotion gaps below close.
-2. **Conformant adapter library** — render/parse over SignatureCore, held to
-   the adapter-IR corpus (the lm15-of-adapters). Blocked on Epic D landing
-   and the corpus promotion checklist below.
-3. **Authoring framework** — signatures/modules/optimizers native in TS/Go.
-   Has *no story at all* under current specs (forwards are captured from
-   Python source; optimizers have no contract surface). Largest open ground.
+The port question is not "translate the framework" but "make every language
+able to hold the one central object." Frontends produce IRs; engines execute
+them; optimizers are IR → IR with a score; evals are IR → score. The
+periphery is plural and disposable — ten competing TS frontend syntaxes are
+fine because they bottom out in the same object; dspy-Python is reference
+implementation #1, not the definition.
 
-Every question below is tagged where it bites: [1], [2], [3], or [all].
+**Two grades per language:**
+
+- **Grade 1 — hold.** Parse/validate/version-check/link-check/diff/explain:
+  a pure data library, implementable from the programir contract alone. All
+  an optimizer needs — propose → score → keep runs over IR snapshots
+  (checkpoint = save), and the execute oracle can be a remote engine in any
+  language.
+- **Grade 2 — execute.** Adapter engine + lm15 client + node-set
+  interpreter; the declared-tier profile (D-023) is its v1, the rung-walk
+  (D-022) its growth path.
+
+**The contract stack** — the same play that produced conformant lm15-go/ts,
+run at each layer:
+
+| layer | contract repo | state |
+|---|---|---|
+| wire | lm15-contract | graduated (304 checks; go/ts/rust conform) |
+| signature ⇄ messages | adapter-ir contract | provisional; Epic D proving it |
+| program | **programir-contract** | **missing — first-class deliverable** |
+
+programir-contract's contents are exactly §3 below: manifest JSON Schema,
+forward-AST encoding with written operational semantics, link/load/refusal
+error codes, the versions block, an artifact corpus seeded by the D-γ
+examples. Grade-1 TS/Go libraries start the moment it exists. Frontends are
+deferred indefinitely — they are the cheapest thing to rebuild and the least
+load-bearing to standardize.
+
+The old three postures map onto this frame: (1) IR executor = grade 2; (2)
+conformant adapter library = grade 2's middle layer; (3) authoring framework
+= periphery, deferred. Questions below keep those tags: [1], [2], [3], or
+[all].
 
 ## What is already decided (the spine a port builds on)
 
@@ -38,6 +64,9 @@ Every question below is tagged where it bites: [1], [2], [3], or [all].
   portable customization path.
 - D-027: sidecar wire-contract candidates (rat kernel protocol; MCP with
   outputSchema; bearer_env≡credential_ref); text deferred to E/F.
+- D-028: the IR is the product — two grades per language, programir-contract
+  as a first-class deliverable, optimizers engine-agnostic via grade 1 +
+  remote scoring, frontends deferred.
 
 ## What already exists (assets, with their known holes)
 
@@ -73,7 +102,9 @@ Every question below is tagged where it bites: [1], [2], [3], or [all].
   Evaluate/parallel-executor semantics, dataset loading, and cross-language
   RNG determinism (must Go MIPROv2 seed=0 reproduce Python's stream)? Gates
   the product definition: execute-only is a serving story; optimizing needs
-  contract surfaces that don't exist.
+  contract surfaces that don't exist. D-028 reframes the floor: a foreign
+  optimizer needs only grade 1 + a remote execute oracle, so the real
+  blockers are the metric/eval contract surfaces, not an engine.
 - **Which dspy** [all]: port of the fork's contract stack, of upstream
   behavior, or a conformance layer offered to existing community ports
   (Ax, dspy-go)? Naming/namespace/trademark questions ride on this.
@@ -81,7 +112,9 @@ Every question below is tagged where it bites: [1], [2], [3], or [all].
   cells are promised? If TS authoring must emit the closed AST grammar, the
   grammar needs respecifying as language-neutral (node semantics defined
   operationally, not "what `ast.dump` emits") — or foreign frontends author
-  in a builder DSL.
+  in a builder DSL. D-028 collapses the matrix — every cell goes through
+  the IR — so the residue is only this authoring question, alive exactly
+  when a foreign *frontend* (periphery) is attempted.
 - **Legacy migration** [1]: existing `.json`/`.pkl` saves are not ProgramIR;
   ruling needed — "ports read ProgramIR only; migration is Python tooling"
   — and someone owns the exporter. The realistic first Go customer holds an
@@ -106,7 +139,7 @@ Every question below is tagged where it bites: [1], [2], [3], or [all].
   lm15-contract (one pinnable repo); add CONTRACT_PIN to lm15-go/ts; publish
   both; decide whether ports track the post-review API renames.
 
-### 3 · Artifact format
+### 3 · Artifact format (= programir-contract's table of contents, D-028)
 
 - **manifest.json JSON Schema** [1]: publish the full schema (12 components,
   pools/bindings, placement blocks) as JSON Schema — nothing normative
