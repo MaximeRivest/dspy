@@ -163,6 +163,14 @@ byte-reproducing the historical class adapters (the corpus proves it).
 `full_text` requires exactly one plain output field. BAML is **not** a
 preset: it is preset `json` + the `baml` codec bindings.
 
+Serialized presets carry a `versions` block — this contract's version plus
+the versions of the §5 vocabularies in force, mirroring the ProgramIR
+manifest's block (ratified 2026-08-06, D-024). A reader meeting an unknown
+major refuses loudly naming both versions, and a preset with no block at all
+is refused as malformed (no unversioned grandfathering) — ADP-005's
+discipline applied to time; without the block, forward-compat refusal is
+unimplementable and vocabulary extension is silent drift.
+
 ## 5. Closed vocabularies
 
 - **Roles:** `plain, reasoning, tools, tool_calls, citations, history,
@@ -264,3 +272,18 @@ the extension *is*:
   optimizer-discovered template or codec ships identically with
   `authored_by: optimizer` — a search result becomes a distributable
   artifact through the same door.
+- **Cross-language receivers (ratified 2026-08-06, D-025/D-026):**
+  `packaged`/`authored` entries carry `language`; `builtin` needs none. To a
+  receiving engine in another language, `builtin` resolves internally (same
+  behavior, its own implementation, corpus-conformant);
+  `packaged`/`authored` entries in a foreign language are refusable at the
+  profile level (ProgramIR §e0-lang's declared-tier profile).
+  Templates/presets-as-data are the portable customization path: a program
+  restricted to them plus builtin codecs/strategies loads on any conforming
+  engine with no code execution. An engine MAY evaluate foreign authored
+  codecs/strategies out-of-process — ADP-002 purity is what makes that
+  sound — but that is an engine quality upgrade, invisible to the artifact,
+  never a requirement: adapter entries carry no placement and no credential
+  (ProgramIR §Adapter-notes — a law to absorb into ADP-002 at graduation),
+  so authored adapter code is the one authored-code class that does not
+  rung-walk.

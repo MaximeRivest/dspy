@@ -830,6 +830,25 @@ serve both dispatch modes (program-called UDF, model-called tool), and
 user-authored bodies default frozen with per-leaf objective declarations
 governing any opening to search (§e2 Seeds).
 
+**The MCP rung (ratified 2026-08-06, D-027).** At the outermost rung the tool
+transport is MCP, with two requirements the transport does not impose by
+default. First, identity verification needs the server to expose
+`outputSchema`/`structuredContent` — the `return_schema` leg of tool identity;
+`tools/list` name + input schema alone under-verifies (and every in-house MCP
+bridge currently drops return schemas — the known gap D-027 records). Second,
+**MCP sampling is a smuggled LM binding**: a sidecar tool that issues a
+sampling request is making an LM call no manifest states — invisible to the
+placement census, absent from the credentials list, the TwoStep disease
+(§Adapter-notes) reappearing at the tool rung. The rule: a tool that samples
+either declares that LM as a binding of its own (an LM-pool entry +
+`credential_ref`, like any `network` leaf) or the engine refuses the sampling
+request loudly. Declare-and-keep is lawful here where TwoStep had to lower,
+because the single-shot law governs the *representation* layers — an LM call
+there must become component-5 flow — while leaves are opaque behind typed
+contracts, where an LM call must be *declared* (the §d `network`-leaf/effects
+rule); the disease was only ever the undeclared call. Elicitation and roots
+are the receiver's UX surface and carry no such hazard (ruled in D-027).
+
 <a name="interpreter-notes"></a>**§Interpreter-notes — fully net-new (now
 proven by example 15).** There is *no* interpreter/exec/in-process machinery
 anywhere in `adapters/` or `core/` on this branch. The vanilla same-process
@@ -894,6 +913,20 @@ one design choice to state explicitly: our program is a *tree* of authored files
 plus baked assets, not a single script, so the block lives on **one entry/loader
 file** representing the whole program's env, with components as imported modules —
 not a separate PEP 723 block per file.
+
+**Per-language env blocks (ratified 2026-08-06, D-025).** PEP 723 + uv is the
+*Python instance* of component 9, not its definition. An artifact carries one
+env block **per language present in its authored code** (`python` today; `ts`
+→ package.json + lockfile; `go` → go.mod + go.sum), and each block is, when
+foreign to the receiver, the materialization recipe for that language's
+sidecar under §e0-lang's rung-walk (the receiver's own language's block is
+simply the program env — load step 1). To the receiving engine, every
+foreign language's block is a declared system dep (the toolchain: `uv`,
+`node`, `go`), verified at load like any other. The candidate neutral schema
+for a block is the `runtime.yaml` shape proven in `rat` — detect (binary +
+env override) and install (manager + deps, with `check_env` credential names
+and a `smoke` run/expect probe nested under it) — the candidate ratified in
+D-025, its contract text riding D-027's E/F deferral.
 
 **Per-component deps: authored inline, resolved globally.** A full PEP 723 block
 per component file would be *wrong* — each declares a whole runnable environment,
@@ -987,6 +1020,22 @@ doc: pure data + a typed header, no code execution at load. Small LM target
 Everything is JSON-able except tensor bytes (safetensors) and Python source
 (text). No pickle, no cloudpickle, no live-object serialization anywhere — this
 is the structural fix for §4 (unpicklable adapter) and §15 (pickle key leak).
+
+**Versioning (ratified 2026-08-06, D-024).** `manifest.json` carries one
+`versions` block, written at save: `ir_version` (this spec's version) plus the
+version of every closed vocabulary the artifact uses (`roles`, `strategies`,
+`codecs`, `node_set`, `adapter_ir`, `lm15`). Every vocabulary in this spec is
+"closed and versioned" in prose, but prose is not a field: a reader that meets
+vocabulary N+1 without a version block cannot distinguish *newer artifact* from
+*corrupt artifact*, so loud refusal on the unknown (L5) is unimplementable and
+every vocabulary extension becomes silent drift across engines. Load compares
+the block against what the engine implements and refuses loudly per entry
+(same-major accepts; otherwise the refusal names the component and both
+versions). The block is the first thing `explain` prints. Serialized presets
+carry a `versions` block of their own for the same reason (adapter-ir-spec
+§4). A manifest with no `versions` block is refused as malformed — no
+unversioned grandfathering; D-024 precedes the exporter, so no legitimate
+unversioned artifact exists.
 
 **load rebuilds** (with *zero* reads of `dspy.settings`):
 
@@ -1628,6 +1677,80 @@ distribution mode; it needs this one axis, and the batching/replication story fo
 *why* and *when* to walk outward lives in the DESIGN doc's compute-gradient
 section.
 
+<a name="e0-lang"></a>
+### (e0-lang) Cross-language receivers — the rung-walk rule and the declared-tier profile
+
+The ladder was built for distribution; read across languages it is also the
+portability rule (ratified 2026-08-06, D-022/D-023). To a receiving engine
+written in another language (a Go or TS dspy), a component whose rung 0 is
+baked host-language source is not a new failure class — it is an
+**unsatisfiable rung**, and the response is the ladder's own: walk outward.
+Two facts make the walk sound. The tree needs no walk at all: component 5 is
+a closed grammar *designed* to be language-neutral — every engine interprets
+the tree natively rather than via sidecar; its operational semantics, today
+supplied implicitly by CPython, are pinned as part of the port campaign
+(cross-language.md §3) — **the tree is polyglot by grammar; the leaves are
+polyglot by placement.** And for the leaves, the identity/binding split
+(§e0-binding for the LM; §Interpreter-notes for the interpreter profile; a
+new clause here making the tool's source its identity for cross-language
+purposes) already separates what scores attach to from where the component
+runs (the receiver's binding) — so a Python tool executing in a Python
+worker the Go engine spawned is the *same identity at a different rung*: a
+**recorded re-placement**, outside the identity set scores attach to, so
+shipped scores stay warranted — exactly as cross-provider re-binding is "a
+binding change" (example 10), never a score-detaching identity deviation.
+
+**The rung-walk rule.** A receiving engine must support every component of an
+artifact it accepts at *some* rung. When rung 0's host language ≠ the
+engine's, the loader walks the component outward to a rung it can satisfy,
+in policy order — a binding the receiver already operates wins over
+materializing a new process: (1) an endpoint binding the receiver already
+provides; (2) a **sidecar the loader materializes itself** from the
+component's language-tagged env block (§Env-manifest — for Python, `uv run`
+on the baked entry file; the foreign toolchain is a declared system dep the
+receiver must satisfy); (3) loud refusal naming the component, its language,
+and the unsatisfied rungs. Every walk is recorded as a re-placement in
+provenance (L11); nothing is silent (L5). The typed contract crossing the
+sidecar boundary is JSON-typed by construction for Predict and tool leaves —
+shapes are JSON Schema or refused at lowering, and tools carry args + return
+schemas — while the interpreter rung's `vars` marshaling is the one open
+serialization surface (D-027 records it as a required addition to the
+kernel-protocol candidate). That is what makes the boundary a serialization
+problem, not a redesign. Wire
+contracts for the sidecar rungs are recorded as reference behavior in D-027;
+their text is deferred to Epics E/F.
+
+**The declared-tier profile.** L5 forbids silent partial support, so a
+foreign engine's honest subset must be a *named* one. The **declared-tier
+profile** is defined by binding mode, not rung arithmetic: every LM entry at
+a receiver-bound endpoint rung (lm15 contract), builtin
+presets/codecs/strategies only, templates as data, no authored-origin code,
+no rung-0 weights, and interpreter and tools **at receiver-bound endpoint
+rungs (an `endpoint_ref` the receiver binds — never in-process, never
+loader-materialized) or absent**. An artifact inside the profile loads on
+any conforming engine with zero code execution and zero sidecars. A
+declared-LM entry's `lm.class` block (any origin) is **advisory** to a
+profile engine: the entry is served through the engine's own lm15 client
+after `weights_identity` verification, recorded as a binding substitution —
+the class block is how a *Python* receiver reconstructs its client, not part
+of the profile's contract (which is how example 09's packaged-class artifact
+sits inside the profile without smuggling code execution into it). An engine
+may *claim* the profile; the claim is testable today at the adapter and LM
+surfaces (the adapter corpus + lm15 fixtures), while the node-set grammar
+and link step still need their own fixture family — an open corpus gap
+(cross-language.md §3/§6). Anything outside the profile engages the
+rung-walk rule or refuses loudly. Rung 0 remains the reference frame — a
+foreign engine never claims completeness, it claims a profile plus a walk
+policy. The same predicate, run at *export* time, is the portability
+preflight an author sees before shipping.
+
+One component class cannot walk: authored adapter code (codecs, strategies,
+parsers) — component 4 carries no placement by law (§Adapter-notes purity).
+The portable customization path is templates/presets-as-data (adapter-ir-spec
+§9); an engine MAY evaluate foreign authored adapter code out-of-process as
+an internal upgrade (ADP-002 purity is what makes that sound), but the
+artifact can never require it (D-026).
+
 <a name="e0-binding"></a>
 ### (e0-binding) Identity is baked; bindings are the receiver's; deviations are recorded and re-scored
 
@@ -1750,6 +1873,22 @@ The `lm.class` block has one field that forks it — `origin`:
   tier); load execs it in an isolated namespace, checks it subclasses `BaseLM` and
   declares `forward_contract`, and binds it. This is what makes a quick-script
   custom LM actually shippable — the gap that `_dspy_lm_class`-by-name never closed.
+
+**The language axis (ratified 2026-08-06, D-025).** The block gains a
+`language` field: `language: "python" | "ts" | "go" | …` on every `packaged`
+and `authored` entry. Today's artifacts are implicitly `python` everywhere, and
+the implicitness is exactly what a cross-language receiver cannot afford
+(§e0-lang): a Go engine holding an untagged authored source has no way to
+know which sidecar to materialize or whether to refuse. `packaged` resolves
+against the env block *of that language* (§Env-manifest); `authored` source
+is exec'd natively when the engine's language matches and rung-walked when it
+does not. Compiled authored languages (Go) do not "exec source at load" —
+their authored form is a declared toolchain build or a future portable target
+(WASM is the candidate, deliberately not yet ratified); until then
+authored-Go entries are packaged-or-refused. The tag applies wherever
+authored code lives: tools (6), LM classes (8a), metric bodies (12), and
+adapter pool entries (adapter-ir-spec §9 — which carry the tag for
+refusal/profile decisions but never rung-walk, D-026).
 
 **Compile-time rule:** if the LM is a non-builtin `BaseLM` subclass, the IR *must*
 resolve an `origin`. A packaged class with no matching manifest entry, or an
