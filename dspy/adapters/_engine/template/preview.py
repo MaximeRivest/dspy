@@ -8,6 +8,12 @@ content against the call values — as one pure function. ``preview()``
 wraps it with codec defaults so the learn-by-looking loop is always
 available (spec section 3, discoverability).
 
+Message-role asymmetry, declared (spec section 3, user-turn assembly):
+every user message assembles through the historical join-then-strip
+(``render_user_content``) and is OMITTED from the list when it assembles
+to nothing; system and assistant messages emit their rendered bytes
+verbatim, and always emit.
+
 Deliberate limits, documented rather than approximated: history turns
 expand as plain user/assistant pairs (the engine's native tool-call replay
 machinery lives with the pipeline, not the language), and custom-type
@@ -83,7 +89,7 @@ def render_template_messages(
                 rendered.append({"role": "system", "content": content})
             elif message.role == "user":
                 content = render_user_content(message.nodes, ctx("user_values", values=inputs))
-                if content:
+                if content:  # empty user turns are omitted (declared, spec section 3)
                     rendered.append({"role": "user", "content": content})
             else:  # authored assistant content interpolates the call values
                 content = render_nodes(message.nodes, ctx("user_values", values=inputs))

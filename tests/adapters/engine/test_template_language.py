@@ -753,6 +753,30 @@ def test_orphan_history_directive_expands_turns_through_the_default_patterns():
 
 
 # ---------------------------------------------------------------------------
+# Walker message-role asymmetry: declared, pinned
+# ---------------------------------------------------------------------------
+
+
+def test_walker_user_messages_join_then_strip_and_drop_when_empty():
+    """User turns assemble through the historical join-then-strip and are
+    omitted when empty; system/assistant emit verbatim, always (spec
+    section 3, user-turn assembly)."""
+    assert preview([{"role": "user", "content": "  {question}  "}], QA, inputs={"question": "hi"}) == [
+        {"role": "user", "content": "hi"}
+    ]
+    messages = preview(
+        [{"role": "system", "content": "  S  "}, {"role": "user", "content": "{question}"}], QA, inputs={}
+    )
+    assert messages == [{"role": "system", "content": "  S  "}]
+    messages = preview(
+        [{"role": "assistant", "content": "  {question}  "}, {"role": "user", "content": "x"}],
+        QA,
+        inputs={"question": "hi"},
+    )
+    assert messages == [{"role": "assistant", "content": "  hi  "}, {"role": "user", "content": "x"}]
+
+
+# ---------------------------------------------------------------------------
 # Preview == engine: schema positions render without call values
 # ---------------------------------------------------------------------------
 

@@ -270,6 +270,23 @@ def test_chat_system_keeps_single_newline_before_objective_and_indent():
     assert "[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        " in system
 
 
+def test_empty_body_between_prefix_and_suffix_joins_like_legacy_chat():
+    """Pipeline-unreachable corner of the delegated surface: an empty body
+    contributes no join element, the legacy ChatAdapter/JSONAdapter shape.
+    Legacy XMLAdapter accidentally kept the empty block ('P\\n\\n\\n\\nS');
+    the engine unifies all three formats on the chat shape."""
+    import dspy
+
+    signature = dspy.make_signature(
+        {"q": (str, dspy.InputField()), "r": (str, dspy.OutputField())}, "x"
+    )
+    for fmt_name in ("chat", "json"):
+        got = FORMATS[fmt_name].render_user_content(signature, {}, prefix="P", suffix="S")
+        want = LEGACY_ADAPTERS[fmt_name].format_user_message_content(signature, {}, prefix="P", suffix="S")
+        assert got == want == "P\n\nS"
+    assert FORMATS["xml"].render_user_content(signature, {}, prefix="P", suffix="S") == "P\n\nS"
+
+
 def test_incomplete_demo_missing_message_trailing_space_strips_at_block_end():
     payload = qa_payload("incomplete")
     content = FORMATS["chat"].render_assistant_content(

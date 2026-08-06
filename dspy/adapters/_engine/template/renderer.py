@@ -103,12 +103,16 @@ def render_nodes(nodes, ctx: RenderContext) -> str:
 def render_user_content(nodes, ctx: RenderContext, prefix: str = "", suffix: str = "") -> str:
     """User-turn assembly: the historical join-then-strip shape.
 
-    Reproduces ``"\\n\\n".join([prefix, *blocks, suffix]).strip()`` — the
-    rendered body already carries the between-block separators, so joining
-    the three parts is byte-identical for every empty-prefix/suffix call
-    the pipeline makes.
+    Reproduces legacy ``"\\n\\n".join([prefix, *blocks, suffix]).strip()``
+    where only existing blocks join: parts that render empty contribute no
+    join element (an empty body between a nonempty prefix and suffix costs
+    zero separators, the ChatAdapter/JSONAdapter shape), and the joined
+    result strips. This assembly — and the walker's rule that a user
+    message assembling to nothing is omitted entirely — is declared
+    semantics (spec section 3, user-turn assembly), not renderer accident.
     """
-    return "\n\n".join([prefix, render_nodes(nodes, ctx), suffix]).strip()
+    parts = [part for part in (prefix, render_nodes(nodes, ctx), suffix) if part]
+    return "\n\n".join(parts).strip()
 
 
 def _render_node(node, ctx: RenderContext) -> str:
