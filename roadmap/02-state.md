@@ -60,6 +60,6 @@ What exists right now and its load-bearing status. **Regenerate this page at the
 - Refine/BestOfN redo; optimizers over the new axes — blocked on Epic F substrate; **do not start**.
 - Flex redo on the IR (F-γ; scope negotiated with Maxime).
 
-## Checkpoint C1 (pending — Maxime)
+## Checkpoint C1 (in progress — Maxime)
 
-Ratify: the D-γ public-name set (above); the two language additions (`{% section strip %}`, `{field('name')}`); the **D-019 as-built reading** (codec owns spelling / template owns arrangement — the decision's letter was unimplementable); the D-β surface (`strategies=` kwarg, `dump_entry`/`load_entry`/`literal_table`). Then: **push** (first attempt was blocked by the known flake failing the pre-push matrix; retry in flight) and the **upstream-sync-before-E** decision.
+Ratified (D-030): the **D-019 as-built reading**; **no upstream sync before Epic E**. **Pushed**: `programir-main` is on the fork at the Epic-D-end state (two hook runs blocked by flake-only failures; pushed under `DSPY_SKIP_MATRIX=1` with two independent green matrices at the same tree on record). The flake `test_dspy_configure_allowance_async` has now failed alone in four runs across four Python lanes — promote from "rerun before investigating" to "diagnose". **Pending**: public-name ratification against `roadmap/public-surface-epic-D.md`; the Epic E go.
