@@ -200,6 +200,45 @@ def test_preview_matches_the_engine_adapter_format(fmt_name, payload_name):
 
 
 @pytest.mark.parametrize("fmt_name", sorted(FORMATS))
+def test_empty_field_sets_render_byte_identical_to_forced_legacy(fmt_name):
+    """Zero-output and zero-field signatures: legacy join-then-strip
+    collapses the trailing empty structure sections; the templates must
+    reproduce that byte-for-byte (the xml preset's section block exists
+    for exactly this)."""
+    import dspy
+
+    zero_outputs = dspy.make_signature({"question": (str, dspy.InputField())}, "No outputs.")
+    zero_fields = dspy.make_signature({}, "Nothing.")
+    zero_inputs = dspy.make_signature({"answer": (str, dspy.OutputField())}, "Only outputs.")
+    for signature, inputs in ((zero_outputs, {"question": "hm?"}), (zero_fields, {}), (zero_inputs, {})):
+        engine = ENGINE_ADAPTERS[fmt_name].format(signature, [], dict(inputs))
+        legacy = LEGACY_ADAPTERS[fmt_name].format(signature, [], dict(inputs))
+        assert engine == legacy
+
+
+def test_xml_native_function_calling_toolcalls_only_output_matches_forced_legacy():
+    """The production-reachable zero-visible-outputs shape: native FC hides
+    the ToolCalls-only output set from the render signature."""
+    import dspy
+
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    signature = dspy.make_signature(
+        {
+            "question": (str, dspy.InputField()),
+            "tools": (list[dspy.Tool], dspy.InputField()),
+            "tool_calls": (dspy.ToolCalls, dspy.OutputField()),
+        },
+        "Use the tools.",
+    )
+    inputs = {"question": "2+2?", "tools": [dspy.Tool(add)]}
+    engine = XMLAdapter(use_native_function_calling=True).format(signature, [], dict(inputs))
+    legacy = _LegacyXML(use_native_function_calling=True).format(signature, [], dict(inputs))
+    assert engine == legacy
+
+
+@pytest.mark.parametrize("fmt_name", sorted(FORMATS))
 def test_reserved_field_names_render_byte_identical_to_forced_legacy(fmt_name):
     """The preset templates spell the instructions as {instruction(...)} —
     the call form — so a signature field named 'instruction' (or any other

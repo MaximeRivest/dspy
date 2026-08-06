@@ -366,6 +366,61 @@ def test_triple_brace_literal_placeholder():
     assert render(text) == "{question}"
 
 
+# ---------------------------------------------------------------------------
+# Section blocks: the join-then-strip region shape
+# ---------------------------------------------------------------------------
+
+_SECTION_TEXT = (
+    "{% section strip %}\n"
+    "Head.\n"
+    "\n"
+    "{% for f in inputs separator='\\n\\n' strip %}\n"
+    "<{f.name}>\n"
+    "{% endfor %}\n"
+    "\n"
+    "{% for f in outputs separator='\\n\\n' strip %}\n"
+    "<{f.name}>\n"
+    "{% endfor %}\n"
+    "{% endsection %}\n"
+    "Tail"
+)
+
+
+def test_section_strip_collapses_a_trailing_empty_loop_with_its_separators():
+    no_outputs = dspy.make_signature({"question": (str, dspy.InputField())}, "x")
+    assert render(_SECTION_TEXT, signature=no_outputs) == "Head.\n\n<question>\nTail"
+    no_fields = dspy.make_signature({}, "x")
+    assert render(_SECTION_TEXT, signature=no_fields) == "Head.\nTail"
+
+
+def test_section_keeps_interior_empty_loop_separators():
+    """An interior empty subsection keeps its blank-line separators — the
+    legacy join inserts them regardless; only leading/trailing collapse."""
+    no_inputs = dspy.make_signature({"answer": (str, dspy.OutputField())}, "x")
+    assert render(_SECTION_TEXT, signature=no_inputs) == "Head.\n\n\n\n<answer>\nTail"
+    assert render(_SECTION_TEXT, signature=QA) == "Head.\n\n<question>\n\n<answer>\nTail"
+
+
+def test_section_refusals_teach():
+    with pytest.raises(TemplateError, match="endsection"):
+        parse_content("{% section strip %}x")
+    with pytest.raises(TemplateError, match="without an open"):
+        parse_content("x {% endsection %}")
+    with pytest.raises(TemplateError, match=r"expected \{% section strip %\}"):
+        parse_content("{% section %}x{% endsection %}")
+    with pytest.raises(TemplateError, match="do not nest"):
+        parse_content("{% section strip %}{% section strip %}x{% endsection %}{% endsection %}")
+    with pytest.raises(TemplateError, match="not valid inside loop blocks"):
+        parse_content("{% for f in inputs %}{% section strip %}x{% endsection %}{% endfor %}")
+    with pytest.raises(TemplateError, match="section blocks"):
+        parse_content("{% section strip %}{fragments('system')}{% endsection %}")
+
+
+def test_section_appears_in_capacity_derivation():
+    template = parse_message_template([{"role": "user", "content": "{% section strip %}\n{% for f in inputs %}{f.name}{% endfor %}\n{% endsection %}"}])
+    assert declared_capacity(template).iterates_inputs
+
+
 def test_typed_placeholder_and_chat_type_hint():
     text = "{% for f in outputs separator='|' %}{f.typed_placeholder}{% endfor %}"
     out = render(text, signature=Typed)

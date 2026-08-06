@@ -12,6 +12,10 @@ The byte-parity traps live in the template data on purpose:
 
 - ``strip`` loop flags reproduce the historical join-then-strip section
   shapes (field descriptions, structure sections, assistant field blocks);
+- the xml structure region sits inside ``{% section strip %}`` because its
+  loops run right against the objective tail: legacy join-then-strip
+  collapses a trailing empty outputs (or inputs+outputs) section together
+  with its blank-line separators, which per-loop strips cannot express;
 - the demos directive's assistant template carries the trailing newline
   after the completed marker;
 - ``{fragments(...)}`` slots sit alone on their lines and render zero
@@ -221,6 +225,7 @@ Your output fields are:
 {% for f in outputs strip %}
 {f.i}. `{f.name}` ({f.type}):{f.desc_suffix}
 {% endfor %}
+{% section strip %}
 All interactions will be structured in the following way, with the appropriate values filled in.
 
 {% for f in inputs separator='\\n\\n' strip %}
@@ -234,6 +239,7 @@ All interactions will be structured in the following way, with the appropriate v
 {f.typed_placeholder}
 </{f.name}>
 {% endfor %}
+{% endsection %}
 {fragments('system')}
 In adhering to this structure, your objective is: {instruction(style='indented')}"""
 

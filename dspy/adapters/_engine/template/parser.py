@@ -98,6 +98,19 @@ class Loop:
     body: tuple
 
 
+@dataclass(frozen=True)
+class Section:
+    """``{% section strip %} … {% endsection %}`` — a strip region.
+
+    The joined render of ``body`` is ``str.strip()``'d: the historical
+    join-then-strip region shape, which lets a trailing subsection that
+    renders empty collapse together with its literal separators (spec
+    section 3). Sections do not nest and never appear inside loop bodies.
+    """
+
+    body: tuple
+
+
 # ---------------------------------------------------------------------------
 # Parsed message-template forms
 # ---------------------------------------------------------------------------
@@ -154,6 +167,8 @@ _BLOCK_TAG = re.compile(r"\{%\s*(\w+)")
 _FOR_HEAD = re.compile(r"\{%\s*for\s+([A-Za-z_]\w*)\s+in\s+([A-Za-z_]\w*)")
 _ENDFOR_TAG = re.compile(r"\{%\s*endfor\s*%\}")
 _NESTED_FOR = re.compile(r"\{%\s*for\b")
+_SECTION_TAG = re.compile(r"\{%\s*section\s+strip\s*%\}")
+_ENDSECTION_TAG = re.compile(r"\{%\s*endsection\s*%\}")
 _POSITIONAL = re.compile(r"^\s*(?:'([^']*)'|\"([^\"]*)\")\s*$")
 
 _STRING_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", "'": "'", '"': '"'}
@@ -230,7 +245,9 @@ def _decode_escapes(value: str, where: str) -> str:
     return "".join(out)
 
 
-def parse_content(text: str, *, loop_var: str | None = None, allow_fragments: bool = True) -> tuple:
+def parse_content(
+    text: str, *, loop_var: str | None = None, allow_fragments: bool = True, allow_sections: bool = True
+) -> tuple:
     """Parse one content string into AST nodes, refusing unknown constructs."""
     nodes: list = []
     buffer: list[str] = []
@@ -250,7 +267,7 @@ def parse_content(text: str, *, loop_var: str | None = None, allow_fragments: bo
     while i < n:
         if text.startswith("{%", i):
             flush()
-            node, i = _parse_loop(text, i, allow_fragments)
+            node, i = _parse_block(text, i, allow_fragments, allow_sections)
             nodes.append(node)
         elif triple_pattern is not None and (match := triple_pattern.match(text, i)):
             attr = match.group(1)
@@ -404,7 +421,7 @@ def _build_call_slot(name, args_raw, text, start, end, allow_fragments, fragment
         if not allow_fragments:
             raise TemplateError(
                 "{fragments(...)} is positional and renders once per message — "
-                "not valid inside loop blocks or directive content"
+                "not valid inside loop blocks, section blocks, or directive content"
             )
         match = _POSITIONAL.match(args_raw)
         if not match:
@@ -446,14 +463,42 @@ def _build_call_slot(name, args_raw, text, start, end, allow_fragments, fragment
     )
 
 
-def _parse_loop(text: str, i: int, allow_fragments: bool):
+def _parse_block(text: str, i: int, allow_fragments: bool, allow_sections: bool):
     tag = _BLOCK_TAG.match(text, i)
     verb = tag.group(1) if tag else None
     if verb == "endfor":
         raise TemplateError("'{% endfor %}' without an open '{% for %}'")
+    if verb == "endsection":
+        raise TemplateError("'{% endsection %}' without an open '{% section %}'")
+    if verb == "section":
+        if not allow_sections:
+            raise TemplateError("section blocks do not nest and are not valid inside loop blocks")
+        return _parse_section(text, i)
     if verb != "for":
-        raise TemplateError(f"unknown block tag {{% {verb} %}} — valid block tags: for, endfor")
+        raise TemplateError(f"unknown block tag {{% {verb} %}} — valid block tags: for, endfor, section, endsection")
+    return _parse_loop(text, i, allow_fragments)
 
+
+def _parse_section(text: str, i: int):
+    match = _SECTION_TAG.match(text, i)
+    if not match:
+        raise TemplateError(
+            f"malformed '{{% section %}}' tag — expected {{% section strip %}} (near {text[i : i + 40]!r})"
+        )
+    end_match = _ENDSECTION_TAG.search(text, match.end())
+    if not end_match:
+        raise TemplateError("unclosed '{% section %}' — every section block ends with '{% endsection %}'")
+    body_text = text[match.end() : end_match.start()]
+    # Authoring ergonomics: one newline trims off each end, like loop bodies.
+    if body_text.startswith("\n"):
+        body_text = body_text[1:]
+    if body_text.endswith("\n"):
+        body_text = body_text[:-1]
+    body = parse_content(body_text, allow_fragments=False, allow_sections=False)
+    return Section(body=body), end_match.end()
+
+
+def _parse_loop(text: str, i: int, allow_fragments: bool):
     collections = VOCABULARY["loop_collections"]
     match = _FOR_HEAD.match(text, i)
     if not match:
@@ -482,7 +527,7 @@ def _parse_loop(text: str, i: int, allow_fragments: bool):
     if body_text.endswith("\n"):
         body_text = body_text[:-1]
 
-    body = parse_content(body_text, loop_var=var, allow_fragments=False)
+    body = parse_content(body_text, loop_var=var, allow_fragments=False, allow_sections=False)
     return Loop(var=var, collection=collection, separator=separator, strip=strip, body=body), end_match.end()
 
 

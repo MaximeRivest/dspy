@@ -34,6 +34,7 @@ from dspy.adapters._engine.template.parser import (
     Loop,
     LoopVarLiteral,
     LoopVarSlot,
+    Section,
     Text,
     ValueSlot,
 )
@@ -119,6 +120,8 @@ def _render_node(node, ctx: RenderContext) -> str:
         return _render_value_slot(node.name, ctx)
     if isinstance(node, Loop):
         return _render_loop(node, ctx)
+    if isinstance(node, Section):
+        return render_nodes(node.body, ctx).strip()
     if isinstance(node, LoopVarSlot):
         return _loop_attr(node.attr, ctx)
     if isinstance(node, LoopVarLiteral):

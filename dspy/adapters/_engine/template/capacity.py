@@ -17,6 +17,7 @@ from dspy.adapters._engine.template.parser import (
     HistoryDirective,
     Loop,
     ParsedTemplate,
+    Section,
     ValueSlot,
 )
 
@@ -72,6 +73,8 @@ def declared_capacity(template: ParsedTemplate) -> TemplateCapacity:
                     iterates_inputs = True
                 else:
                     iterates_outputs = True
+                visit(node.body)
+            elif isinstance(node, Section):
                 visit(node.body)
             elif isinstance(node, AggregateSlot):
                 if node.kind == "inputs":
