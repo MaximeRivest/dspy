@@ -169,6 +169,13 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     fmt = _record_format_parser(adapter, plan)
     if fmt is not None and fmt.preset_name:
         _check_template_capacity(fmt, lm, plan)
+    else:
+        # Preset-backed adapters (loaded entries, authored templates) render
+        # through the pure walker rather than a Format class; their declared
+        # capacity gets the same bake-time triple check.
+        preset = getattr(adapter, "preset", None)
+        if preset is not None:
+            _check_capacity(preset.capacity, preset.name, lm, plan)
 
     return BuiltCall(plan=plan, render_signature=render_signature)
 
@@ -229,24 +236,38 @@ def _record_format_parser(adapter, plan: AdapterPlan):
 
 
 def _check_template_capacity(fmt, lm, plan: AdapterPlan) -> None:
+    """The bake-time triple check for a Format's effective template."""
+    from dspy.adapters._engine.presets import effective_capacity
+
+    template_name = fmt.preset_name + (
+        " (system override)" if getattr(fmt, "system_template_message", None) is not None else ""
+    )
+    _check_capacity(effective_capacity(fmt), template_name, lm, plan)
+
+
+def _check_capacity(capacity, template_name: str, lm, plan: AdapterPlan) -> None:
     """The bake-time triple check: signature roles x LM capabilities x
     template capacity.
 
     ADP-006: every textually-served role-bearing field needs a textual lane
     in the template — media/tools are per-field questions; a missing lane
-    refuses naming the field+role, the LM, and the template. ADP-007: an
+    refuses naming the field+role, the LM, and the template — and a
+    strategy-contributed fragment needs its positional slot. ADP-007: an
     explicit template slot naming a natively-hidden field refuses at bake,
     in the live and example lanes both, never rendering empty. The built-in
-    presets host every role and carry no explicit field slots, so existing
-    programs never trip either check.
+    presets host every role, carry both fragment slots, and declare no
+    explicit field slots, so existing programs never trip these checks.
     """
-    from dspy.adapters._engine.presets import effective_capacity
-
-    capacity = effective_capacity(fmt)
-    template_name = fmt.preset_name + (
-        " (system override)" if getattr(fmt, "system_template_message", None) is not None else ""
-    )
     lm_name = getattr(lm, "model", lm)
+
+    for target, lines in plan.fragments.items():
+        if lines and target not in capacity.fragment_targets:
+            raise ValueError(
+                f"template {template_name!r} declares no {{fragments({target!r})}} slot, but a textual "
+                f"strategy contributed instruction lines for it under lm {lm_name!r} — dropping them "
+                "silently would degrade the exchange; add the slot or bind the strategy differently "
+                "(ADP-006)"
+            )
 
     for render_field in (*plan.input_fields, *plan.output_fields):
         name = render_field.name

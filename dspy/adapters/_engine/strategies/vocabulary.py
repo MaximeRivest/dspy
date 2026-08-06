@@ -66,6 +66,30 @@ TEXTUAL_BINDINGS: dict = {
 }
 
 
+def check_binding_name(role: str, name: str) -> None:
+    """Refuse an unknown role, unknown name, or unimplemented name.
+
+    ``"auto"`` is always legal. The one validation every binding surface
+    shares — constructor kwarg, entry load, preset registration — so the
+    admitted set cannot drift between them.
+    """
+    if role not in STRATEGIES_VOCABULARY:
+        raise ValueError(
+            f"unknown strategy-binding role {role!r} — bindable roles: {', '.join(STRATEGIES_VOCABULARY)}"
+        )
+    if name == "auto":
+        return
+    valid = STRATEGIES_VOCABULARY[role]
+    if name not in valid:
+        raise ValueError(f"unknown {role} strategy {name!r} — valid {role} strategies: auto, {', '.join(valid)}")
+    implemented = IMPLEMENTED_STRATEGIES[role]
+    if name not in implemented:
+        raise ValueError(
+            f"{role} strategy {name!r} is declared in the vocabulary but not implemented — "
+            f"implemented {role} strategies: auto, {', '.join(implemented)}"
+        )
+
+
 def validate_strategy_bindings(bindings, *, use_native_function_calling: bool) -> dict:
     """Validate a ``strategies={...}`` constructor binding eagerly.
 
@@ -81,24 +105,7 @@ def validate_strategy_bindings(bindings, *, use_native_function_calling: bool) -
         )
     normalized: dict = {}
     for role, name in bindings.items():
-        if role not in STRATEGIES_VOCABULARY:
-            raise ValueError(
-                f"unknown strategy-binding role {role!r} — bindable roles: {', '.join(STRATEGIES_VOCABULARY)}"
-            )
-        if name == "auto":
-            normalized[role] = "auto"
-            continue
-        valid = STRATEGIES_VOCABULARY[role]
-        if name not in valid:
-            raise ValueError(
-                f"unknown {role} strategy {name!r} — valid {role} strategies: auto, {', '.join(valid)}"
-            )
-        implemented = IMPLEMENTED_STRATEGIES[role]
-        if name not in implemented:
-            raise ValueError(
-                f"{role} strategy {name!r} is declared in the vocabulary but not implemented — "
-                f"implemented {role} strategies: auto, {', '.join(implemented)}"
-            )
+        check_binding_name(role, name)
         normalized[role] = name
 
     # The tools binding and the legacy kwarg say the same thing; until the

@@ -41,6 +41,12 @@ class PresetAdapter(Adapter):
     """
 
     def __init__(self, preset, **kwargs):
+        if isinstance(preset, str):
+            # A name resolves through the preset pool — builtin or
+            # registered (dspy.adapters.register_preset); dangling refuses.
+            from dspy.adapters._engine.presets import get_preset
+
+            preset = get_preset(preset)
         # Non-"auto" bindings from the entry ARE constructor bindings: a
         # dumped `reasoning: textual_field` must stand the native channel
         # down under a live call exactly as it did on the source adapter.
@@ -58,6 +64,7 @@ class PresetAdapter(Adapter):
         from dspy.adapters._engine.template import render_template_messages
         from dspy.adapters.base import _expand_legacy_custom_type_markers_in_chat_message
 
+        self._check_hosting(signature, demos, inputs)
         messages = render_template_messages(
             self.preset.template,
             signature,
@@ -72,6 +79,47 @@ class PresetAdapter(Adapter):
 
     def parse(self, signature, completion: str) -> dict[str, Any]:
         return self._parser_impl.parse(signature, completion)
+
+    def preview(self, signature, demos=(), inputs=None) -> list[dict[str, Any]]:
+        """Render the exact messages this adapter would send — no LM call.
+
+        Accepts a Signature class or a string signature spec. Bytes match
+        ``format()`` exactly: the learn-by-looking loop the adapter IR
+        contract requires (spec section 3, discoverability).
+        """
+        from dspy.signatures.signature import ensure_signature
+
+        return self.format(ensure_signature(signature), list(demos), dict(inputs or {}))
+
+    def _check_hosting(self, signature, demos, inputs) -> None:
+        """Refuse loudly when call data has nowhere to render (L5).
+
+        A template states everything it shows; demos with no demos hosting
+        (directive or ``{demos()}`` slot) or history turns with no history
+        hosting would silently vanish from the prompt — an optimizer's
+        examples dropping without a sound. The builtin presets host both,
+        so entries dumped from the class adapters never refuse here.
+        """
+        from dspy.adapters._engine.template.preview import _history_field_name
+
+        capacity = self.preset.capacity
+        if demos and not capacity.hosts_demos:
+            raise ValueError(
+                f"adapter {self.preset.name!r} received {len(demos)} demo(s), but its template hosts "
+                'none — add a {"role": "demos"} directive (or a {demos()} slot); dropping examples '
+                "silently would be a silent partial (L5)"
+            )
+        history_field = _history_field_name(signature)
+        if history_field is not None:
+            value = inputs.get(history_field)
+            turns = list(getattr(value, "messages", value) or [])
+            if turns and not capacity.hosts_history:
+                raise ValueError(
+                    f"adapter {self.preset.name!r} received {len(turns)} history turn(s) in "
+                    f"{history_field!r}, but its template hosts none — add a "
+                    '{"role": "history"} directive (or a {history()} slot); dropping turns silently '
+                    "would be a silent partial (L5)"
+                )
 
     def dump_entry(self) -> dict:
         from dspy.adapters._engine.serde import dump_preset
