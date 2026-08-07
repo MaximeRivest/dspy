@@ -1,12 +1,12 @@
 # Epic I — the exporter: `dspy.export` emits the ProgramIR
 
-**Status:** v4 IN PROGRESS (2026-08-07) — contract readiness pass complete;
+**Status:** v4 SHIPPED LOCALLY (2026-08-07) — contract readiness pass complete;
 canonical `ProgramIR`, compile/write/read/link foundations, bare-Predict
 DSPy compilation, predictor-level `set_adapter`, and the v0.1 composite-module
 forward compiler plus authored tool/metric/devset and structural interpreter
-extraction, portable Python environment locking, phase-1 public `dspy.export`,
-and structural in-process LM weight baking landed; the dspy grade-1 conformance
-row is green. The on-server ex-12 reproduction and corpus regeneration remain.
+extraction, portable Python environment locking, public `dspy.export`,
+in-process LM weight baking, and exporter-driven corpus regeneration landed;
+the dspy grade-1 conformance row is green 35/35. Nothing was pushed.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -460,7 +460,7 @@ registration.)
 **Wave I-γ — weights and the corpus flip.** (Checkpoint: Maxime approves
 the dedicated corpus commit and any push.)
 
-- **I-7 — weights baking (phase 2) — STRUCTURAL CORE SHIPPED.** Custom
+- **I-7 — weights baking (phase 2) — SHIPPED.** Custom
   `BaseLM` subclasses opt in through `programir_weight_spec()`, which names the
   live model/tokenizer attributes and declares identity, engine, device,
   frozen/weight-ref state, and explicit tensor ties. The exporter writes one
@@ -468,17 +468,22 @@ the dedicated corpus commit and any push.)
   tying/device declarations, and introspected authored LM source; LM deps join
   the portable environment lock. Tests prove one shared entry/two bindings,
   duplicate tensor removal by declared tie, no remote credential declaration,
-  schema validity, and all sidecar paths. Remaining DoD evidence: re-export
-  ex-12's authoring program on-server against its proven model and compare the
-  complete sidecar family; the writer's recursive credential scan already
-  covers `weights/`.
-- **I-8 — regeneration + corpus commit.** The nine examples re-exported
-  **through `dspy.export`** on-server (build scripts become authoring
-  program + one export call); includes re-authoring the ex-04/ex-12
-  TerseAdapter as a `dspy.TemplateAdapter` (byte-parity with its legacy
-  renders proven before regeneration — otherwise 04 stays refused and 12
-  cannot regenerate); the dedicated contract-repo fixture commit per DoD
-  item 4; IMPLEMENTATIONS.md updated.
+  schema validity, and all sidecar paths. The on-server Baguettotron export
+  produced the complete 1.3 GB sidecar family; examples 01–03, 12, and 15
+  produced the identical safetensors SHA-256
+  `cd54ffbf3b9909eac77a8f6271a6a64bbc0f993e3d5946a324ce72c151d282bb`.
+  Ex-12 has one LM entry, two bindings, and one blob. The writer's recursive
+  credential scan covers `weights/`.
+- **I-8 — regeneration + corpus commit — SHIPPED LOCALLY.** Nine authoring
+  programs export through one public `dspy.export` call each on the 48-core
+  server. Ex-12's authored TerseAdapter is now a data-only `TemplateAdapter`;
+  a test pins its legacy system/user rendering and assistant prefill bytes.
+  Ex-13–15 compile their live Python forwards, with node-compile fixtures
+  emitted directly from those bodies. Contract commit `ef7d9d2` replaces
+  `artifacts-provisional/` with exporter-emitted `artifacts/` and re-derives
+  link, manifest-error, version, profile, and node-compile families in a
+  corpus-only L8 commit. Reference, Go, TypeScript, and dspy shims are all
+  green **35/35**; IMPLEMENTATIONS.md records the durable corpus pin. No push.
 
 ## Non-goals (do not start)
 
