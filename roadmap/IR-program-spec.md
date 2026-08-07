@@ -1,7 +1,11 @@
 # The `ProgramIR` — a program-level IR specification
 
-**Status:** specification (no implementation). Grounds every field in real dspy
-symbols at `file:line`. Source tree read: `recover-engine` (branch
+**Status:** specification, now with a governed extraction: the program-level
+contract lives at `~/Projects/programir-contract` (AUTHORITY-governed — spec +
+fixture corpus + harness; three green grade-1 implementations: python, go,
+ts). This document remains the design authority for unextracted detail;
+facts fixtured in the contract repo are governed by its AUTHORITY.md.
+Grounds every field in real dspy symbols at `file:line`. Source tree read: `recover-engine` (branch
 `adapter-engine/qc-03`); worktree context `chat-compat-lm`. Companion to
 `roadmap/DESIGN-program-artifact.md` (compiler/linker framing),
 `roadmap/IR-field-spec.md` (the 17-field derived inventory), and
@@ -104,6 +108,19 @@ grammar — the limit-case kind, §e2).
 Structure/baked ≈ 8 components · declared = LM identity + system deps · credential = 1. The
 artifact is mostly whole — as `IR-decisions.md` recommends: *bake the
 learned+resolved program; declare the irreducibly-external; never bake secrets.*
+
+**Shape deltas since this table was written (sync 2026-08-07).** Ratified
+(D-029): an LM pool entry is **one object** — identity + placement + nested
+weights when baked (8a/8b stay conceptual rows, never separate manifest
+keys); **interpreters (7) are a named pool** and interpreter leaves carry a
+`ref`; `engine` appears **only on baked entries**; `served_aliases` is
+**optional**. Proposed, awaiting ratification (contract
+`spec/manifest.md`): module tree nodes (1) additionally carry their
+**external signature** (making L1/PIR-013 checkable per module and typing
+sub-module leaves); the interpreter `kind` **splits into profile `language`
++ placement rung** with a closed language vocabulary carrying per-language
+result/vars/scope conventions and isolation floors; authored-code
+**admission becomes structural** (implements the contract), never nominal.
 
 **Instructions have exactly one home (3a), by design.** dspy's `dump_state`
 nests instructions inside the signature, so a naïve IR would store the same text
@@ -1218,12 +1235,21 @@ compile merely walks its `ast` (stdlib) and accepts-or-refuses each node. Concre
   invented format, no tracing.
 - **Accept/refuse**: an `ast.NodeVisitor` subclass with a ~8-node allow-list (the
   table below); an unlisted node or an unresolved `Call` raises with file:line.
-- **No new runtime, no dependency, no migration.** Today's Predict/CoT/ReAct
-  forwards already *are* restricted Python and pass as-written; nothing is
-  rewritten into a dialect. This is the deliberate consequence of the project's
-  standing bar — *the shipped program is normal Python that just works after
-  `uv sync`* — so we will **not** introduce an alternative interpreter in the hot
-  path (that would be the Deno problem in a new coat).
+- **No new runtime, no dependency, no migration.** The *proven mini-exemplars*
+  (examples 13–15's restructured Predict/CoT/ReAct/RLM forwards) pass
+  as-written. **Correction (2026-08-07, syntax census):** dspy's *shipped*
+  module forwards do not — censusing the seven core predict modules found
+  f-strings (19), tuples (34), subscripts (25), comprehensions (12), and
+  more, all refused by the proven whitelist. The closing path is the
+  **v0.2 ergonomics batch** (contract `spec/node-set.md`, PROPOSED:
+  admit-semantics/desugar-syntax — Format, literals, Index/SetIndex,
+  destructuring, orderings/membership, For-over-lists), after which the
+  gap remaining is the builtins surface; Refine/BestOfN stay the refused
+  family regardless (`With`/`ClassDef` — the `dspy.context` disease).
+  Nothing is rewritten into a dialect — the whitelist grows by
+  ratification. The standing bar is unchanged: *the shipped program is
+  normal Python that just works after `uv sync`*; no alternative
+  interpreter enters the hot path (the Deno problem in a new coat).
 
 **Prior art (validation, not adoption).** A whitelisted, deterministic,
 side-effect-controlled Python *subset* is a proven, shippable idea — this design
@@ -1909,6 +1935,11 @@ The `lm.class` block has one field that forks it — `origin`:
   tier); load execs it in an isolated namespace, checks it subclasses `BaseLM` and
   declares `forward_contract`, and binds it. This is what makes a quick-script
   custom LM actually shippable — the gap that `_dspy_lm_class`-by-name never closed.
+  *(PROPOSED 2026-08-07: the subclass check becomes structural — admission
+  verifies the entry implements the declared contract, never that it
+  inherits a named base — admitting closure-factory LMs and plain-function
+  leaves identically; authored entries may carry `constructor: {ref, args}`.
+  Contract `spec/manifest.md`.)*
 
 **The language axis (ratified 2026-08-06, D-025).** The block gains a
 `language` field: `language: "python" | "ts" | "go" | …` on every `packaged`
@@ -2388,3 +2419,10 @@ strictest gate set; the semantics-fixed tier above is the safe on-ramp.
   `roadmap/IR-decisions.md`. The LM-endpoint axis (field-spec #14, "bake ties
   the artifact to one server / declare leaves scores unwarranted") is resolved
   by §e0-binding: bake the identity, bind the location, verify at load.
+- The program-level contract repo (extraction target; AUTHORITY, corpus,
+  harness, three conformant grade-1 readers): `~/Projects/programir-contract`.
+- Authoring surfaces over this IR — seven exemplar dialects
+  (`roadmap/exemplar-program*.{py,ts,go}`; graph dialect recommended,
+  FunctAI-first) and their conventions: `roadmap/frontend-contract.md`
+  (D-030 draft). The cross-language campaign and question bank:
+  `roadmap/cross-language.md`.
