@@ -61,6 +61,7 @@ from dspy.utils.logging_utils import configure_dspy_loggers, disable_logging, en
 from dspy.utils.asyncify import asyncify
 from dspy.utils.syncify import syncify
 from dspy.utils.saving import load
+from dspy.programir import export
 from dspy.streaming.streamify import streamify
 from dspy.utils.usage_tracker import track_usage
 
