@@ -1,8 +1,9 @@
 # Epic I — the exporter: `dspy.export` emits the ProgramIR
 
 **Status:** v4 IN PROGRESS (2026-08-07) — contract readiness pass complete;
-canonical `ProgramIR`, compile/write/read/link foundations, and bare-Predict
-DSPy compilation landed. Composite modules and the public exporter remain.
+canonical `ProgramIR`, compile/write/read/link foundations, bare-Predict
+DSPy compilation, and predictor-level `set_adapter` landed. Composite modules
+and the public exporter remain.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -387,9 +388,14 @@ fails the epic, full stop.
   program's artifact passes the four grade-1 ops through the **reference**
   shim; `read(write(compile(program)))` returns the same ProgramIR;
   refusal tests: no-LM, non-engine adapter, non-serializable demo.
-- **I-2 — `set_adapter` (public surface, flagged).** As decided. DoD:
-  sync/async parity; exporter reads it; a two-adapter pool with two
-  bindings round-trips through `load_manifest`+`link`.
+- **I-2 — `set_adapter` (public surface, flagged) — SHIPPED.** `Predict`
+  owns an adapter slot reset alongside its LM; `Module.set_adapter()` applies
+  it recursively; sync/async execution and ProgramIR compile call the same
+  predictor resolution method (predictor → ambient → Chat default). The
+  effective adapter is installed in the call context so streaming and nested
+  machinery observe the same binding. DoD proven for runtime precedence and
+  bare-Predict export; the two-entry pool roundtrip rides I-3's composite
+  module compiler.
 - **I-3 — the forward compiler, v0.1 node set.** `inspect.getsource` +
   `ast.parse` + whitelist; leaf resolution; D-029 interpreter `ref`;
   refusal text per the boundary section; authors
