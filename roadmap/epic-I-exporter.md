@@ -4,7 +4,8 @@
 canonical `ProgramIR`, compile/write/read/link foundations, bare-Predict
 DSPy compilation, predictor-level `set_adapter`, and the v0.1 composite-module
 forward compiler plus authored tool/metric/devset and structural interpreter
-extraction landed. Environment locking and the public exporter remain.
+extraction and portable Python environment locking landed. The public
+exporter and conformance shim remain.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -431,12 +432,18 @@ registration.)
   declaration would violate L6. Structural interpreter artifacts pass every
   reference grade-1 operation. Remaining I-4 evidence item: ex-14's on-server
   tool bodies compared fixture-equal before the corpus flip.
-- **I-5 — env blocks (writer policy).** Dep aggregation (tools + metric +
-  authored LM classes + dspy pin); PEP 723 entry + `uv lock --script`; the
-  off-box gate wired into CI. Compile remains pure and emits dependency
-  declarations only; lock materialization belongs exclusively to `write`.
-  (Locks are *emitted artifacts* here — the known `uv.lock` repo-noise rule
-  is unrelated and unchanged.)
+- **I-5 — env blocks (writer policy) — PYTHON CORE SHIPPED.** Compile
+  unions tool + metric deps, adds the portable `dspy==<release>` pin, and
+  emits a deterministic PEP 723 entry plus component-9 declarations without
+  running a resolver. `write` alone runs `uv lock --script` in the staged
+  artifact, requires the declared lock to appear, scans the finalized bytes,
+  then publishes atomically. It returns the finalized `ProgramIR` (including
+  generated locks), so `read(path)` equals the value actually written rather
+  than the pre-package input. A clean `/tmp` `uv run --script` import probe
+  passed; two independent writes were byte-identical; emitted entry/lock bytes
+  contain no editable path or author checkout. Authored LM-class deps join the
+  same aggregation in I-7 when that source extractor lands. (Locks are
+  *emitted artifacts* here — the known repo `uv.lock` noise rule is unrelated.)
 - **I-6 — the `pir` shim + CONTRACT_PIN + CI.** Grade-1 ops
   (`load_manifest`, `check_versions`, `link`, `profile_check`,
   `node_compile`, `diff`, `explain`) over the SAME reader/compiler used by
