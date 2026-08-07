@@ -367,10 +367,10 @@ fails the epic, full stop.
    refusal (`With`, `Yield`, lambda, import, nested def), each naming
    construct + line; the pristine exemplar forward refuses, never
    miscompiles.
-8. E2E: `exemplar-program-v01.py` exports; its artifact is green through
-   all three shims; the byte-absence scan passes with credentials present
-   in the authoring environment (the test plants a fake key and asserts
-   refusal when a tool source embeds it).
+8. **SHIPPED:** `exemplar-program-v01.py` calls public `dspy.export`; its
+   finalized artifact passes every grade-1 operation. The byte-absence scan
+   passes with a planted credential, while the separate leaking-tool test
+   proves refusal when that value reaches authored source.
 9. Standing gates: dspy golden adapter corpus **zero drift** (the exporter
    only reads adapters); full `dspy-ci` matrix green (stage new files
    first); stacked commits; no push, no PRs without Maxime's word.
