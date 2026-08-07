@@ -37,6 +37,7 @@ nav:
         - "Adapters: how signatures become prompts": diving-deeper/adapters.md
         - "Settings and context()": diving-deeper/settings-and-context.md
         - Saving and loading: diving-deeper/saving-and-loading.md
+        - "Exportable forwards: the supported subset": diving-deeper/exportable-forwards.md
     - Tutorials:
         - Tutorials Overview: tutorials/index.md
         - Build AI Programs with DSPy:
