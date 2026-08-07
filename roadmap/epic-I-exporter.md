@@ -419,9 +419,9 @@ registration.)
   the same extractor into component 12's ratified `{metrics, devset}` block;
   devset records are ordered flat values plus required `input_keys[]`.
   Generated tool/eval artifacts pass reference load/version/link/node-compile;
-  reference `explain` currently crashes on the newly-ratified component-12
-  object (`explain_view` still treats it as the retired metric pool), a
-  contract-reference defect rather than an exporter workaround. Remaining in
+  the component-12 `explain` defect found by that artifact was fixed in the
+  contract reference (`c85c6bf`) rather than worked around in the exporter.
+  Remaining in
   I-4: live interpreter-object census/profile emission and ex-14 fixture
   equality.
 - **I-5 — env blocks (writer policy).** Dep aggregation (tools + metric +
