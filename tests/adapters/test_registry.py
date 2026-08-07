@@ -84,6 +84,22 @@ def test_register_codec_refuses_round_trip_failures_naming_the_probe():
     assert "lossy" not in CODECS
 
 
+def test_battery_probes_the_decoded_value_contract():
+    """Persona repro (codec author, bug 1): structured parse lanes hand
+    parse_value the DECODED value; a string-only codec must be refused at
+    the gate, not crash on its first json-mode parse (D-δ)."""
+
+    class StringOnly(TextPythonishCodec):
+        name = "string_only"
+
+        def parse_value(self, text, annotation):
+            return super().parse_value(text.strip(), annotation)  # str-only: crashes on lists/dicts
+
+    with pytest.raises(ValueError, match="DECODED.*decoded value, not a string"):
+        dspy.adapters.register_codec("string_only", StringOnly())
+    assert "string_only" not in CODECS
+
+
 def test_register_codec_refuses_a_non_triple():
     class NotACodec:
         def render_value(self, value, field_info):
@@ -199,6 +215,38 @@ def test_register_strategy_requires_the_carried_parser():
 def test_register_strategy_refuses_unknown_roles():
     with pytest.raises(ValueError, match="valid roles"):
         dspy.adapters.register_strategy(_WellDeclaredStrategy(), role="vibes")
+
+
+def test_register_strategy_refuses_non_type_annotations():
+    """Gate parity (D-δ): a non-type annotation key could never resolve."""
+    with pytest.raises(ValueError, match="takes a type"):
+        dspy.adapters.register_strategy(_WellDeclaredStrategy(), annotation=42)
+
+
+def test_register_strategy_refuses_duplicate_names_and_vocabulary_collisions():
+    """Gate parity with the codec door (D-δ): duplicate names refuse
+    (unregister first), and a registered name may not shadow a builtin
+    binding name."""
+    strategy = _WellDeclaredStrategy()
+    dspy.adapters.register_strategy(strategy, role="reasoning")
+    try:
+        with pytest.raises(ValueError, match="already registered"):
+            dspy.adapters.register_strategy(_WellDeclaredStrategy(), role="reasoning")
+    finally:
+        dspy.adapters.unregister_strategy(role="reasoning")
+
+    class Shadowing(_WellDeclaredStrategy):
+        name = "native_channel"
+
+    with pytest.raises(ValueError, match="collides with the reasoning binding vocabulary"):
+        dspy.adapters.register_strategy(Shadowing(), role="reasoning")
+
+
+def test_unregister_strategy_refuses_when_nothing_is_registered():
+    with pytest.raises(KeyError, match="no strategy registered under role"):
+        dspy.adapters.unregister_strategy(role="reasoning")
+    with pytest.raises(KeyError, match="no strategy registered under annotation"):
+        dspy.adapters.unregister_strategy(annotation=_WellDeclaredStrategy)
 
 
 # ---------------------------------------------------------------------------

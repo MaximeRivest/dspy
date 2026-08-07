@@ -84,7 +84,11 @@ def register_strategy(strategy, *, role: str | None = None, annotation: type | N
     double-key registry resolves role first, annotation second). The
     admission gate verifies the TypeStrategy contract, the
     ``capability_requirements`` self-declaration, and the carried
-    ``parser`` (ADP-003) before anything binds.
+    ``parser`` (ADP-003) before anything binds. A role registration also
+    extends that role's ``strategies=`` binding vocabulary with the
+    strategy's declared name, so ``strategies={role: "<name>"}`` binds it
+    explicitly; duplicate names refuse (``unregister_strategy`` first), and
+    the declared ``capability_requirements`` are consulted at plan time.
 
     Args:
         strategy: The strategy object.
@@ -98,6 +102,11 @@ def register_strategy(strategy, *, role: str | None = None, annotation: type | N
         raise ValueError(
             "register_strategy takes exactly one of role= (a semantic-role name) or annotation= "
             "(a type) — the key the double-key registry resolves the strategy under"
+        )
+    if annotation is not None and not isinstance(annotation, type):
+        raise ValueError(
+            f"register_strategy annotation= takes a type (the class a field's annotation must be), "
+            f"got {annotation!r} — a non-type key could never resolve"
         )
     check_strategy_registrable(strategy)
     if role is not None:

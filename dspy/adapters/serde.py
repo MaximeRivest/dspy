@@ -40,6 +40,11 @@ class PresetAdapter(Adapter):
     ambiently.
     """
 
+    #: The template lane runs the plan's strategy-contributed channel
+    #: parsers in postprocess (D-δ): a strategy-hidden field must never
+    #: silently come back None.
+    _runs_plan_channel_hooks = True
+
     def __init__(self, preset, **kwargs):
         if isinstance(preset, str):
             # A name resolves through the preset pool — builtin or
@@ -54,9 +59,25 @@ class PresetAdapter(Adapter):
         if bindings.get("tools") == "native_fc":
             # The binding is the declaration; the legacy kwarg must agree.
             kwargs.setdefault("use_native_function_calling", True)
+        # Behavior-bearing constructor flags recorded in the entry's config
+        # are honored on load (D-δ): the entry states them, nothing ambient.
+        if "use_native_function_calling" in preset.config:
+            kwargs.setdefault("use_native_function_calling", preset.config["use_native_function_calling"])
         super().__init__(strategies=bindings or None, **kwargs)
+        if "use_json_adapter_fallback" in preset.config:
+            self.use_json_adapter_fallback = preset.config["use_json_adapter_fallback"]
         self.preset = preset
-        self._parser_impl = _parser_for(preset)
+        self._parser_impl = _parser_for(preset, error_name=f"{type(self).__name__}({preset.name!r})")
+
+    @property
+    def parse_mode(self) -> str:
+        """The parser binding, readable back (the constructor spelling).
+
+        The serialized entry carries the same value under the ``parser``
+        key — the IR vocabulary's name for the binding (deliberate split,
+        recorded in the epic doc).
+        """
+        return self.preset.parser
 
     def format(self, signature, demos, inputs) -> list[dict[str, Any]]:
         from dspy.adapters._engine.codecs import resolve_codec
@@ -64,6 +85,11 @@ class PresetAdapter(Adapter):
         from dspy.adapters._engine.template import render_template_messages
         from dspy.adapters.base import _expand_legacy_custom_type_markers_in_chat_message
 
+        if isinstance(signature, str):
+            # format() accepts string signatures wherever preview() does (D-δ).
+            from dspy.signatures.signature import ensure_signature
+
+            signature = ensure_signature(signature)
         self._check_hosting(signature, demos, inputs)
         messages = render_template_messages(
             self.preset.template,
@@ -80,17 +106,6 @@ class PresetAdapter(Adapter):
     def parse(self, signature, completion: str) -> dict[str, Any]:
         return self._parser_impl.parse(signature, completion)
 
-    def preview(self, signature, demos=(), inputs=None) -> list[dict[str, Any]]:
-        """Render the exact messages this adapter would send — no LM call.
-
-        Accepts a Signature class or a string signature spec. Bytes match
-        ``format()`` exactly: the learn-by-looking loop the adapter IR
-        contract requires (spec section 3, discoverability).
-        """
-        from dspy.signatures.signature import ensure_signature
-
-        return self.format(ensure_signature(signature), list(demos), dict(inputs or {}))
-
     def _check_hosting(self, signature, demos, inputs) -> None:
         """Refuse loudly when call data has nowhere to render (L5).
 
@@ -99,15 +114,19 @@ class PresetAdapter(Adapter):
         hosting would silently vanish from the prompt — an optimizer's
         examples dropping without a sound. The builtin presets host both,
         so entries dumped from the class adapters never refuse here.
+        Statically-unservable signatures refuse here too: a second History
+        field (one history host exists) and a ``full_text`` binding whose
+        surplus output fields no strategy could ever hide.
         """
         from dspy.adapters._engine.template.preview import _history_field_name
 
         capacity = self.preset.capacity
+        self._check_statically_serviceable(signature)
         if demos and not capacity.hosts_demos:
             raise ValueError(
                 f"adapter {self.preset.name!r} received {len(demos)} demo(s), but its template hosts "
                 'none — add a {"role": "demos"} directive (or a {demos()} slot); dropping examples '
-                "silently would be a silent partial (L5)"
+                "silently would vanish from the prompt"
             )
         history_field = _history_field_name(signature)
         if history_field is not None:
@@ -118,13 +137,53 @@ class PresetAdapter(Adapter):
                     f"adapter {self.preset.name!r} received {len(turns)} history turn(s) in "
                     f"{history_field!r}, but its template hosts none — add a "
                     '{"role": "history"} directive (or a {history()} slot); dropping turns silently '
-                    "would be a silent partial (L5)"
+                    "would lose conversation state"
+                )
+
+    def _check_statically_serviceable(self, signature) -> None:
+        """Refusals that need no LM: statically decidable at format/preview
+        time (D-δ), so a doomed adapter/signature pair never costs a token."""
+        from dspy.adapters.types import Type
+        from dspy.adapters.types.history import History
+
+        history_fields = [name for name, info in signature.input_fields.items() if info.annotation == History]
+        if len(history_fields) > 1:
+            raise ValueError(
+                f"signature declares {len(history_fields)} History fields ({', '.join(history_fields)}) but a "
+                f"template hosts exactly one conversation history — the turns of {', '.join(history_fields[1:])} "
+                "would silently vanish; merge the histories into one field"
+            )
+
+        if self.preset.parser == "full_text" and len(signature.output_fields) != 1:
+            from dspy.signatures.roles import resolve_semantic_role
+
+            def could_hide(name, info):
+                if isinstance(info.annotation, type) and info.annotation in self.native_response_types:
+                    return issubclass(info.annotation, Type)
+                return resolve_semantic_role(info, field_name=name) != "plain"
+
+            if not any(could_hide(name, info) for name, info in signature.output_fields.items()):
+                raise ValueError(
+                    f"the full_text parser requires exactly one output field; this signature declares "
+                    f"{sorted(signature.output_fields)} and none of them can leave the token stream — "
+                    "refusing before any LM call"
                 )
 
     def dump_entry(self) -> dict:
-        from dspy.adapters._engine.serde import dump_preset
+        from dspy.adapters._engine.serde import build_entry, dump_preset
 
-        return dump_preset(self.preset)
+        entry = dump_preset(self.preset)
+        entry_config = self._entry_config(self.preset.config)
+        if entry_config != entry["config"]:
+            entry = build_entry(
+                name=entry["name"],
+                template_raw=self.preset.template.raw,
+                parser=entry["parser"],
+                codecs=entry["codecs"],
+                strategies=entry["strategies"],
+                config=entry_config,
+            )
+        return entry
 
     def literal_table(self) -> dict:
         from dspy.adapters._engine.serde import derive_literal_table
@@ -150,9 +209,15 @@ class _FullTextParser:
         return {name: self._codec.parse_value(completion, info.annotation)}
 
 
-def _parser_for(preset):
+def _parser_for(preset, error_name: str | None = None):
     """The parse implementation for one entry's parser binding, bound to
-    the entry's output codec."""
+    the entry's output codec.
+
+    ``error_name`` self-identifies the template-lane adapter in parse
+    errors (D-δ) — e.g. ``"TemplateAdapter('my_analyst')"`` — instead of
+    the borrowed parser's historical class name. Legacy class adapters
+    keep their pinned error identities untouched.
+    """
     from dspy.adapters._engine.codecs import resolve_codec
     from dspy.adapters._engine.formats.chat import ChatFormat
     from dspy.adapters._engine.formats.json import JSONFormat
@@ -162,4 +227,6 @@ def _parser_for(preset):
         return _FullTextParser(resolve_codec(preset.codecs["output"]))
     fmt = {"chat": ChatFormat, "json": JSONFormat, "xml": XMLFormat}[preset.parser]()
     fmt.codec_binding_overrides = dict(preset.codecs)
+    if error_name is not None:
+        fmt.parse_error_adapter_name = error_name
     return fmt

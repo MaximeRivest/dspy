@@ -97,8 +97,13 @@ ORCHESTRATION_ALLOWLIST = frozenset(
         # Serde surface (D-5): reads preset data, participates in neither
         # rendering nor parsing.
         "_effective_preset_view",
+        "_entry_config",
         "dump_entry",
         "literal_table",
+        # Pure inspection surface (D-δ): orchestration around format() and
+        # the plan builder — overriding either never changes what renders.
+        "preview",
+        "explain_plan",
         # Fallback decision: consulted by the orchestration wrappers, which
         # run identically around both the engine and legacy pipelines.
         "_should_reraise_instead_of_fallback",

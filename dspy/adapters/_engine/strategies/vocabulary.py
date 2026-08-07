@@ -69,9 +69,14 @@ TEXTUAL_BINDINGS: dict = {
 def check_binding_name(role: str, name: str) -> None:
     """Refuse an unknown role, unknown name, or unimplemented name.
 
-    ``"auto"`` is always legal. The one validation every binding surface
-    shares — constructor kwarg, entry load, preset registration — so the
-    admitted set cannot drift between them.
+    ``"auto"`` is always legal, and a strategy registered under the role
+    (``register_strategy(..., role=...)``) is bindable by its declared name
+    (D-δ). The one validation every binding surface shares — constructor
+    kwarg, entry load, preset registration — so the admitted set cannot
+    drift between them. The unknown-name error lists what a binding may
+    actually name — ``auto``, the implemented builtin names, and the
+    registered names — and calls out declared-but-unimplemented vocabulary
+    entries separately, never as valid (D-δ ruling).
     """
     if role not in STRATEGIES_VOCABULARY:
         raise ValueError(
@@ -79,15 +84,38 @@ def check_binding_name(role: str, name: str) -> None:
         )
     if name == "auto":
         return
+    from dspy.adapters._engine.strategies import registered_role_strategies
+
+    registered = registered_role_strategies(role)
+    if not isinstance(name, str):
+        raise ValueError(
+            f"unknown {role} strategy {name!r} — a binding names a strategy as a string; "
+            f"valid {role} strategies: {', '.join(_bindable_names(role, registered))}"
+        )
+    if name in registered:
+        return
     valid = STRATEGIES_VOCABULARY[role]
     if name not in valid:
-        raise ValueError(f"unknown {role} strategy {name!r} — valid {role} strategies: auto, {', '.join(valid)}")
+        message = (
+            f"unknown {role} strategy {name!r} — valid {role} strategies: "
+            f"{', '.join(_bindable_names(role, registered))}"
+        )
+        unimplemented = [entry for entry in valid if entry not in IMPLEMENTED_STRATEGIES[role]]
+        if unimplemented:
+            message += f"; declared in the vocabulary but not yet implemented: {', '.join(unimplemented)}"
+        raise ValueError(message)
     implemented = IMPLEMENTED_STRATEGIES[role]
     if name not in implemented:
         raise ValueError(
             f"{role} strategy {name!r} is declared in the vocabulary but not implemented — "
             f"implemented {role} strategies: auto, {', '.join(implemented)}"
         )
+
+
+def _bindable_names(role: str, registered: dict) -> list[str]:
+    """What a binding may name for ``role`` today: auto, implemented
+    builtins, then registered strategy names."""
+    return ["auto", *IMPLEMENTED_STRATEGIES[role], *registered]
 
 
 def validate_strategy_bindings(bindings, *, use_native_function_calling: bool) -> dict:

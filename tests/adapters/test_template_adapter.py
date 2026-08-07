@@ -157,6 +157,155 @@ def test_preview_accepts_string_signatures():
     ]
 
 
+def test_format_accepts_string_signatures_like_preview():
+    """Persona repro (portability): format() crashed with a raw
+    AttributeError on the string signatures preview() accepts (D-δ)."""
+    adapter = dspy.TemplateAdapter(
+        messages=[{"role": "user", "content": "{question}"}],
+        parse_mode="full_text",
+    )
+    assert adapter.format("question -> answer", [], {"question": "Q?"}) == [{"role": "user", "content": "Q?"}]
+    assert dspy.ChatAdapter().format("question -> answer", [], {"question": "Q?"}) == dspy.ChatAdapter().format(
+        dspy.Signature("question -> answer"), [], {"question": "Q?"}
+    )
+
+
+def test_preview_with_lm_shows_the_planned_bytes():
+    """Persona repro (strategies user, finding 1): with lm=, preview renders
+    what a live call would actually send — natively-served fields leave the
+    prompt — while preview without lm keeps the pre-plan view (D-δ)."""
+    adapter = dspy.TemplateAdapter(
+        messages=[
+            {"role": "system", "content": "{instruction}"},
+            {"role": "user", "content": "{inputs(style='chat')}\n\n{outputs(style='chat')}"},
+        ],
+        parse_mode="chat",
+    )
+    thinker = StubLM(Recorder(), supports_reasoning=True)
+    without_plan = adapter.preview(Thoughtful, inputs={"question": "Q?"})
+    assert "reasoning" in str(without_plan)
+    planned = adapter.preview(Thoughtful, inputs={"question": "Q?"}, lm=thinker)
+    assert "reasoning" not in str(planned)
+
+    # And the planned bytes ARE the live-call bytes.
+    recorder = Recorder()
+    lm = StubLM(recorder, supports_reasoning=True)
+    try:
+        adapter(lm, {}, Thoughtful, [], {"question": "Q?"})
+    except BaseException:
+        pass
+    sent = recorder.calls[0]["messages"]
+    assert [m["content"] for m in sent] == [m["content"] for m in adapter.preview(Thoughtful, inputs={"question": "Q?"}, lm=lm)]
+
+
+def test_preview_with_lm_surfaces_bake_refusals():
+    """Persona repro (strategies user, ex11): preview(lm=) refuses the exact
+    triple a live call refuses — pure inspection no longer lies."""
+    adapter = dspy.TemplateAdapter(
+        messages=[
+            {"role": "system", "content": "Answer."},
+            {"role": "user", "content": "{question}"},
+        ],
+        parse_mode="full_text",
+    )
+    assert adapter.preview(Thoughtful, inputs={"question": "Q?"})  # pre-plan view renders
+    with pytest.raises(ValueError, match="ADP-006"):
+        adapter.preview(Thoughtful, inputs={"question": "Q?"}, lm=StubLM(Recorder(), supports_reasoning=False))
+
+
+def test_explain_plan_returns_the_recorded_resolution():
+    """The auto decision is public data now (D-δ): {role, binding, served}
+    per field, hidden fields, and the trace."""
+    adapter = dspy.TemplateAdapter(
+        messages=[
+            {"role": "system", "content": "{instruction}"},
+            {"role": "user", "content": "{inputs(style='chat')}\n\n{outputs(style='chat')}"},
+        ],
+        parse_mode="chat",
+    )
+    plan = adapter.explain_plan(Thoughtful, lm=StubLM(Recorder(), supports_reasoning=True))
+    assert plan["strategy_resolution"]["reasoning"] == {
+        "role": "reasoning",
+        "binding": "auto",
+        "served": "native",
+    }
+    assert plan["hidden_fields"] == ["reasoning"]
+    assert any(t["strategy"] == "reasoning.native" for t in plan["trace"])
+    import json as json_module
+
+    json_module.dumps(plan)  # plain serializable data
+
+    textual = adapter.explain_plan(Thoughtful, lm=StubLM(Recorder(), supports_reasoning=False))
+    assert textual["strategy_resolution"]["reasoning"]["served"] == "textual"
+    assert textual["hidden_fields"] == []
+
+
+def test_full_text_arity_refuses_before_the_lm_call():
+    """Persona repro (three personas): full_text with two output fields is
+    statically invalid — it must never cost a completion (D-δ). The
+    refusal fires at preview/format (no strategy could hide the surplus)
+    and at bake inside a live call, with zero LM calls made."""
+    adapter = dspy.TemplateAdapter(
+        messages=[{"role": "user", "content": "{q}"}],
+        parse_mode="full_text",
+    )
+    two_out = dspy.Signature("q -> a, b")
+    with pytest.raises(ValueError, match="exactly one output field"):
+        adapter.preview(two_out, inputs={"q": "hi"})
+    with pytest.raises(ValueError, match="exactly one output field"):
+        adapter.format(two_out, [], {"q": "hi"})
+
+    lm = DummyLM([{"a": "x", "b": "y"}])
+    with dspy.context(lm=lm, adapter=adapter):
+        with pytest.raises(ValueError, match="exactly one output field"):
+            dspy.Predict(two_out)(q="hi")
+    assert len(lm.history) == 0  # refused before any LM call
+
+
+def test_full_text_arity_allows_signatures_a_strategy_can_thin():
+    """A two-output signature is viable when one field can leave the token
+    stream: preview stays permissive pre-plan, bake decides."""
+    adapter = dspy.TemplateAdapter(
+        messages=[{"role": "user", "content": "{question}"}],
+        parse_mode="full_text",
+    )
+    # Pre-plan: renders (reasoning could hide under a capable LM).
+    assert adapter.preview(Thoughtful, inputs={"question": "Q?"})
+    # Baked against a capable LM: reasoning leaves the stream, one output remains.
+    assert adapter.preview(Thoughtful, inputs={"question": "Q?"}, lm=StubLM(Recorder(), supports_reasoning=True))
+
+
+def test_second_history_field_refuses_loudly():
+    """Persona repro (few-shot user, bug 1): a second History field's turns
+    must never silently vanish (D-δ)."""
+
+    class TwoHistories(dspy.Signature):
+        h1: dspy.History = dspy.InputField()
+        h2: dspy.History = dspy.InputField()
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.TemplateAdapter(
+        messages=[{"role": "history"}, {"role": "user", "content": "{question}"}],
+        parse_mode="chat",
+    )
+    with pytest.raises(ValueError, match="h1, h2"):
+        adapter.preview(
+            TwoHistories,
+            inputs={
+                "h1": dspy.History(messages=[{"question": "FROM-H1", "answer": "x"}]),
+                "h2": dspy.History(messages=[{"question": "FROM-H2", "answer": "y"}]),
+                "question": "now",
+            },
+        )
+
+
+def test_parse_mode_is_readable_back():
+    adapter = dspy.TemplateAdapter(messages=[{"role": "user", "content": "{q}"}], parse_mode="xml")
+    assert adapter.parse_mode == "xml"
+    assert adapter.dump_entry()["parser"] == "xml"  # the entry-key spelling of the same binding
+
+
 # ---------------------------------------------------------------------------
 # Serialization: the adapter is data
 # ---------------------------------------------------------------------------
@@ -385,6 +534,66 @@ def test_strategy_fragments_with_no_slot_refuse_adp006():
             build_plan(adapter, StubLM(Recorder()), {}, Sig, {"question": "Q?"})
     finally:
         unregister_field_strategy(_NoteType)
+
+
+def test_template_lane_runs_strategy_contributed_parser_hooks():
+    """Persona repro (strategy author, bug 3): a strategy that hides a field
+    carries the parser that fills it back — through the TemplateAdapter
+    path a hidden field must never silently come back None."""
+    from dspy.adapters._engine.patch import AdapterPatch
+    from dspy.adapters._engine.transforms import HideOutputField
+
+    class _FillingStrategy:
+        name = "citations_filler"
+        priority = 500
+        exclusive_group = None
+        capability_requirements = ()
+
+        class _Parser:
+            def parse(self, response_view, ctx):
+                return {"citations": "FILLED-BY-STRATEGY"}
+
+        parser = _Parser()
+
+        def applies(self, ctx):
+            return True
+
+        def contribute(self, ctx):
+            return AdapterPatch(
+                field_transforms=[HideOutputField(ctx.field.name, reason="citations_filler")],
+                parsers=[self.parser],
+            )
+
+    adapter = dspy.TemplateAdapter(
+        messages=[
+            {"role": "system", "content": "{instruction}"},
+            {"role": "user", "content": "Question: {question}"},
+        ],
+        parse_mode="chat",
+    )
+    dspy.adapters.register_strategy(_FillingStrategy(), role="citations")
+    try:
+        lm = DummyLM([{"answer": "42"}])
+        with dspy.context(lm=lm, adapter=adapter):
+            result = dspy.Predict("question -> citations @citations, answer")(question="Q?")
+        assert result.answer == "42"
+        assert result.citations == "FILLED-BY-STRATEGY"  # not silently None
+    finally:
+        dspy.adapters.unregister_strategy(role="citations")
+
+
+def test_template_parse_errors_self_identify():
+    """Template-lane parse failures name the template adapter, not the
+    borrowed parser's historical class (D-δ)."""
+    from dspy.utils.exceptions import AdapterParseError
+
+    adapter = dspy.TemplateAdapter(
+        messages=[{"role": "user", "content": "{question}"}],
+        parse_mode="chat",
+        name="my_generic",
+    )
+    with pytest.raises(AdapterParseError, match=r"TemplateAdapter\('my_generic'\)"):
+        adapter.parse(dspy.Signature("question -> answer"), "no markers at all")
 
 
 def test_fragment_slot_hosts_strategy_fragments():

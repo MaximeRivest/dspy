@@ -47,10 +47,17 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     # level (importing dspy must not load the engine), so the dependency
     # points this way only.
     from dspy.adapters import base as adapter_base
-    from dspy.adapters._engine.strategies import NativeFunctionCallingStep, strategy_for
+    from dspy.adapters._engine.strategies import (
+        NativeFunctionCallingStep,
+        builtin_role_strategy_for,
+        field_strategy_for,
+        registered_role_strategies,
+        strategy_for,
+    )
     from dspy.adapters._engine.strategies.vocabulary import NATIVE_BINDINGS, TEXTUAL_BINDINGS
     from dspy.adapters._engine.strategy import CallContext, FieldContext
     from dspy.adapters.types import Type
+    from dspy.signatures.roles import semantic_role_for
 
     plan = AdapterPlan.from_signature(signature, inputs)
     render_signature = signature
@@ -86,17 +93,37 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
     # `issubclass` deliberately resolves through the adapters.base module
     # namespace: tests/predict/test_react.py shadows it there to prove the
     # `isinstance(..., type)` guard keeps generic aliases away from it.
+    #
+    # Two admission lanes (spec section 2, role-keyed admission — D-δ):
+    # the historical annotation lane (`native_response_types`), resolving
+    # exactly as before, and the role lane — an explicitly-declared
+    # non-plain role on a plain-shaped annotation engages strategy
+    # resolution too. The role lane only ADDS behavior for declarations
+    # that were previously inert; a fused semantic type excluded from
+    # `native_response_types` stays excluded (the user's opt-out).
     for name, field in render_signature.output_fields.items():
-        if not (
+        annotation_admitted = (
             isinstance(field.annotation, type)
             and field.annotation in adapter.native_response_types
             and getattr(adapter_base, "issubclass", issubclass)(field.annotation, Type)
-        ):
-            continue
+        )
 
         render_field = plan.find_field("output", name)
         semantic_role = (render_field.metadata or {}).get("semantic_role", "plain")
         binding = bindings.get(semantic_role, "auto")
+        registered = registered_role_strategies(semantic_role)
+
+        if not annotation_admitted:
+            if semantic_role == "plain":
+                continue
+            if semantic_role_for(field.annotation) != "plain":
+                # Annotation-shaped roles (fused legacy types) are governed
+                # solely by native_response_types — exclusion is deliberate.
+                continue
+            if binding == "auto" and not registered and builtin_role_strategy_for(semantic_role) is None:
+                # No strategy lane exists for this role; the field stays
+                # textual with nothing to record.
+                continue
 
         if binding in TEXTUAL_BINDINGS.get(semantic_role, ()):
             # Bound textual: the native strategy stands down and the field
@@ -113,7 +140,59 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
             _record_resolution(plan, name, semantic_role, binding, served="textual")
             continue
 
-        strategy, resolved_by = strategy_for(semantic_role, field.annotation)
+        # Resolve the strategy the binding names (spec section 2):
+        # an explicit registered name resolves to that strategy; an
+        # explicit NATIVE binding resolves through the builtin/annotation
+        # lane only — a registered role strategy never hijacks it; "auto"
+        # resolves through the double-key registry (annotation lane) or
+        # the role registrations/builtins (role lane).
+        if binding != "auto" and binding in registered:
+            strategy, resolved_by = registered[binding], "binding"
+        elif binding != "auto" and binding == NATIVE_BINDINGS.get(semantic_role):
+            if annotation_admitted:
+                strategy, resolved_by = field_strategy_for(field.annotation), "annotation"
+            else:
+                strategy, resolved_by = builtin_role_strategy_for(semantic_role), "role"
+            if strategy is None:
+                raise ValueError(
+                    f"strategies binding {semantic_role}={binding!r} cannot be honored for field {name!r}: "
+                    f"no native strategy serves role {semantic_role!r} for this field's shape — an explicit "
+                    "binding refuses instead of silently falling back to the textual lane"
+                )
+        elif annotation_admitted:
+            strategy, resolved_by = strategy_for(semantic_role, field.annotation)
+        else:
+            strategy = next(iter(registered.values()), None) or builtin_role_strategy_for(semantic_role)
+            resolved_by = "role"
+
+        # Declared capability requirements are consulted at plan time
+        # (declare-don't-discover): unmet requirements skip the strategy
+        # under "auto" and refuse an explicit binding naming the flag.
+        unmet = [
+            flag
+            for flag in (getattr(strategy, "capability_requirements", None) or ())
+            if not getattr(lm, flag, False)
+        ]
+        if unmet:
+            if binding != "auto":
+                raise ValueError(
+                    f"strategies binding {semantic_role}={binding!r} cannot be honored for field {name!r}: "
+                    f"{strategy.name} declares capability_requirements {tuple(unmet)!r} that lm "
+                    f"{getattr(lm, 'model', lm)!r} does not provide — an explicit binding refuses instead "
+                    "of silently falling back to the textual lane"
+                )
+            plan.strategy_trace.append(
+                StrategyTrace(
+                    strategy=strategy.name,
+                    field=name,
+                    decision="skipped",
+                    reason=f"capability_requirements unmet: {', '.join(unmet)}",
+                    resolved_by=resolved_by,
+                )
+            )
+            _record_resolution(plan, name, semantic_role, binding, served="textual")
+            continue
+
         ctx = FieldContext(
             adapter=adapter,
             plan=plan,
@@ -128,7 +207,11 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
             patch = strategy.contribute(ctx)
             self_traced = bool(patch.strategy_trace)
             render_signature = _apply_patch(plan, patch, render_signature, strategy.name)
-            _record_kwargs_delta(plan, field.annotation.__name__, kwargs_before, lm_kwargs)
+            # Delta keyed by the annotation's type name (the historical key);
+            # role-lane fields may carry non-class annotations, so fall back
+            # to the strategy's name there.
+            delta_key = getattr(field.annotation, "__name__", None) or strategy.name
+            _record_kwargs_delta(plan, delta_key, kwargs_before, lm_kwargs)
             # A strategy may self-report its trace via the patch (the legacy
             # wrapper does: its decision depends on observed effects); the
             # builder records the standard applies-based entry otherwise.
@@ -144,11 +227,11 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
                 )
                 _record_resolution(plan, name, semantic_role, binding, served="native")
         else:
-            if binding == NATIVE_BINDINGS.get(semantic_role):
+            if binding != "auto":
                 raise ValueError(
                     f"strategies binding {semantic_role}={binding!r} cannot be honored for field {name!r}: "
                     f"{strategy.name} does not apply for lm {getattr(lm, 'model', lm)!r} — an explicit "
-                    "native binding refuses instead of silently falling back to the textual lane"
+                    "binding refuses instead of silently falling back to the textual lane"
                 )
             plan.strategy_trace.append(
                 StrategyTrace(
@@ -176,8 +259,25 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
         preset = getattr(adapter, "preset", None)
         if preset is not None:
             _check_capacity(preset.capacity, preset.name, lm, plan)
+            _check_full_text_arity(preset, plan)
 
     return BuiltCall(plan=plan, render_signature=render_signature)
+
+
+def _check_full_text_arity(preset, plan: AdapterPlan) -> None:
+    """A statically decidable parse constraint checked at bake (D-δ): the
+    full_text parser maps the whole completion into exactly one output
+    field, so a plan leaving any other number textually served can never
+    parse — refuse before any LM call, never after."""
+    if preset.parser != "full_text":
+        return
+    visible = [render_field.name for render_field in plan.visible_output_fields()]
+    if len(visible) != 1:
+        raise ValueError(
+            f"the full_text parser requires exactly one output field; after bake this signature has "
+            f"{len(visible)} textually served output field(s) {visible} — refusing at plan time, "
+            "before any LM call"
+        )
 
 
 def _apply_patch(plan: AdapterPlan, patch, render_signature, source_name: str):

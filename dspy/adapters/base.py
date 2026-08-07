@@ -204,6 +204,28 @@ class Adapter:
                     if parsed_value is not None:
                         value[name] = parsed_value
 
+            if plan is not None and getattr(self, "_runs_plan_channel_hooks", False):
+                # Template-lane adapters (PresetAdapter/TemplateAdapter) run
+                # the plan's strategy-contributed channel parsers here (D-δ):
+                # a strategy that hid a field carries the parser that fills
+                # it back (ADP-003), and dropping it would return None
+                # silently. Format/third-party hooks are excluded — text
+                # parsing already ran through parse(), and the legacy loop
+                # above covers `native_response_types` hooks.
+                from dspy.adapters._engine.parse import FormatParserHook
+                from dspy.adapters._engine.parser_hook import (
+                    ParseContext,
+                    ResponseView,
+                    ThirdPartyNativeParserHook,
+                )
+
+                hook_ctx = ParseContext(plan=plan, signature=processed_signature, lm=lm)
+                view = ResponseView(output)
+                for hook in plan.parsers:
+                    if isinstance(hook, (FormatParserHook, ThirdPartyNativeParserHook)):
+                        continue
+                    value.update(hook.parse(view, hook_ctx))
+
             if output_logprobs:
                 value["logprobs"] = output_logprobs
 
@@ -448,6 +470,14 @@ class Adapter:
         """
         from dspy.adapters._engine.overrides import resolve_override_verdict
 
+        if isinstance(signature, str):
+            # format() accepts string signatures wherever preview() does
+            # (D-δ) — pure widening; Signature classes pass through
+            # untouched.
+            from dspy.signatures.signature import ensure_signature
+
+            signature = ensure_signature(signature)
+
         # Engine-backed classes render via the engine (plan -> renderer ->
         # Format). The branch lives INSIDE format() so with_callbacks
         # wrapping and callback dispatch fire identically on both paths.
@@ -494,6 +524,108 @@ class Adapter:
 
         return [_expand_legacy_custom_type_markers_in_chat_message(message) for message in messages]
 
+    def preview(
+        self,
+        signature: type[Signature] | str,
+        demos: list[dict[str, Any]] | None = (),
+        inputs: dict[str, Any] | None = None,
+        *,
+        lm: BaseLM | None = None,
+    ) -> list[dict[str, Any]]:
+        """Render the exact messages this adapter would send — no LM call.
+
+        Accepts a Signature class or a string signature spec. Without
+        ``lm=``, bytes match ``format()`` exactly. With ``lm=``, the call
+        plan is built first (planning is pure — the LM is consulted for its
+        declared capabilities, never called), so strategy resolution,
+        natively-hidden fields, and contributed fragments all land in the
+        rendered bytes: what you see is what a live call would send (D-δ,
+        the inspect-without-spending-a-token promise). Bake-time refusals
+        (ADP-006/ADP-007, unhonorable bindings, full_text arity) fire here
+        exactly as a live call would raise them.
+
+        Args:
+            signature: The signature (class or string spec) to render for.
+            demos: Few-shot examples, as for ``format()``.
+            inputs: The call's input values.
+            lm: Optional LM whose capabilities plan the call before
+                rendering.
+
+        Returns:
+            The chat messages, exactly as ``__call__`` would send them.
+        """
+        from dspy.signatures.signature import ensure_signature
+
+        signature = ensure_signature(signature)
+        demos = list(demos or [])
+        inputs = dict(inputs or {})
+        if lm is None:
+            return self.format(signature, demos, inputs)
+
+        from dspy.adapters._engine.builder import build_plan
+        from dspy.adapters._engine.render import plan_scope
+
+        built = build_plan(self, lm, {}, signature, inputs)
+        with plan_scope(built.plan):
+            return self.format(built.render_signature, demos, inputs)
+
+    def explain_plan(
+        self,
+        signature: type[Signature] | str,
+        *,
+        lm: BaseLM,
+        inputs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """The call plan's recorded decisions, as plain data — no LM call.
+
+        Planning is pure: the LM is consulted for its declared capabilities
+        only. The returned dict states how each role-bearing field resolved
+        (``strategy_resolution``: {field: {role, binding, served}}), the
+        declared ``strategy_bindings``, which fields leave the token stream
+        (``hidden_fields``), strategy-contributed template ``fragments``,
+        request-kwarg effects (``native_feature_kwargs``), and the full
+        selection ``trace``. This is the public read surface for the
+        ``"auto"`` decisions the docs promise are "recorded on the plan"
+        (D-δ).
+
+        Args:
+            signature: The signature (class or string spec) to plan for.
+            lm: The LM whose declared capabilities drive resolution.
+            inputs: Optional input values (tool planning reads them).
+
+        Returns:
+            A JSON-serializable dict of the plan's recorded decisions.
+        """
+        from dspy.adapters._engine.builder import build_plan
+        from dspy.signatures.signature import ensure_signature
+
+        built = build_plan(self, lm, {}, ensure_signature(signature), dict(inputs or {}))
+        plan = built.plan
+        return {
+            "strategy_bindings": dict(plan.metadata.get("strategy_bindings", {})),
+            "strategy_resolution": {
+                name: dict(entry) for name, entry in plan.metadata.get("strategy_resolution", {}).items()
+            },
+            "native_feature_kwargs": {
+                name: dict(delta) for name, delta in plan.metadata.get("native_feature_kwargs", {}).items()
+            },
+            "hidden_fields": [
+                field.name for field in (*plan.input_fields, *plan.output_fields) if field.hidden
+            ],
+            "fragments": {target: list(lines) for target, lines in plan.fragments.items()},
+            "trace": [
+                {
+                    "strategy": trace.strategy,
+                    "field": trace.field,
+                    "decision": trace.decision,
+                    "reason": trace.reason,
+                    "resolved_by": trace.resolved_by,
+                }
+                for trace in plan.strategy_trace
+            ],
+            "warnings": list(plan.warnings),
+        }
+
     def _effective_preset_view(self, action: str):
         """Resolve this adapter's (template, parser, format) for the serde
         surface, refusing loudly when there is no preset to speak for it."""
@@ -518,7 +650,9 @@ class Adapter:
         The entry is pure data — template, parser binding, codec bindings,
         strategy bindings, config — versioned from birth (D-024). Load it
         back with `dspy.adapters.load_entry`; the loaded adapter renders
-        byte-identical messages.
+        byte-identical messages and honors the same behavior-bearing
+        constructor flags, which ride the entry's ``config`` when they
+        differ from the loaded defaults (D-δ).
         """
         from dspy.adapters._engine.serde import build_entry
 
@@ -529,8 +663,20 @@ class Adapter:
             parser=preset.parser,
             codecs=fmt.codec_bindings(),
             strategies={**preset.strategies, **self.strategies},
-            config=dict(preset.config),
+            config=self._entry_config(preset.config),
         )
+
+    def _entry_config(self, preset_config) -> dict:
+        """The entry's config block: the preset's config plus the
+        behavior-bearing constructor flags when they differ from the loaded
+        defaults (D-δ) — behaviorally different adapters must never
+        serialize byte-identically."""
+        config = dict(preset_config)
+        if self.use_native_function_calling:
+            config["use_native_function_calling"] = True
+        if getattr(self, "use_json_adapter_fallback", None) is False:
+            config["use_json_adapter_fallback"] = False
+        return config
 
     def literal_table(self) -> dict:
         """The 7-key summary view of this adapter's rendering, derived from

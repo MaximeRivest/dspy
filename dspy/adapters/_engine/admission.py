@@ -83,12 +83,19 @@ def run_codec_battery(codec, *, name: str) -> None:
     Every probe must round-trip exactly and every schema spelling must be a
     string; the refusal names the codec, the probe's annotation, and what
     came back (teaching errors, like the template language's).
+
+    ``parse_value`` is probed with the rendered TEXT and with the DECODED
+    value (D-δ): structured parse lanes (the json parser) hand codecs the
+    already-decoded JSON value rather than a string, so admission certifies
+    the contract the runtime actually exercises — a string-only codec is
+    refused here instead of crashing on its first json-mode parse.
     """
     for surface in ("render_value", "parse_value", "render_typed_placeholder"):
         if not callable(getattr(codec, surface, None)):
             raise ValueError(
                 f"codec {name!r} is not registrable: it lacks a callable {surface!r} — a codec is a "
-                "render/parse/schema triple (spec section 3)"
+                "render/parse/schema triple (how a value is shown, how an emission is recovered, and "
+                "how the expected shape is described)"
             )
     for annotation, value in _battery_probes():
         field_info = _probe_field_info(annotation)
@@ -118,12 +125,37 @@ def run_codec_battery(codec, *, name: str) -> None:
                 f"rendered {rendered!r}, parsed back {recovered!r} != {value!r} (ADP-003: "
                 "parse(render(x)) == x on adversarial probes gates admissibility)"
             )
+        decoded = _decoded_probe_value(value)
+        try:
+            recovered_decoded = codec.parse_value(decoded, annotation)
+        except Exception as error:
+            raise ValueError(
+                f"codec {name!r} refused at registration: parse_value failed on the DECODED form of "
+                f"probe {annotation!r} = {decoded!r} ({type(error).__name__}: {error}) — structured "
+                "parse lanes (json) hand parse_value the decoded value, not a string; a codec must "
+                "accept both"
+            ) from error
+        if recovered_decoded != value:
+            raise ValueError(
+                f"codec {name!r} refused at registration: the DECODED form of probe {annotation!r} "
+                f"parsed to {recovered_decoded!r} != {value!r} — structured parse lanes (json) hand "
+                "parse_value the decoded value, not a string; a codec must accept both"
+            )
         schema = codec.render_typed_placeholder("probe", field_info)
         if not isinstance(schema, str):
             raise ValueError(
                 f"codec {name!r} refused at registration: render_typed_placeholder returned "
                 f"{type(schema).__name__} for probe {annotation!r}; the schema spelling is wire text"
             )
+
+
+def _decoded_probe_value(value: Any) -> Any:
+    """A probe value as a structured lane would hand it to ``parse_value``:
+    the JSON-decoded form (what ``json.loads`` yields for the value's
+    serialization)."""
+    from dspy.adapters.utils import serialize_for_json
+
+    return json.loads(json.dumps(serialize_for_json(value)))
 
 
 def check_strategy_registrable(strategy) -> None:
@@ -153,7 +185,7 @@ def check_strategy_registrable(strategy) -> None:
         raise ValueError(
             f"strategy {name!r} is not registrable: declare `capability_requirements` — a tuple of the "
             "LM capability flags it consults (an empty tuple declares none). Capabilities are declared, "
-            "never discovered (spec section 9)"
+            "never discovered, and the declaration is checked at plan time"
         )
     if not hasattr(strategy, "parser"):
         raise ValueError(

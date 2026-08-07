@@ -643,3 +643,202 @@ def test_legacy_wrapper_no_effects_reports_skipped():
     trace = [t for t in built.plan.strategy_trace if t.strategy == "type_hook:_InertNative"]
     assert len(trace) == 1 and trace[0].decision == "skipped"
     assert "inert" in built.render_signature.output_fields
+
+
+# --- Role-keyed admission: the D-delta role lane ---------------------------------
+
+
+class _RolePolyfill:
+    """A gate-shaped textual strategy: hides its field, carries a parser."""
+
+    name = "cite_polyfill"
+    priority = 500
+    exclusive_group = None
+    capability_requirements = ()
+
+    class _Parser:
+        def parse(self, response_view, ctx):
+            return {"citations": "FILLED-BY-STRATEGY"}
+
+    parser = _Parser()
+
+    def applies(self, ctx):
+        return True
+
+    def contribute(self, ctx):
+        from dspy.adapters._engine.transforms import HideOutputField
+
+        return AdapterPatch(
+            field_transforms=[HideOutputField(ctx.field.name, reason="cite_polyfill")],
+            parsers=[self.parser],
+        )
+
+
+def test_split_role_spelling_engages_native_reasoning_under_auto():
+    """Persona repro (strategies user, bug 1): all four role spellings are
+    one meaning at delivery time — a `@reasoning` field on a plain shape
+    engages the native channel exactly as the fused type does."""
+    sig = dspy.Signature("question -> thoughts @reasoning, answer")
+    lm_kwargs = {}
+    built = build_plan(ChatAdapter(), _lm(supports_reasoning=True), lm_kwargs, sig, {"question": "Q?"})
+    assert lm_kwargs == {"reasoning_effort": "low"}
+    assert built.plan.find_field("output", "thoughts").hidden
+    assert "thoughts" not in built.render_signature.output_fields
+    assert any(isinstance(p, NativeReasoningParserHook) for p in built.plan.parsers)
+    assert built.plan.metadata["strategy_resolution"]["thoughts"] == {
+        "role": "reasoning",
+        "binding": "auto",
+        "served": "native",
+    }
+
+
+def test_split_role_spelling_stays_textual_on_an_incapable_lm():
+    sig = dspy.Signature("question -> thoughts @reasoning, answer")
+    lm_kwargs = {}
+    built = build_plan(ChatAdapter(), _lm(), lm_kwargs, sig, {"question": "Q?"})
+    assert lm_kwargs == {}
+    assert built.plan.find_field("output", "thoughts").hidden is False
+    assert built.plan.metadata["strategy_resolution"]["thoughts"]["served"] == "textual"
+
+
+def test_split_role_explicit_native_binding_refuses_on_an_incapable_lm():
+    """Persona repro: an explicit native binding on a role-spelled field must
+    refuse, never silently render the textual marker and set no kwargs."""
+    import pytest
+
+    sig = dspy.Signature("question -> thoughts @reasoning, answer")
+    adapter = ChatAdapter(strategies={"reasoning": "native_channel"})
+    with pytest.raises(ValueError, match="cannot be honored"):
+        build_plan(adapter, _lm(supports_reasoning=False), {}, sig, {"question": "Q?"})
+
+
+def test_split_role_textual_binding_recorded():
+    sig = dspy.Signature("question -> thoughts @reasoning, answer")
+    adapter = ChatAdapter(strategies={"reasoning": "textual_field"})
+    built = build_plan(adapter, _lm(supports_reasoning=True), {}, sig, {"question": "Q?"})
+    assert built.plan.metadata["strategy_resolution"]["thoughts"] == {
+        "role": "reasoning",
+        "binding": "textual_field",
+        "served": "textual",
+    }
+
+
+def test_role_lane_never_engages_fused_types_or_plain_fields():
+    """The role lane only ADDS behavior for explicitly-declared roles on
+    plain shapes: a fused type excluded from native_response_types stays
+    excluded, and undeclared plain fields never consult strategies."""
+    lm_kwargs = {}
+    built = build_plan(
+        ChatAdapter(native_response_types=[Citations]),  # Reasoning excluded
+        _lm(supports_reasoning=True),
+        lm_kwargs,
+        ThoughtfulQA,
+        {"question": "Q?"},
+    )
+    assert lm_kwargs == {}
+    assert "reasoning" in built.render_signature.output_fields
+    assert built.plan.strategy_trace == []
+
+
+def test_registered_strategy_is_bindable_by_name_and_serializes():
+    """Persona repro (strategy author, bug 1): register_strategy and
+    strategies= compose — the registered name is bindable, rides the entry,
+    and refuses at load when dangling (ADP-005)."""
+    import pytest
+
+    from dspy.adapters.serde import load_entry
+
+    dspy.adapters.register_strategy(_RolePolyfill(), role="citations")
+    try:
+        adapter = ChatAdapter(strategies={"citations": "cite_polyfill"})
+        sig = dspy.Signature("question -> citations @citations, answer")
+        built = build_plan(adapter, _lm(), {}, sig, {"question": "Q?"})
+        assert built.plan.find_field("output", "citations").hidden
+        assert built.plan.metadata["strategy_resolution"]["citations"]["binding"] == "cite_polyfill"
+        entry = adapter.dump_entry()
+        assert entry["strategies"]["citations"] == "cite_polyfill"
+        assert load_entry(entry).strategies["citations"] == "cite_polyfill"
+    finally:
+        dspy.adapters.unregister_strategy(role="citations")
+    with pytest.raises(Exception, match="cite_polyfill"):
+        load_entry(entry)  # dangling registered name is a link error
+
+
+def test_registered_role_strategy_serves_under_auto_for_split_fields():
+    dspy.adapters.register_strategy(_RolePolyfill(), role="citations")
+    try:
+        sig = dspy.Signature("question -> citations @citations, answer")
+        built = build_plan(ChatAdapter(), _lm(), {}, sig, {"question": "Q?"})
+        assert built.plan.find_field("output", "citations").hidden
+        trace = [t for t in built.plan.strategy_trace if t.field == "citations"]
+        assert trace and trace[0].strategy == "cite_polyfill" and trace[0].resolved_by == "role"
+    finally:
+        dspy.adapters.unregister_strategy(role="citations")
+
+
+def test_registered_role_strategy_never_answers_an_explicit_native_binding():
+    """Persona repro (strategy author, bug 2): the user demanded native; a
+    registered textual strategy must not hijack it — the binding refuses on
+    an incapable LM instead of silently substituting."""
+    import pytest
+
+    dspy.adapters.register_strategy(_RolePolyfill(), role="citations")
+    try:
+
+        class CitedQA(dspy.Signature):
+            question: str = dspy.InputField()
+            quotes: Citations = dspy.OutputField()
+            answer: str = dspy.OutputField()
+
+        adapter = ChatAdapter(strategies={"citations": "native"})
+        with pytest.raises(ValueError, match="cannot be honored"):
+            build_plan(adapter, _lm(), {}, CitedQA, {"question": "Q?"})
+    finally:
+        dspy.adapters.unregister_strategy(role="citations")
+
+
+def test_capability_requirements_consulted_at_plan_time():
+    """Persona repro (strategy author, bug 4): the declaration is enforced —
+    unmet requirements skip the strategy under auto (recorded) and refuse
+    an explicit binding naming the flag."""
+    import pytest
+
+    class Demanding(_RolePolyfill):
+        name = "demanding_citations"
+        capability_requirements = ("supports_teleportation",)
+
+    dspy.adapters.register_strategy(Demanding(), role="citations")
+    try:
+        sig = dspy.Signature("question -> citations @citations, answer")
+        built = build_plan(ChatAdapter(), _lm(), {}, sig, {"question": "Q?"})
+        assert built.plan.find_field("output", "citations").hidden is False
+        trace = [t for t in built.plan.strategy_trace if t.field == "citations"]
+        assert trace and "capability_requirements unmet: supports_teleportation" in trace[0].reason
+        assert built.plan.metadata["strategy_resolution"]["citations"]["served"] == "textual"
+
+        adapter = ChatAdapter(strategies={"citations": "demanding_citations"})
+        with pytest.raises(ValueError, match="supports_teleportation"):
+            build_plan(adapter, _lm(), {}, sig, {"question": "Q?"})
+    finally:
+        dspy.adapters.unregister_strategy(role="citations")
+
+
+def test_unknown_binding_error_lists_registered_names_not_unimplemented_ones():
+    import pytest
+
+    dspy.adapters.register_strategy(_RolePolyfill(), role="citations")
+    try:
+        with pytest.raises(ValueError) as excinfo:
+            ChatAdapter(strategies={"citations": "bogus"})
+        message = str(excinfo.value)
+        assert "valid citations strategies: auto, native, cite_polyfill" in message
+        assert "declared in the vocabulary but not yet implemented: span_markers, json_quotes" in message
+    finally:
+        dspy.adapters.unregister_strategy(role="citations")
+
+
+def test_list_valued_binding_gets_a_teaching_error_not_a_type_error():
+    import pytest
+
+    with pytest.raises(ValueError, match="a binding names a strategy as a string"):
+        ChatAdapter(strategies={"reasoning": ["textual_field"]})
