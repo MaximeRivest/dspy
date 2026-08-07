@@ -3,8 +3,8 @@
 **Status:** v4 IN PROGRESS (2026-08-07) — contract readiness pass complete;
 canonical `ProgramIR`, compile/write/read/link foundations, bare-Predict
 DSPy compilation, predictor-level `set_adapter`, and the v0.1 composite-module
-forward compiler landed. Tool/interpreter extraction and the public exporter
-remain.
+forward compiler plus authored tool/metric/devset extraction landed.
+Interpreter extraction, environment locking, and the public exporter remain.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -412,12 +412,18 @@ fails the epic, full stop.
 ratifies `dspy.export`/`set_adapter` names and the cross-repo shim
 registration.)
 
-- **I-4 — tools, interpreters, metric.** Deps-comment scan (grammar
-  pinned), self-containment check, `dspy.Tool` schema reuse, source
-  baking; named interpreter pool with the ratified fused kind; metric +
-  devset into the contract-ratified component-12 `{metrics, devset}` block.
-  DoD: ex-14's
-  tools introspect to fixture-equal entries.
+- **I-4 — tools, interpreters, metric — TOOL/EVAL CORE SHIPPED.** The
+  pinned deps-comment scan, closure/global-read self-containment gate,
+  `dspy.Tool` parameter schema reuse, return schema, static and dynamic
+  dispatch identities, and `tools/*.py` sidecars landed. Named metrics use
+  the same extractor into component 12's ratified `{metrics, devset}` block;
+  devset records are ordered flat values plus required `input_keys[]`.
+  Generated tool/eval artifacts pass reference load/version/link/node-compile;
+  reference `explain` currently crashes on the newly-ratified component-12
+  object (`explain_view` still treats it as the retired metric pool), a
+  contract-reference defect rather than an exporter workaround. Remaining in
+  I-4: live interpreter-object census/profile emission and ex-14 fixture
+  equality.
 - **I-5 — env blocks (writer policy).** Dep aggregation (tools + metric +
   authored LM classes + dspy pin); PEP 723 entry + `uv lock --script`; the
   off-box gate wired into CI. Compile remains pure and emits dependency
