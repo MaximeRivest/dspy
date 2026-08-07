@@ -96,7 +96,7 @@ class AdapterPlan:
                     role="input",
                     annotation=field_info.annotation,
                     value=inputs.get(name),
-                    metadata={"semantic_role": resolve_semantic_role(field_info)},
+                    metadata={"semantic_role": resolve_semantic_role(field_info, field_name=name)},
                 )
             )
         for name, field_info in signature.output_fields.items():
@@ -106,7 +106,7 @@ class AdapterPlan:
                     original_name=name,
                     role="output",
                     annotation=field_info.annotation,
-                    metadata={"semantic_role": resolve_semantic_role(field_info)},
+                    metadata={"semantic_role": resolve_semantic_role(field_info, field_name=name)},
                 )
             )
         return plan

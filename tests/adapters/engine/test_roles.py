@@ -76,13 +76,14 @@ def test_explicit_role_wins_over_plain_derivation():
     assert resolve_semantic_role(Sig.output_fields["answer"]) == "citations"
 
 
-def test_explicit_role_conflicting_with_derived_role_raises():
-    class Sig(dspy.Signature):
-        question: str = dspy.InputField()
-        thinking: Reasoning = dspy.OutputField(role="citations")
+def test_explicit_role_conflicting_with_derived_role_raises_at_declaration():
+    """Conflicts raise at signature construction naming the field (D-δ) —
+    'raise immediately' as the docs promise, never at the first LM call."""
+    with pytest.raises(ValueError, match="'thinking'.*annotation implies"):
 
-    with pytest.raises(ValueError, match="annotation implies"):
-        AdapterPlan.from_signature(Sig, {"question": "q"})
+        class Sig(dspy.Signature):
+            question: str = dspy.InputField()
+            thinking: Reasoning = dspy.OutputField(role="citations")
 
 
 def test_explicit_role_agreeing_with_derived_role_is_fine():
@@ -193,22 +194,38 @@ def test_marker_and_kwarg_agreeing_is_fine():
     assert plan.output_fields[0].metadata["semantic_role"] == "citations"
 
 
-def test_marker_and_kwarg_conflicting_raises():
-    class Sig(dspy.Signature):
-        question: str = dspy.InputField()
-        answer: R.citations[str] = dspy.OutputField(role="reasoning")
+def test_marker_and_kwarg_conflicting_raises_at_declaration():
+    with pytest.raises(ValueError, match="'answer'.*conflicting semantic roles"):
 
-    with pytest.raises(ValueError, match="conflicting semantic roles"):
-        AdapterPlan.from_signature(Sig, {"question": "q"})
+        class Sig(dspy.Signature):
+            question: str = dspy.InputField()
+            answer: R.citations[str] = dspy.OutputField(role="reasoning")
 
 
-def test_marker_conflicting_with_legacy_derivation_raises():
-    class Sig(dspy.Signature):
-        question: str = dspy.InputField()
-        thinking: Annotated[Reasoning, R.citations] = dspy.OutputField()
+def test_marker_conflicting_with_legacy_derivation_raises_at_declaration():
+    with pytest.raises(ValueError, match="'thinking'.*annotation implies"):
 
-    with pytest.raises(ValueError, match="annotation implies"):
-        AdapterPlan.from_signature(Sig, {"question": "q"})
+        class Sig(dspy.Signature):
+            question: str = dspy.InputField()
+            thinking: Annotated[Reasoning, R.citations] = dspy.OutputField()
+
+
+def test_dict_nested_marker_is_visible_to_the_conflict_check():
+    """Markers descend into every generic container since D-δ — a marker in
+    a dict value can no longer silently lose to the kwarg."""
+    with pytest.raises(ValueError, match="'a'.*conflicting semantic roles"):
+
+        class Sig(dspy.Signature):
+            question: str = dspy.InputField()
+            a: dict[str, R.citations[str]] = dspy.OutputField(role="reasoning")
+
+
+def test_string_signature_conflict_raises_at_construction():
+    with pytest.raises(ValueError, match="conflicting semantic roles|annotation implies"):
+        dspy.Signature(
+            "question -> answer: Annotated[Reasoning, citations]",
+            custom_types={"Annotated": Annotated, "citations": R.citations, "Reasoning": Reasoning},
+        )
 
 
 def test_marker_agreeing_with_legacy_derivation_is_fine():

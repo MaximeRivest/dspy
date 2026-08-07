@@ -55,8 +55,8 @@ KNOWN_BACK_EDGES = frozenset(
         # retired by the lm15 veneer (Epic E).
         ("parser_hook.py", "dspy.clients.openai_format"),
         # Citations is re-exported through dspy.experimental; the class
-        # itself lives in the allowed types layer.
-        ("roles.py", "dspy.experimental"),
+        # itself lives in the allowed types layer. (roles.py's pin died in
+        # D-δ when role resolution moved to the signatures layer.)
         ("strategies/__init__.py", "dspy.experimental"),
         ("strategies/citations.py", "dspy.experimental"),
     }

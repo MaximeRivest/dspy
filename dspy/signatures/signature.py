@@ -211,6 +211,8 @@ class SignatureMeta(type(BaseModel)):
         return cls
 
     def _validate_fields(cls):
+        from dspy.signatures.roles import validate_declared_roles
+
         for name, field in cls.model_fields.items():
             extra = field.json_schema_extra or {}
             field_type = extra.get("__dspy_field_type")
@@ -219,6 +221,10 @@ class SignatureMeta(type(BaseModel)):
                     f"Field `{name}` in `{cls.__name__}` must be declared with InputField or OutputField, but "
                     f"field `{name}` has `field.json_schema_extra={field.json_schema_extra}`",
                 )
+            # Conflicting semantic-role declarations raise HERE, at class
+            # construction, naming the field — never at the first LM call
+            # (D-δ; fields with no explicit role declaration skip).
+            validate_declared_roles(field, field_name=name, owner=cls.__name__)
 
     @property
     def instructions(cls) -> str:
