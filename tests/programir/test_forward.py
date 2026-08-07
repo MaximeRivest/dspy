@@ -33,6 +33,14 @@ def control_flow_forward(self, question):
     return answer
 
 
+def dynamic_tool_forward(self, prediction):
+    return self.tools[prediction.tool_name](query=prediction.query)
+
+
+def interpreter_forward(self, code):
+    return self.interpreter(code=code)
+
+
 def proposed_forward(self, question):
     values = {"question": question}
     return values
@@ -141,6 +149,22 @@ def test_compile_forward_covers_v01_control_flow():
     assert compiled["body"][2]["body"] == [
         {"node": "Raise", "exc": "InterpreterError", "message": "empty"}
     ]
+
+
+def test_compile_forward_emits_dynamic_tool_and_interpreter_leaves():
+    dynamic = compile_forward(dynamic_tool_forward, {"tools": LeafRef("tool")})
+    interpreter = compile_forward(
+        interpreter_forward,
+        {"interpreter": LeafRef("interpreter", "main")},
+    )
+
+    assert dynamic["body"][0]["value"] == {
+        "node": "Call",
+        "leaf": {"kind": "tool"},
+        "name": {"node": "Attr", "obj": "prediction", "attr": "tool_name"},
+        "kwargs": {"query": {"node": "Attr", "obj": "prediction", "attr": "query"}},
+    }
+    assert interpreter["body"][0]["value"]["leaf"] == {"kind": "interpreter", "ref": "main"}
 
 
 def test_compile_forward_names_v02_proposal_and_source_line():

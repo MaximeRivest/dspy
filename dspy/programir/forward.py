@@ -36,7 +36,7 @@ class LeafRef:
     """Name one child callable admitted by a module forward."""
 
     kind: str
-    ref: str
+    ref: str | None = None
 
 
 def compile_forward(function: Any, leaves: Mapping[str, LeafRef]) -> dict[str, Any]:
@@ -184,14 +184,27 @@ class _Compiler:
     def call(self, node: ast.Call) -> dict[str, Any]:
         if node.args:
             self.refuse(node, "leaf calls accept keyword arguments only")
-        if not isinstance(node.func, ast.Attribute) or not isinstance(node.func.value, ast.Name):
-            self._refuse_call(node)
-        if node.func.value.id != "self":
-            self._refuse_call(node)
-        target = node.func.attr
-        leaf = self.leaves.get(target)
-        if leaf is None:
-            self._refuse_call(node, target=f"self.{target}")
+        dynamic_name = None
+        if (
+            isinstance(node.func, ast.Subscript)
+            and isinstance(node.func.value, ast.Attribute)
+            and isinstance(node.func.value.value, ast.Name)
+            and node.func.value.value.id == "self"
+        ):
+            target = node.func.value.attr
+            leaf = self.leaves.get(target)
+            if leaf is None or leaf.kind != "tool" or leaf.ref is not None:
+                self._refuse_call(node, target=f"self.{target}[...]")
+            dynamic_name = self.expression(node.func.slice)
+        else:
+            if not isinstance(node.func, ast.Attribute) or not isinstance(node.func.value, ast.Name):
+                self._refuse_call(node)
+            if node.func.value.id != "self":
+                self._refuse_call(node)
+            target = node.func.attr
+            leaf = self.leaves.get(target)
+            if leaf is None:
+                self._refuse_call(node, target=f"self.{target}")
         kwargs: dict[str, Any] = {}
         for keyword in node.keywords:
             if keyword.arg is None:
@@ -199,11 +212,13 @@ class _Compiler:
             if keyword.arg in kwargs:
                 self.refuse(keyword.value, f"duplicate keyword {keyword.arg!r}")
             kwargs[keyword.arg] = self.expression(keyword.value)
-        return {
-            "node": "Call",
-            "leaf": {"kind": leaf.kind, "ref": leaf.ref},
-            "kwargs": kwargs,
-        }
+        leaf_record = {"kind": leaf.kind}
+        if leaf.ref is not None:
+            leaf_record["ref"] = leaf.ref
+        call = {"node": "Call", "leaf": leaf_record, "kwargs": kwargs}
+        if dynamic_name is not None:
+            call["name"] = dynamic_name
+        return call
 
     def handler(self, node: ast.ExceptHandler) -> dict[str, Any]:
         if node.name is not None or not isinstance(node.type, ast.Name):
