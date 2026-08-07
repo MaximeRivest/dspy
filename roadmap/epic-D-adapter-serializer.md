@@ -1,9 +1,10 @@
 # Epic D — presets, templates, and the adapter as data
 
-**Status:** v5 (2026-08-06) — EPIC COMPLETE. D-α (PRs D-1/D-2), D-β (PRs
-D-3/D-4/D-5), and D-γ (PRs D-6/D-7 + two review fixes) all SHIPPED; this
-doc records what was actually built. Rescoped v2 after the template
-ratification (D-018/D-019 in `05-decisions.md`).
+**Status:** v6 (2026-08-07) — EPIC COMPLETE + D-δ fix wave. D-α (PRs
+D-1/D-2), D-β (PRs D-3/D-4/D-5), D-γ (PRs D-6/D-7 + two review fixes),
+and D-δ (the ten-persona design-eval fix wave — see "D-δ as built" at the
+end) all SHIPPED; this doc records what was actually built. Rescoped v2
+after the template ratification (D-018/D-019 in `05-decisions.md`).
 
 **Ratified design.** An adapter is a **preset**: a named data entry
 `{template, parser binding, codec bindings, strategy bindings, config}`. The
@@ -504,3 +505,126 @@ postprocess for loaded entries is an H-adjacent decision; TwoStep's
 entry `config` does not yet carry `use_native_function_calling` nor
 LM-bound `"auto"` resolutions (recording those needs the exporter's
 LM-bound bake step — F's linker territory).
+
+## D-δ as built (design-eval fix wave, 2026-08-07)
+
+The ten-persona evaluation (`roadmap/design-eval-epic-D.md`,
+`review_packet/epic-d-stress-personas.json`) surfaced twelve high-impact
+defects; D-δ fixes them in three packages, spec-first (spec §2/§3/§4/§5
+updated before code), tests-first from the personas' executed repros.
+Corpus: zero drift — every fix lands on the new Epic-D surfaces
+(TemplateAdapter/authored templates, registries, serde, split-spelling
+roles); the legacy class-adapter render path is byte-untouched.
+
+**Package A — roles and strategies load-bearing end-to-end.**
+- *Role-keyed strategy admission* (spec §2): the builder now consults
+  strategies for every output field whose resolved semantic role has a
+  strategy lane — registered role strategy, builtin role strategy, or an
+  explicit binding — not only `native_response_types` annotations. The
+  epic-C §6 "admission stays annotation-gated" bridge line is superseded:
+  widening admission by role was always flagged as "a later, deliberate
+  act"; D-δ is that act. The role lane only ADDS behavior for
+  previously-inert declarations (`answer: str @reasoning` etc.); the
+  annotation lane resolves exactly as before (corpus + full suite gate).
+  Native serving of a split-spelled field fills the prediction with what
+  the strategy's parser returns (`Reasoning(content=…)` for the builtin
+  reasoning channel — str-like on purpose).
+- *Registered strategies are bindable by name*: `register_strategy(s,
+  role=…)` extends that role's binding vocabulary with `s.name`;
+  `strategies={role: name}` binds it, serializes, and refuses at load when
+  dangling (shared `check_binding_name`). RULING (recorded): the
+  unknown-binding teaching error lists `auto` + implemented builtins +
+  registered names as valid, and appends declared-but-unimplemented
+  vocabulary names in a separate "declared but not yet implemented"
+  clause — honest discoverability without advertising refusals as valid.
+- *No hijack*: an explicit NATIVE binding resolves through the
+  builtin/annotation lane only; a registered role strategy never answers
+  it. Unhonorable explicit bindings (native the LM cannot serve, or a
+  registered name whose strategy does not apply) refuse at bake even when
+  a textual fallback exists.
+- *Role conflicts raise at declaration*: `SignatureMeta._validate_fields`
+  runs role resolution per field, so conflicting spellings raise at class
+  construction naming the field and the signature — "raise immediately"
+  is now true. Marker scanning also descends into all generic containers
+  (dict values, tuples, sets), closing the nested-visibility hole.
+- *Template lane runs strategy parsers*: `PresetAdapter`'s postprocess now
+  executes the plan's strategy-contributed channel parsers (a hidden field
+  can never silently come back `None`). Riders: `capability_requirements`
+  consulted at plan time (skip under auto + trace; refuse an explicit
+  binding); `register_strategy` gate parity (duplicate names refuse,
+  builtin-vocabulary collisions refuse, `annotation=` must be a type,
+  unregistering nothing refuses).
+
+**Package B — bake reachable from the pure surface.**
+- `Adapter.preview(signature, demos=(), inputs=None, *, lm=None)` moved to
+  the BASE class (every adapter has the learn-by-looking loop). With
+  `lm=`, planning/bake runs first (pure, zero LM calls) and the rendered
+  bytes are the live call's bytes — strategies, hidden fields, and
+  fragments included. PUBLIC-SURFACE ADDITION, flagged.
+- `Adapter.explain_plan(signature, *, lm, inputs=None) -> dict`: the plan
+  accessor — bindings, per-field `auto` resolutions ({role, binding,
+  served}), hidden fields, fragments, native-feature kwargs, and the
+  strategy trace, as plain serializable data. PUBLIC-SURFACE ADDITION,
+  flagged (name chosen: `explain_plan`; an accessor, not an object — the
+  plan itself stays engine-private).
+- Static checks moved earlier: `full_text` with ≠1 visible output refuses
+  at bake (plan time, before the LM call), and at format/preview time when
+  no strategy could ever hide the surplus (all-plain roles, no admitted
+  annotations). Role conflicts: construction (Package A). Unhonorable
+  bindings: bake (Package A).
+- Rider: `format()` accepts string signatures wherever `preview()` does
+  (ensure_signature coercion at the top of the base and preset format
+  paths — pure widening, no legacy byte change).
+
+**Package C — authoring-surface honesty.**
+- Bare value slots in schema positions refuse at render like `{f.value}`
+  (spec §3); the unknown-slot error is mode-aware and no longer claims
+  call-value availability in schema positions.
+- `dump_entry()` records `use_native_function_calling: true` and
+  `use_json_adapter_fallback: false` into entry `config` when they differ
+  from the loaded defaults; `load_entry` honors both (the fallback flag is
+  carried state on the loaded adapter). RULING (recorded): this plus the
+  directive-semantics changes below bump `ADAPTER_IR_VERSION` 0.1.0 →
+  **0.2.0** (semver-0: minor = breaking). Old 0.1.0 entries refuse loudly
+  naming both versions (D-024's purpose): loading them under the retired
+  history-inheritance rule would silently change their rendered bytes,
+  and refusal-over-misreading wins. Server example manifests need one
+  regeneration pass (dump→load), same as post-D-7.
+- Second `History` field refuses loudly on the template lane (walker +
+  `_check_hosting`), naming both fields.
+- Authored directives get what the author wrote: the incomplete-demo
+  preamble is now directive DATA (`preamble=` key, spec §3) — builtin
+  presets carry the historical sentence explicitly; authored directives
+  without the key get zero injected prose. Bare-history-inherits-demos-
+  patterns is retired; each bare directive falls back to its own
+  parser-keyed default, and the builtin presets spell their history
+  patterns explicitly (byte-identical through the class adapters AND the
+  loaded-entry walker; `TEMPLATE_LANGUAGE_VERSION` 1.0.0 → 1.1.0 for the
+  additive `preamble` key and `{f.role}` loop variable).
+- Riders: `PresetAdapter` exported from `dspy.adapters` (PUBLIC-SURFACE
+  ADDITION, flagged) with a readable `parse_mode` property. RULING
+  (recorded): the `parse_mode` (constructor/attribute) vs `parser` (entry
+  key) split is deliberate — the entry key names the parser BINDING in the
+  IR vocabulary (spec §4, cross-language), the kwarg names the authoring
+  UX; the property closes the write-only gap. Template-lane parse errors
+  self-identify ("Adapter TemplateAdapter('name') failed…") while legacy
+  class adapters keep their pinned error identities (corpus). Internal
+  jargon: "(L5)" and "spec section N" references stripped from
+  new-surface error strings (hosting refusals, admission gate); ADP-nnn
+  and D-nnn codes stay (they read as error codes and several are pinned).
+  `{f.role}` added to the loop vocabulary. The codec admission battery now
+  probes `parse_value` with DECODED values too (the json lane hands codecs
+  decoded JSON, not strings — the gate now certifies the contract the
+  runtime exercises; builtin codecs pass, and the refusal documents the
+  dual contract).
+
+**Deliberately NOT done in D-δ** (medium-list items left open): user-turn
+strip/drop opt-out; demo reordering + "Not supplied" placeholder prose in
+authored patterns; unicode field names in the slot grammar;
+`Literal[int]`/`IntEnum` text-mode coercion; Optional-key leniency and the
+raw-ValidationError contract of the json parse lane; `describe_strategies()`
+and codec/strategy registry enumeration; `exist_ok=` re-registration;
+authored-codec exec-error wrapping; DummyLM parse-mode awareness;
+`literal_table` naming; History-turn literal-"None" assistant messages
+(legacy-faithful in the preset; the inline `{history()}` path already
+omits).

@@ -83,6 +83,22 @@ Consequences, all normative:
   strategy's to use, recorded like everything else.
 - A **textual strategy is a template-fragment provider**; preset templates
   carry the slots its fragments fill.
+- **Strategy admission is role-keyed (D-δ).** The builder consults
+  strategies for every output field whose resolved semantic role has a
+  strategy lane — a registered role strategy, a builtin role strategy, or
+  an explicit `strategies=` binding — not only for fields whose annotation
+  appears in `native_response_types`. The role lane ADDS resolution for
+  previously-inert declarations (the four role spellings over plain
+  shapes); every annotation-admitted field resolves exactly as before, so
+  existing programs are byte-identical (corpus-gated). An explicit binding
+  that cannot be honored refuses at bake even when a textual fallback
+  exists (ADP-006's discipline); an explicit *native* binding resolves
+  through the builtin/annotation lane only — a registered role strategy
+  never answers it (registered strategies serve under `"auto"` and under
+  their own binding name). A strategy's declared `capability_requirements`
+  are consulted at plan time: an unmet requirement skips the strategy
+  under `"auto"` (recorded on the trace) and refuses an explicit binding
+  naming the missing capability.
 - **Declared capacity:** a template statically declares which roles it can
   host textually — derivable by analyzing its slots (this is why the
   template language is closed). Capacity separates the live-call lane
@@ -104,7 +120,12 @@ directive. Content strings may use:
   codec), `{instruction}` (3a). `{instruction}` takes an optional
   `style=` from a closed set (`raw` default; `indented` is the historical
   dedent-then-eight-space objective block) — presentation transforms on
-  the instruction are declared styles, never renderer magic.
+  the instruction are declared styles, never renderer magic. In schema
+  positions (system messages, which render without call values) a bare
+  value slot naming a declared field REFUSES at render exactly as
+  `{f.value}` does (D-δ; previously it rendered silently empty — a silent
+  partial); the unknown-slot error in a schema position states that value
+  slots have no call values there rather than claiming availability.
 - **Aggregate slots:** `{inputs(style=…)}`, `{outputs(style=…)}`,
   `{demos(style=…)}`, `{history(style=…)}` — `style` names an entry in
   that aggregate's closed style vocabulary (codec-aligned names; e.g.
@@ -113,7 +134,8 @@ directive. Content strings may use:
 - **Loop blocks:** `{% for f in inputs|outputs [separator='…'] [strip] %} …
   {% endfor %}` with the closed `f.*` vocabulary: `i/index, name, type,
   desc, desc_suffix, value, placeholder, typed_placeholder, marker,
-  chat_type_hint`. The bare `strip` flag applies `str.strip()` to the
+  chat_type_hint, role` (`role` is the field's resolved semantic role
+  name, D-δ). The bare `strip` flag applies `str.strip()` to the
   joined result — the historical join-then-strip section shape, carried as
   declared data (D-2 proved byte parity is unreachable without it). Each
   loop option appears at most once: a duplicate option refuses at parse
@@ -182,12 +204,23 @@ Directive messages expand at render time: `{"role": "demos"}` → user/
 assistant pairs per demo (assistant format follows the parser binding);
 `{"role": "history"}` → prior turns. Directives are role-named on purpose —
 they are the textual strategies of the `history` and demo machinery.
-A directive carrying no `user=`/`assistant=` pair falls back, in order: a
-history directive inherits the demos directive's patterns when the
-template carries one; otherwise the directive expands through the
+A demos directive may carry a `preamble=` string: it is prepended
+(blank-line joined) to the user turn of each *incomplete* demo. The
+preamble is directive data — a directive without the key renders exactly
+the author's pattern, and the builtin presets carry the historical
+incomplete-demo sentence explicitly (D-δ; previously the walker injected
+it into every template's demo expansion, authored patterns included).
+A signature bearing two history-role input fields refuses at render on
+the template lane naming both fields — one history host exists, and
+dropping the second field's turns would be a silent partial (L5, D-δ).
+A directive carrying no `user=`/`assistant=` pair expands through the
 language's **default turn patterns**, keyed by the parser binding when the
 template renders through a preset context (ruled 2026-08-06 — an example
-turn must demonstrate the shape the parser reads back, L9):
+turn must demonstrate the shape the parser reads back, L9; the earlier
+rule that a bare history directive inherits the demos directive's
+patterns was retired in D-δ — one-directional pattern inheritance was an
+undocumented trap, and the builtin presets now spell their history
+patterns explicitly as data):
 
 - `chat` (and any render with no preset context): user
   `{% for f in inputs separator='\n\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}`
@@ -229,7 +262,18 @@ vocabulary is enumerable — and the contract requires that it be enumerable
   Learning the language by making mistakes must work.
 - **`preview()` is part of the contract**: render a preset against a
   SignatureCore + values with no LM call (ADP-002 guarantees this is
-  possible), so the learn-by-looking loop is always available.
+  possible), so the learn-by-looking loop is always available. `preview()`
+  takes an optional `lm=` (D-δ): given one, planning/bake runs first —
+  still pure, no LM call is made (ADP-002 is what makes this sound) — and
+  the rendered bytes are exactly what a live call would send under
+  strategies. The plan's recorded decisions (bindings, per-field `auto`
+  resolutions, hidden fields, fragments, trace) are readable through the
+  adapter's `explain_plan(signature, lm=…)` accessor, returned as plain
+  data. Statically decidable checks refuse before any LM call: role
+  conflicts at signature construction naming the field, `full_text` with
+  more than one hostable output field at bake (and at format time when no
+  strategy could ever hide the surplus), unhonorable explicit bindings at
+  bake.
 
 ## 4. Presets (the canonical entry)
 
@@ -245,6 +289,11 @@ Preset = {
 ```
 
 Canonical JSON; tuples/ordering preserved; serde is exact (absent ≠ null).
+`config` also carries the behavior-bearing legacy constructor flags when
+they differ from the loaded defaults — `use_native_function_calling: true`
+and `use_json_adapter_fallback: false` — recorded at dump, honored at load
+(D-δ: behaviorally different adapters must never serialize identically).
+`config` is otherwise an open author-extensible dict carried verbatim.
 `"auto"` strategies resolve against LM capabilities at bake and the
 resolution is recorded into `config` (declare-don't-discover). Loading a
 preset resolves every `CodecRef`/`StrategyRef` against the pools; a dangling
@@ -287,7 +336,16 @@ unimplementable and vocabulary extension is silent drift.
   entry answers only for the annotation that natively carries the role, so
   resolution is identical to the annotation-keyed path wherever that path
   answered — the role key only adds resolution where the annotation path
-  had none.
+  had none. `register_strategy(strategy, role=…)` also extends that role's
+  *binding* vocabulary with the strategy's declared name (D-δ):
+  `strategies={role: "<registered name>"}` binds it explicitly, the name
+  serializes as data, and it refuses at load when not registered
+  (ADP-005). A registered name may not collide with the role's builtin
+  vocabulary or `"auto"`, and a duplicate name refuses at registration
+  (unregister first) — gate parity with the codec door. The teaching error
+  for an unknown binding lists `auto`, the implemented builtin names, and
+  the registered names as valid, and names declared-but-unimplemented
+  vocabulary entries separately as not yet implemented — never as valid.
 - **Codecs (initial):** `text_pythonish` (the historical implicit pair),
   `pydantic_json` (indented model dumps), `baml` (indented-pydantic value
   spelling + the simplified schema-prose schema spelling — ``Output field
