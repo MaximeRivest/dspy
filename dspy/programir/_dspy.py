@@ -2,30 +2,33 @@
 
 from __future__ import annotations
 
+import inspect
 from copy import deepcopy
 from typing import Any
 
 from pydantic import TypeAdapter
 
 from dspy.adapters.chat_adapter import ChatAdapter
+from dspy.adapters.types.tool import Tool
 from dspy.clients.lm import LM
 from dspy.dsp.utils.settings import settings
 from dspy.predict.predict import Predict
 from dspy.primitives.module import Module
 from dspy.programir.compile import build_program_ir
 from dspy.programir.forward import LeafRef, compile_forward
+from dspy.programir.leaves import extract_metric, extract_tool
 from dspy.programir.model import ProgramIR
 from dspy.programir.versions import IMPLEMENTED_VERSIONS
 from dspy.signatures.roles import resolve_semantic_role
 
 
-def compile_program(program: Module) -> ProgramIR:
+def compile_program(program: Module, *, metric: Any = None, devset: Any = None) -> ProgramIR:
     """Compile one DSPy module directly into a ProgramIR value."""
-    return _DSPyCompiler().compile(program)
+    return _DSPyCompiler(metric=metric, devset=devset).compile(program)
 
 
 class _DSPyCompiler:
-    def __init__(self):
+    def __init__(self, *, metric: Any = None, devset: Any = None):
         self.signatures: dict[str, Any] = {}
         self.instructions: dict[str, str] = {}
         self.demos: dict[str, Any] = {}
@@ -33,7 +36,11 @@ class _DSPyCompiler:
         self.adapters: dict[str, Any] = {}
         self.lms: dict[str, Any] = {}
         self.forwards: dict[str, Any] = {}
+        self.tools: dict[str, Any] = {}
+        self.sidecars: dict[str, bytes] = {}
         self.credentials: list[dict[str, str]] = []
+        self.metric = metric
+        self.devset = devset
         self._adapter_names: dict[int, str] = {}
         self._lm_names: dict[int, str] = {}
         self._module_owners: dict[int, str] = {}
@@ -53,7 +60,7 @@ class _DSPyCompiler:
             "3c_predictor_config": self.config,
             "4_adapter": self.adapters,
             "5_forward": self.forwards,
-            "6_tools": {},
+            "6_tools": self.tools,
             "7_interpreter": {},
             "8_lm": self.lms,
             "9_environment": {},
@@ -64,10 +71,22 @@ class _DSPyCompiler:
                 "allow_tool_async_sync_conversion": settings.allow_tool_async_sync_conversion,
             },
         }
+        if self.metric is not None or self.devset is not None:
+            metrics = {}
+            if self.metric is not None:
+                metric_name = self.metric.__name__ if inspect.isfunction(self.metric) else type(self.metric).__name__
+                extracted = extract_metric(self.metric, name=metric_name)
+                metrics[metric_name] = extracted.entry
+                self.sidecars[extracted.source_path] = extracted.source
+            components["12_metric"] = {
+                "metrics": metrics,
+                "devset": [_devset_record(example) for example in (self.devset or [])],
+            }
         return build_program_ir(
             versions=dict(IMPLEMENTED_VERSIONS),
             components=components,
             provenance={"source": "dspy.export", "evidence": "dspy frontend compile"},
+            sidecars=self.sidecars,
         )
 
     def module_node(self, module: Module, *, path: str, name: str) -> dict[str, Any]:
@@ -78,26 +97,44 @@ class _DSPyCompiler:
 
         children: list[dict[str, Any]] = []
         leaves: dict[str, LeafRef] = {}
+        module_tools: list[str] = []
         for child_name, child in module.__dict__.items():
-            if not _is_identifier(child_name) or not isinstance(child, Module):
+            if not _is_identifier(child_name):
                 continue
-            child_path = child_name if path == "self" else f"{path}.{child_name}"
-            if isinstance(child, Predict):
-                children.append(self.predict_node(child, path=child_path, name=child_name))
-                leaves[child_name] = LeafRef("predict", child_name)
-            else:
-                children.append(self.module_node(child, path=child_path, name=child_name))
-                leaves[child_name] = LeafRef("module", child_name)
+            if isinstance(child, Module):
+                child_path = child_name if path == "self" else f"{path}.{child_name}"
+                if isinstance(child, Predict):
+                    children.append(self.predict_node(child, path=child_path, name=child_name))
+                    leaves[child_name] = LeafRef("predict", child_name)
+                else:
+                    children.append(self.module_node(child, path=child_path, name=child_name))
+                    leaves[child_name] = LeafRef("module", child_name)
+            elif isinstance(child, Tool) or inspect.isfunction(child):
+                tool_name = self.register_tool(child, name=child_name)
+                leaves[child_name] = LeafRef("tool", tool_name)
+                module_tools.append(tool_name)
+            elif isinstance(child, dict) and child and all(
+                isinstance(key, str)
+                and _is_identifier(key)
+                and (isinstance(value, Tool) or inspect.isfunction(value))
+                for key, value in child.items()
+            ):
+                for tool_name, tool in child.items():
+                    module_tools.append(self.register_tool(tool, name=tool_name))
+                leaves[child_name] = LeafRef("tool")
 
         self.forwards[path] = compile_forward(type(module).forward, leaves)
         class_name = type(module).__name__
-        return {
+        node = {
             "kind": class_name,
             "name": name,
             "module_class": class_name,
             "forward_ref": f"5_forward/{path}",
             "children": children,
         }
+        if module_tools:
+            node["tools"] = list(dict.fromkeys(module_tools))
+        return node
 
     def predict_node(self, predictor: Predict, *, path: str, name: str, root: bool = False) -> dict[str, Any]:
         previous = self._predictor_owners.get(id(predictor))
@@ -143,6 +180,17 @@ class _DSPyCompiler:
             node["forward_ref"] = "5_forward/self"
             self.forwards["self"] = _predict_forward(input_names)
         return node
+
+    def register_tool(self, tool: Tool | Any, *, name: str) -> str:
+        extracted = extract_tool(tool, name=name)
+        existing = self.tools.get(name)
+        if existing is not None:
+            if existing != extracted.entry or self.sidecars[extracted.source_path] != extracted.source:
+                raise ValueError(f"ProgramIR tool name {name!r} refers to multiple function identities")
+            return name
+        self.tools[name] = extracted.entry
+        self.sidecars[extracted.source_path] = extracted.source
+        return name
 
     def adapter_name(self, adapter: Any, entry: dict[str, Any]) -> str:
         existing = self._adapter_names.get(id(adapter))
@@ -191,6 +239,17 @@ def _example_record(example: Any, input_names: list[str], *, path: str) -> dict[
     if declared is None:
         raise ValueError(f"ProgramIR demo for predictor {path!r} is missing input designation; call .with_inputs(...)")
     values["input_keys"] = [name for name in input_names if name in declared]
+    return values
+
+
+def _devset_record(example: Any) -> dict[str, Any]:
+    if not hasattr(example, "toDict"):
+        raise ValueError("ProgramIR devset values must be dspy.Example values")
+    values = deepcopy(example.toDict())
+    declared = getattr(example, "_input_keys", None)
+    if declared is None:
+        raise ValueError("ProgramIR devset example is missing input designation; call .with_inputs(...)")
+    values["input_keys"] = [name for name in values if name in declared]
     return values
 
 

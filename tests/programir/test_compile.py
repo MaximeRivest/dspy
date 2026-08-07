@@ -71,13 +71,6 @@ def test_compile_refuses_non_module_frontend_values():
         compile(object())
 
 
-def test_compile_refuses_evaluation_until_metric_extractor_lands():
-    predictor = dspy.Predict("question -> answer")
-
-    with pytest.raises(NotImplementedError, match="I-4"):
-        compile(predictor, devset=[])
-
-
 def test_plain_component_builder_refuses_non_json_values():
     with pytest.raises(ValueError, match="non-JSON"):
         build_program_ir(

@@ -27,17 +27,13 @@ def compile(program: Any, *, metric: Any = None, devset: Any = None) -> ProgramI
 
     Raises:
         TypeError: If no frontend recognizes `program`.
-        NotImplementedError: If evaluation extraction is requested before I-4.
     """
-    if metric is not None or devset is not None:
-        raise NotImplementedError("ProgramIR metric and devset extraction lands in exporter step I-4")
-
     from dspy.primitives.module import Module
 
     if isinstance(program, Module):
         from dspy.programir._dspy import compile_program
 
-        return compile_program(program)
+        return compile_program(program, metric=metric, devset=devset)
 
     raise TypeError(f"programir.compile() does not support {type(program).__name__}")
 
