@@ -65,6 +65,7 @@ class Predict(Module, Parameter):
 
     def reset(self):
         self.lm = None
+        self.adapter = None
         self.traces = []
         self.train = []
         self.demos = []
@@ -252,6 +253,10 @@ class Predict(Module, Parameter):
             trace.append((self, {**kwargs}, pred))
         return pred
 
+    def _resolve_adapter(self):
+        """Resolve this predictor's adapter using the runtime precedence rule."""
+        return self.adapter or settings.adapter or ChatAdapter()
+
     def _should_stream(self):
         stream_listeners = settings.stream_listeners or []
         should_stream = settings.send_stream is not None
@@ -263,13 +268,13 @@ class Predict(Module, Parameter):
     def forward(self, **kwargs):
         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
 
-        adapter = settings.adapter or ChatAdapter()
+        adapter = self._resolve_adapter()
 
         if self._should_stream():
-            with settings.context(caller_predict=self):
+            with settings.context(adapter=adapter, caller_predict=self):
                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
         else:
-            with settings.context(send_stream=None):
+            with settings.context(adapter=adapter, send_stream=None):
                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
 
         return self._forward_postprocess(completions, signature, **kwargs)
@@ -277,13 +282,17 @@ class Predict(Module, Parameter):
     async def aforward(self, **kwargs):
         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
 
-        adapter = settings.adapter or ChatAdapter()
+        adapter = self._resolve_adapter()
         if self._should_stream():
-            with settings.context(caller_predict=self):
-                completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+            with settings.context(adapter=adapter, caller_predict=self):
+                completions = await adapter.acall(
+                    lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs
+                )
         else:
-            with settings.context(send_stream=None):
-                completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+            with settings.context(adapter=adapter, send_stream=None):
+                completions = await adapter.acall(
+                    lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs
+                )
 
         return self._forward_postprocess(completions, signature, **kwargs)
 

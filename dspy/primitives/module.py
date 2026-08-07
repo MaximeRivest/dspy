@@ -195,6 +195,25 @@ class Module(BaseModule, metaclass=ProgramMeta):
             if isinstance(param, Module):
                 param.lm = lm
 
+    def set_adapter(self, adapter):
+        """Set the adapter for every predictor in this module.
+
+        A predictor-level adapter takes precedence over `dspy.settings.adapter`.
+        Calling this method on a composite module applies the adapter to each
+        predictor it contains.
+
+        Args:
+            adapter: The adapter each predictor should use.
+
+        Examples:
+            ```python
+            program.set_adapter(dspy.JSONAdapter())
+            ```
+        """
+        for _, param in self.named_parameters():
+            if isinstance(param, Module):
+                param.adapter = adapter
+
     def get_lm(self):
         """Get the language model used by this module's predictors.
 

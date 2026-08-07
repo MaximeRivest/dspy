@@ -7,7 +7,6 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.clients.lm import LM
 from dspy.dsp.utils.settings import settings
 from dspy.predict.predict import Predict
@@ -29,7 +28,7 @@ def compile_predict(program: Predict) -> ProgramIR:
             "only declared dspy.LM entries are supported before weights baking"
         )
 
-    adapter = getattr(program, "adapter", None) or settings.adapter or ChatAdapter()
+    adapter = program._resolve_adapter()
     try:
         adapter_entry = adapter.dump_entry()
     except (AttributeError, ValueError) as error:

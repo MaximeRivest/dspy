@@ -49,6 +49,18 @@ def test_compile_bare_predict_produces_programir_directly():
     assert "live-secret" not in json.dumps(manifest)
 
 
+def test_compile_uses_the_predictor_adapter_binding_before_ambient():
+    predictor = dspy.Predict("question -> answer")
+    predictor.set_lm(dspy.LM("openai/example-model"))
+    predictor.set_adapter(dspy.JSONAdapter())
+
+    with dspy.context(adapter=dspy.ChatAdapter()):
+        manifest = compile(predictor).to_manifest()
+
+    assert manifest["components"]["1_module_tree"]["bindings"]["adapter"] == "json"
+    assert list(manifest["components"]["4_adapter"]) == ["json"]
+
+
 def test_compile_refuses_predict_without_lm():
     with pytest.raises(ValueError, match="predictor 'self'"):
         compile(dspy.Predict("question -> answer"))

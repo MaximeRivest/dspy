@@ -997,6 +997,61 @@ def test_field_constraints(adapter_type):
     assert "a multiple of the given number: 2" in system_message
 
 
+class BoundAdapter:
+    def __init__(self):
+        self.settings_seen = []
+
+    def __call__(self, *args, **kwargs):
+        self.settings_seen.append(dspy.settings.adapter)
+        return [{"answer": "bound"}]
+
+    async def acall(self, *args, **kwargs):
+        self.settings_seen.append(dspy.settings.adapter)
+        return [{"answer": "bound async"}]
+
+
+class FailingAmbientAdapter:
+    def __call__(self, *args, **kwargs):
+        raise AssertionError("ambient adapter must not run")
+
+    async def acall(self, *args, **kwargs):
+        raise AssertionError("ambient adapter must not run")
+
+
+def test_predictor_adapter_overrides_ambient_adapter():
+    program = Predict("question -> answer")
+    adapter = BoundAdapter()
+    program.set_adapter(adapter)
+
+    with dspy.context(lm=DummyLM([{"answer": "unused"}]), adapter=FailingAmbientAdapter()):
+        result = program(question="What is the capital of France?")
+
+    assert result.answer == "bound"
+    assert adapter.settings_seen == [adapter]
+
+
+@pytest.mark.asyncio
+async def test_predictor_adapter_overrides_ambient_adapter_async():
+    program = Predict("question -> answer")
+    adapter = BoundAdapter()
+    program.set_adapter(adapter)
+
+    with dspy.context(lm=DummyLM([{"answer": "unused"}]), adapter=FailingAmbientAdapter()):
+        result = await program.acall(question="What is the capital of France?")
+
+    assert result.answer == "bound async"
+    assert adapter.settings_seen == [adapter]
+
+
+def test_predict_reset_clears_adapter_binding():
+    program = Predict("question -> answer")
+    program.set_adapter(dspy.JSONAdapter())
+
+    program.reset()
+
+    assert program.adapter is None
+
+
 @pytest.mark.asyncio
 async def test_async_predict():
     program = Predict("question -> answer")

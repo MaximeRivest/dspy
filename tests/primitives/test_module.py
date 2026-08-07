@@ -41,6 +41,30 @@ def test_predictors():
     assert all(isinstance(p, dspy.Predict) for p in preds), "All returned items should be instances of PredictMock"
 
 
+def test_set_adapter_applies_to_every_predictor():
+    module = HopModule()
+    adapter = dspy.JSONAdapter()
+
+    result = module.set_adapter(adapter)
+
+    assert result is None
+    assert module.predict1.adapter is adapter
+    assert module.predict2.adapter is adapter
+
+
+def test_set_adapter_reaches_nested_predictors():
+    class NestedModule(dspy.Module):
+        def __init__(self):
+            self.hop = HopModule()
+
+    module = NestedModule()
+    adapter = dspy.ChatAdapter()
+
+    module.set_adapter(adapter)
+
+    assert all(predictor.adapter is adapter for predictor in module.predictors())
+
+
 def test_forward():
     program = HopModule()
     dspy.configure(
