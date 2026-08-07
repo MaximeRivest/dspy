@@ -6,7 +6,6 @@ no dict literals, subscripts, f-strings, membership tests, or kwargs splats.
 """
 
 import dspy
-from dspy.programir import compile, write
 
 
 class Triage(dspy.Signature):
@@ -70,4 +69,4 @@ if __name__ == "__main__":
     program.draft.set_lm(writer)
     program.draft.set_adapter(dspy.ChatAdapter())
 
-    write(compile(program), "ticket_assistant_v01.ir")
+    dspy.export(program, "ticket_assistant_v01.ir")

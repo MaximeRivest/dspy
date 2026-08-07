@@ -1,4 +1,6 @@
 import importlib
+import json
+import runpy
 import subprocess
 from pathlib import Path
 
@@ -7,6 +9,7 @@ import pytest
 import dspy
 from dspy.clients.openai_compat_lm import _OpenAICompatLM
 from dspy.programir import ProgramIR
+from dspy.programir.shim import handle_line
 
 
 def leaking_tool(query: str) -> str:
@@ -84,6 +87,35 @@ def test_export_scans_direct_openai_compatible_credentials(monkeypatch, tmp_path
 
     with pytest.raises(ValueError, match="LM_API_KEY.*tools/lookup.py"):
         dspy.export(program, tmp_path / "secret.ir")
+
+
+def test_v01_exemplar_exports_and_passes_grade1_checks(monkeypatch, tmp_path):
+    namespace = runpy.run_path(Path("roadmap/exemplar-program-v01.py"))
+    program = namespace["TicketAssistant"]()
+    program.set_lm(dspy.LM("openai/router"))
+    program.set_adapter(dspy.JSONAdapter())
+    program.draft.set_lm(dspy.LM("anthropic/writer"))
+    program.draft.set_adapter(dspy.ChatAdapter())
+    write_module = importlib.import_module("dspy.programir.write")
+    monkeypatch.setattr(write_module.subprocess, "run", fake_uv_lock)
+    monkeypatch.setenv("EXEMPLAR_API_KEY", "credential-that-must-not-travel")
+
+    artifact = dspy.export(program, tmp_path / "ticket-assistant.ir")
+    manifest = artifact.to_manifest()
+
+    for request in (
+        {"id": 1, "op": "load_manifest", "manifest": manifest},
+        {"id": 2, "op": "check_versions", "manifest": manifest},
+        {"id": 3, "op": "link", "manifest": manifest},
+        {"id": 4, "op": "profile_check", "manifest": manifest, "profile": "declared-tier"},
+        {"id": 5, "op": "explain", "manifest": manifest},
+    ):
+        reply = handle_line(json.dumps(request))
+        assert reply["ok"], reply
+    for index, forward in enumerate(manifest["components"]["5_forward"].values(), start=10):
+        reply = handle_line(json.dumps({"id": index, "op": "node_compile", "forward": forward}))
+        assert reply["ok"], reply
+    assert all(b"credential-that-must-not-travel" not in content for content in artifact.sidecars.values())
 
 
 def test_export_returns_the_finalized_artifact(monkeypatch, tmp_path):
