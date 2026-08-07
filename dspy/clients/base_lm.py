@@ -163,6 +163,13 @@ class BaseLM:
     persistent state is fully captured by `BaseLM.__init__()` arguments. If a
     subclass stores additional persistent state, override both methods.
 
+    A subclass that owns in-process model weights can opt into `dspy.export`
+    by defining `programir_weight_spec()`. Return a mapping that names the
+    `model_attribute` and `tokenizer_attribute` and declares
+    `weights_identity`, `engine`, `frozen`, and `ties`. The exporter writes the
+    model state as safetensors and saves the tokenizer without depending on a
+    particular model class.
+
     Examples:
         Preferred typed custom LM:
 

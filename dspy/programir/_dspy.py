@@ -10,6 +10,7 @@ from pydantic import TypeAdapter
 
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.adapters.types.tool import Tool
+from dspy.clients.base_lm import BaseLM
 from dspy.clients.lm import LM
 from dspy.dsp.utils.settings import settings
 from dspy.predict.predict import Predict
@@ -21,6 +22,7 @@ from dspy.programir.interpreters import extract_interpreter
 from dspy.programir.leaves import extract_metric, extract_tool
 from dspy.programir.model import ProgramIR
 from dspy.programir.versions import IMPLEMENTED_VERSIONS
+from dspy.programir.weights import bake_lm, has_weight_spec
 from dspy.signatures.roles import resolve_semantic_role
 
 
@@ -49,6 +51,7 @@ class _DSPyCompiler:
         self._module_owners: dict[int, str] = {}
         self._predictor_owners: dict[int, str] = {}
         self._interpreter_names: dict[int, str] = {}
+        self._baked_lm_count = 0
         self._default_adapter = ChatAdapter()
 
     def compile(self, program: Module) -> ProgramIR:
@@ -70,7 +73,8 @@ class _DSPyCompiler:
             }
 
         environment = {}
-        authored_python = [*self.tools.values(), *metrics.values()]
+        authored_lms = [entry["class"] for entry in self.lms.values() if entry.get("class", {}).get("origin") == "authored"]
+        authored_python = [*self.tools.values(), *metrics.values(), *authored_lms]
         if authored_python:
             dependencies = [dependency for entry in authored_python for dependency in entry.get("deps", [])]
             python_block, entry_source = python_environment(dependencies)
@@ -170,10 +174,12 @@ class _DSPyCompiler:
         lm = predictor.lm or settings.lm
         if lm is None:
             raise ValueError(f"ProgramIR compile cannot resolve an LM for predictor {path!r}")
-        if not isinstance(lm, LM):
+        if not isinstance(lm, BaseLM):
+            raise ValueError(f"ProgramIR cannot compile non-BaseLM {type(lm).__name__} bound to predictor {path!r}")
+        if not isinstance(lm, LM) and not has_weight_spec(lm):
             raise ValueError(
-                f"ProgramIR phase 1 cannot compile {type(lm).__name__} bound to predictor {path!r}; "
-                "only declared dspy.LM entries are supported before weights baking"
+                f"ProgramIR cannot compile {type(lm).__name__} bound to predictor {path!r}; "
+                "custom BaseLM subclasses must declare programir_weight_spec()"
             )
         adapter = predictor._resolve_adapter(default=self._default_adapter)
         try:
@@ -233,12 +239,24 @@ class _DSPyCompiler:
         self.adapters[name] = entry
         return name
 
-    def lm_name(self, lm: LM) -> str:
+    def lm_name(self, lm: BaseLM) -> str:
         existing = self._lm_names.get(id(lm))
         if existing is not None:
             return existing
+        if has_weight_spec(lm):
+            spec = lm.programir_weight_spec()
+            identity = spec.get("weights_identity") if isinstance(spec, dict) else type(lm).__name__
+            name = _allocate_name(_pool_name(identity if isinstance(identity, str) else type(lm).__name__), self.lms)
+            root = "weights" if self._baked_lm_count == 0 else f"weights/{name}"
+            baked = bake_lm(lm, name=name, weights_root=root)
+            self._baked_lm_count += 1
+            self._lm_names[id(lm)] = name
+            self.lms[name] = baked.entry
+            self.sidecars.update(baked.sidecars)
+            return name
+
         name = _allocate_name(_pool_name(lm.model), self.lms)
-        index = len(self.lms) + 1
+        index = len(self.credentials) + 1
         endpoint_ref = "LM_ENDPOINT" if index == 1 else f"LM_ENDPOINT_{index}"
         credential_ref = "LM_API_KEY" if index == 1 else f"LM_API_KEY_{index}"
         self._lm_names[id(lm)] = name

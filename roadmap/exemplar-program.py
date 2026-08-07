@@ -60,9 +60,24 @@ class TinyTriageLM(dspy.BaseLM):
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         super().__init__(model=model_dir)
+        self.weights_identity = model_dir
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
         self.model = AutoModelForCausalLM.from_pretrained(model_dir).to(device)
         self.device = device
+
+    def programir_weight_spec(self):
+        return {
+            "model_attribute": "model",
+            "tokenizer_attribute": "tokenizer",
+            "weights_identity": self.weights_identity,
+            "engine": "transformers",
+            "device": self.device,
+            "frozen": False,
+            "weight_ref": "base",
+            "ties": [
+                {"target": "lm_head.weight", "source": "model.embed_tokens.weight"}
+            ],
+        }
 
     def forward(self, request):
         # typed_lm contract: forward(LMRequest) -> LMResponse. Leaf code —
