@@ -119,10 +119,10 @@ identity**, not a closed `kind` vocabulary: `language`, exact runtime,
 contract, namespace/result/vars conventions, packages, limits, and isolation
 floor travel as data; placement remains the receiver's. The fused kind is
 legacy-readable only, and structural entries carry
-`versions.interpreter_profile = "1.0"`. Proposed, awaiting ratification
-(contract `spec/manifest.md`): module tree nodes (1) additionally carry their
+`versions.interpreter_profile = "1.0"`. Ratified (D-036, contract
+`spec/manifest.md`): module tree nodes (1) additionally carry their
 **external signature** (making L1/PIR-013 checkable per module and typing
-sub-module leaves); authored-code **admission becomes structural** (implements
+sub-module leaves); authored-code **admission is structural** (implements
 the contract), never nominal.
 
 **Instructions have exactly one home (3a), by design.** dspy's `dump_state`
@@ -1249,11 +1249,13 @@ compile merely walks its `ast` (stdlib) and accepts-or-refuses each node. Concre
   module forwards do not — censusing the seven core predict modules found
   f-strings (19), tuples (34), subscripts (25), comprehensions (12), and
   more, all refused by the proven whitelist. The closing path is the
-  **v0.2 ergonomics batch** (contract `spec/node-set.md`, PROPOSED:
-  admit-semantics/desugar-syntax — Format, literals, Index/SetIndex,
-  destructuring, orderings/membership, For-over-lists), after which the
-  gap remaining is the builtins surface; Refine/BestOfN stay the refused
-  family regardless (`With`/`ClassDef` — the `dspy.context` disease).
+  **v0.2 ergonomics batch** (contract `spec/node-set.md`, RATIFIED
+  2026-08-07, D-034: admit-semantics/desugar-syntax — Format, literals,
+  Index/SetIndex, destructuring, orderings/membership, For-over-lists;
+  corpus + implementation catch-up are the follow-on waves), after which
+  the gap remaining is the builtins surface; Refine/BestOfN stay the
+  refused family regardless (`With`/`ClassDef` — the `dspy.context`
+  disease, D-035).
   Nothing is rewritten into a dialect — the whitelist grows by
   ratification. The standing bar is unchanged: *the shipped program is
   normal Python that just works after `uv sync`*; no alternative
@@ -1943,7 +1945,7 @@ The `lm.class` block has one field that forks it — `origin`:
   tier); load execs it in an isolated namespace, checks it subclasses `BaseLM` and
   declares `forward_contract`, and binds it. This is what makes a quick-script
   custom LM actually shippable — the gap that `_dspy_lm_class`-by-name never closed.
-  *(PROPOSED 2026-08-07: the subclass check becomes structural — admission
+  *(Ratified 2026-08-07, D-036: the subclass check is structural — admission
   verifies the entry implements the declared contract, never that it
   inherits a named base — admitting closure-factory LMs and plain-function
   leaves identically; authored entries may carry `constructor: {ref, args}`.
