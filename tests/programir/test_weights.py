@@ -100,8 +100,10 @@ def test_weight_protocol_bakes_one_shared_entry_and_sidecar_family(monkeypatch):
     assert json.loads(ir.sidecars["weights/tying.json"]) == [
         {"source": "embed.weight", "target": "lm_head.weight"}
     ]
-    assert ir.sidecars["lm/test-tiny.py"].decode().startswith("import dspy\n")
-    assert "class WeightOwningLM" in ir.sidecars["lm/test-tiny.py"].decode()
+    assert entry["class"]["identity"] == "weight_owning_lm.WeightOwningLM"
+    assert entry["class"]["source"] == "lm/weight_owning_lm.py"
+    assert ir.sidecars["lm/weight_owning_lm.py"].decode().startswith("import dspy\n")
+    assert "class WeightOwningLM" in ir.sidecars["lm/weight_owning_lm.py"].decode()
     assert components["9_environment"]["python"]
     assert components["10_credentials"] == []
 

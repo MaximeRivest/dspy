@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
+import re
 import tempfile
 import textwrap
 from dataclasses import dataclass
@@ -84,7 +86,10 @@ def bake_lm(lm: Any, *, name: str, weights_root: str = "weights") -> BakedLM:
     config = spec.get("rebuild_config")
     if config is None:
         model_config = getattr(model, "config", None)
-        config = model_config.to_dict() if callable(getattr(model_config, "to_dict", None)) else None
+        if callable(getattr(model_config, "to_json_string", None)):
+            config = json.loads(model_config.to_json_string())
+        elif callable(getattr(model_config, "to_dict", None)):
+            config = model_config.to_dict()
     if not isinstance(config, Mapping):
         raise ValueError(
             f"ProgramIR weight-owning LM {name!r} must declare rebuild_config or own a model.config.to_dict()"
@@ -107,7 +112,8 @@ def bake_lm(lm: Any, *, name: str, weights_root: str = "weights") -> BakedLM:
     sidecars.update(_save_tokenizer(tokenizer, root=f"{root}/tokenizer"))
 
     source, dependencies = _authored_lm_source(type(lm), name=name)
-    source_path = f"lm/{name}.py"
+    module_name = _authored_module_name(type(lm))
+    source_path = f"lm/{module_name}.py"
     sidecars[source_path] = source.encode("utf-8")
     placement = _in_process_placement()
     weights = {
@@ -121,7 +127,7 @@ def bake_lm(lm: Any, *, name: str, weights_root: str = "weights") -> BakedLM:
     entry = {
         "forward_contract": getattr(type(lm), "forward_contract", "legacy"),
         "class": {
-            "identity": f"{type(lm).__module__}.{type(lm).__qualname__}",
+            "identity": f"{module_name}.{type(lm).__name__}",
             "origin": "authored",
             "language": "python",
             "source": source_path,
@@ -206,6 +212,13 @@ def _authored_lm_source(cls: type, *, name: str) -> tuple[str, list[str]]:
     dependencies = parse_deps(source)
     source = "import dspy\nfrom dspy import BaseLM, LMRequest, LMResponse\n\n" + source
     return source, dependencies
+
+
+def _authored_module_name(cls: type) -> str:
+    words = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", cls.__name__)
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", words).lower()
+    rendered = re.sub(r"[^a-z0-9_]+", "_", words).strip("_")
+    return rendered or "authored_lm"
 
 
 def _in_process_placement() -> dict[str, Any]:
