@@ -3,8 +3,8 @@
 **Status:** v4 IN PROGRESS (2026-08-07) — contract readiness pass complete;
 canonical `ProgramIR`, compile/write/read/link foundations, bare-Predict
 DSPy compilation, predictor-level `set_adapter`, and the v0.1 composite-module
-forward compiler plus authored tool/metric/devset extraction landed.
-Interpreter extraction, environment locking, and the public exporter remain.
+forward compiler plus authored tool/metric/devset and structural interpreter
+extraction landed. Environment locking and the public exporter remain.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -413,7 +413,7 @@ fails the epic, full stop.
 ratifies `dspy.export`/`set_adapter` names and the cross-repo shim
 registration.)
 
-- **I-4 — tools, interpreters, metric — TOOL/EVAL CORE SHIPPED.** The
+- **I-4 — tools, interpreters, metric — STRUCTURAL CORE SHIPPED.** The
   pinned deps-comment scan, closure/global-read self-containment gate,
   `dspy.Tool` parameter schema reuse, return schema, static and dynamic
   dispatch identities, and `tools/*.py` sidecars landed. Named metrics use
@@ -422,9 +422,15 @@ registration.)
   Generated tool/eval artifacts pass reference load/version/link/node-compile;
   the component-12 `explain` defect found by that artifact was fixed in the
   contract reference (`c85c6bf`) rather than worked around in the exporter.
-  Remaining in
-  I-4: live interpreter-object census/profile emission and ex-14 fixture
-  equality.
+  D-033 then replaced the fused interpreter kind with an open structural
+  profile; builtins use explicit extractors and custom objects declare plain
+  data via `programir_profile()`. Grade-1 readers hold arbitrary runtimes while
+  grade 2 remains free to refuse unsupported execution. The current
+  Deno/Pyodide `PythonInterpreter` refuses honestly because its live object
+  pins neither runtime version; emitting an exact profile before fixing that
+  declaration would violate L6. Structural interpreter artifacts pass every
+  reference grade-1 operation. Remaining I-4 evidence item: ex-14's on-server
+  tool bodies compared fixture-equal before the corpus flip.
 - **I-5 — env blocks (writer policy).** Dep aggregation (tools + metric +
   authored LM classes + dspy pin); PEP 723 entry + `uv lock --script`; the
   off-box gate wired into CI. Compile remains pure and emits dependency
