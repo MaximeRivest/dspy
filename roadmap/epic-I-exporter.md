@@ -5,7 +5,7 @@ canonical `ProgramIR`, compile/write/read/link foundations, bare-Predict
 DSPy compilation, predictor-level `set_adapter`, and the v0.1 composite-module
 forward compiler plus authored tool/metric/devset and structural interpreter
 extraction and portable Python environment locking landed. The public
-exporter and conformance shim remain.
+exporter remains; the dspy grade-1 conformance row is green.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -444,12 +444,16 @@ registration.)
   contain no editable path or author checkout. Authored LM-class deps join the
   same aggregation in I-7 when that source extractor lands. (Locks are
   *emitted artifacts* here — the known repo `uv.lock` noise rule is unrelated.)
-- **I-6 — the `pir` shim + CONTRACT_PIN + CI.** Grade-1 ops
-  (`load_manifest`, `check_versions`, `link`, `profile_check`,
-  `node_compile`, `diff`, `explain`) over the SAME reader/compiler used by
-  `dspy.programir.read`; contract-side commits register the shim + green row;
-  `dspy-ci` lane + anti-drift version test. DoD: dspy shim green on the
-  full contract corpus at the pin.
+- **I-6 — the `pir` shim + CONTRACT_PIN + CI — CONFORMANCE SHIPPED.**
+  Grade-1 ops (`load_manifest`, `check_versions`, `link`, `profile_check`,
+  `node_compile`, `diff`, `explain`) use the same bundled contract schemas
+  and validator the reader invokes; no second permissive loader exists. The
+  contract registers `python -m dspy.programir.shim`, and the dspy row is
+  green **33/33** at its durable `CONTRACT_PIN`. Bundled schemas are pinned
+  contract inputs; version support remains single-sourced in
+  `dspy/programir/versions.py`. The external `dspy-ci` wrapper remains the
+  execution lane for this machine; contract harness conformance is also
+  exercised directly before every pin bump.
 
 **Wave I-γ — weights and the corpus flip.** (Checkpoint: Maxime approves
 the dedicated corpus commit and any push.)
