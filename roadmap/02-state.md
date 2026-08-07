@@ -1,6 +1,6 @@
 # State Map
 
-What exists right now and its load-bearing status. **Regenerate this page at the end of every epic.** Last updated: 2026-08-06, after **Epic D complete** (checkpoint C1 pending: public-name ratification + push + upstream-sync decision).
+What exists right now and its load-bearing status. **Regenerate this page at the end of every epic.** Last updated: 2026-08-07, after **Epic D complete** (checkpoint C1 closed — D-031; D-δ fix wave in flight, then Epic E).
 
 ## Shipped on `programir-main`
 
@@ -60,6 +60,6 @@ What exists right now and its load-bearing status. **Regenerate this page at the
 - Refine/BestOfN redo; optimizers over the new axes — blocked on Epic F substrate; **do not start**.
 - Flex redo on the IR (F-γ; scope negotiated with Maxime).
 
-## Checkpoint C1 (in progress — Maxime)
+## Checkpoint C1 (closed — D-031)
 
-Ratified (D-030): the **D-019 as-built reading**; **no upstream sync before Epic E**. **Pushed**: `programir-main` is on the fork at the Epic-D-end state (two hook runs blocked by flake-only failures; pushed under `DSPY_SKIP_MATRIX=1` with two independent green matrices at the same tree on record). The flake `test_dspy_configure_allowance_async` has now failed alone in four runs across four Python lanes — promote from "rerun before investigating" to "diagnose". **Pending**: public-name ratification against `roadmap/public-surface-epic-D.md`; the Epic E go.
+The Epic D public names are **ratified as shipped** against `roadmap/public-surface-epic-D.md` (D-031; the ten-persona evaluation requested no renames). Upstream sync stays declined until after Epic E (D-030). Pushes are current: `programir-main` is on the fork at the reviewed state. Open work: the **D-δ fix wave** (in flight — the twelve high-impact defects), then **Epic E** (doc-first).
