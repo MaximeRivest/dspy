@@ -125,8 +125,8 @@ class PresetAdapter(Adapter):
         if demos and not capacity.hosts_demos:
             raise ValueError(
                 f"adapter {self.preset.name!r} received {len(demos)} demo(s), but its template hosts "
-                'none — add a {"role": "demos"} directive (or a {demos()} slot); dropping examples '
-                "silently would vanish from the prompt"
+                'none — add a {"role": "demos"} directive (or a {demos()} slot); examples must never '
+                "vanish from the prompt silently"
             )
         history_field = _history_field_name(signature)
         if history_field is not None:
@@ -136,8 +136,8 @@ class PresetAdapter(Adapter):
                 raise ValueError(
                     f"adapter {self.preset.name!r} received {len(turns)} history turn(s) in "
                     f"{history_field!r}, but its template hosts none — add a "
-                    '{"role": "history"} directive (or a {history()} slot); dropping turns silently '
-                    "would lose conversation state"
+                    '{"role": "history"} directive (or a {history()} slot); conversation turns must '
+                    "never vanish from the prompt silently"
                 )
 
     def _check_statically_serviceable(self, signature) -> None:

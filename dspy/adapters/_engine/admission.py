@@ -238,7 +238,7 @@ def materialize_codec_entry(entry: dict):
     if origin not in ("packaged", "authored"):
         raise ValueError(
             f"codec entry {name!r} carries unknown origin {origin!r} — valid origins: builtin, "
-            "packaged, authored (spec section 9)"
+            "packaged, authored"
         )
     if "language" not in entry:
         raise ValueError(
@@ -281,13 +281,13 @@ def _load_packaged(entry: dict, name: str):
     except importlib.metadata.PackageNotFoundError:
         raise ValueError(
             f"packaged codec entry {name!r}: distribution {entry['dist']!r} is not installed — the "
-            "program's env manifest provides it (spec section 9)"
+            "program's env manifest provides it"
         ) from None
     if installed != entry["version"]:
         raise ValueError(
             f"packaged codec entry {name!r}: distribution {entry['dist']!r} is installed at "
             f"{installed!r} but the entry declares {entry['version']!r} — a version mismatch refuses "
-            "loudly (spec section 9)"
+            "loudly naming both versions"
         )
     try:
         target = getattr(importlib.import_module(module_name), attr)
