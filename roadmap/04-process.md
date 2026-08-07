@@ -29,6 +29,7 @@ Flat rules. Deviations need Maxime's word, not good intentions.
 ## Epics
 - Doc first, in `roadmap/epic-<X>-<name>.md`, quiet-compiler style: PR stack, mechanical definitions of done, corpus gates, non-goals. The implementing engineer writes it (the builder catches what the planner doesn't).
 - End-of-epic: update `02-state.md` and append ratified decisions to `05-decisions.md`.
+- **Spec sync:** every contract-side ratification commit (`~/Projects/programir-contract`) gets a same-day sync commit to `roadmap/IR-program-spec.md` — or an explicit no-sync-needed note in the ratification's changes/ entry. Drift between the two is a defect, not a backlog item. (Retires at graduation, when the roadmap copy becomes narrative.)
 - During review sessions: restart difit (localhost:4966) after every commit.
 
 ## Review of upstream PRs
