@@ -1,7 +1,8 @@
 # Epic I — the exporter: `dspy.export` emits the ProgramIR
 
-**Status:** v3 DRAFT (2026-08-07) — coordinator readiness rulings applied;
-contract ratification pass precedes implementation. Nothing implemented.
+**Status:** v4 IN PROGRESS (2026-08-07) — contract readiness pass complete;
+canonical `ProgramIR`, compile/write/read/link foundations, and bare-Predict
+DSPy compilation landed. Composite modules and the public exporter remain.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -74,14 +75,19 @@ sharpens the remaining open field-level rulings.
 
 The implementation is layered so folding is delegation, not migration:
 
-- **Frontend snapshot.** A dspy-specific walker reads live `Module` /
-  `Predict` / settings objects and lowers them into a neutral, plain-data
-  `FrontendProgram` snapshot. FunctAI's strict dialect builds the SAME
-  snapshot without importing dspy or reading ambient state. No compiler
-  code performs framework-object introspection.
-- **Compile.** Pure `FrontendProgram -> ProgramIR`: pool identity,
-  signatures, bindings, forward nodes, refusals. No path, filesystem,
-  clock, environment lock, or credential value enters this layer.
+- **Frontend assembly, no frontend IR.** `ProgramIR` is the only in-memory
+  program representation. A dspy-specific bridge reads live `Module` /
+  `Predict` / settings objects and feeds plain component fragments directly
+  to the canonical builder; no public or internal `FrontendProgram` value
+  crosses the compile boundary. FunctAI's graph dialect feeds the SAME
+  builder without importing dspy or reading ambient state.
+- **Compile.** `compile(live frontend program) -> ProgramIR`: frontend
+  resolution plus pure canonical assembly. Signature metaclasses and Module
+  subclass hooks MAY cache immutable fragments (field schemas/roles and a
+  validated forward AST), but the complete IR assembles at instance/export
+  time because children, demos, and bindings are instance state. These
+  caches are never a second representation. No path, filesystem, clock,
+  environment lock, or credential value enters compile.
 - **Write.** Materializes one ProgramIR as the directory serialization,
   including sidecars, env lock, canonical JSON, and the positive secret
   scan. Packaging policy lives here, never in compile.
@@ -367,19 +373,19 @@ fails the epic, full stop.
 
 **Wave I-α — the artifact builder.**
 
-- **I-1 — neutral snapshot + compile/write/read skeleton.** New package
+- **I-1 — direct ProgramIR compile/write/read skeleton.** New package
   `dspy/programir/` (`model.py`, `compile.py`, `write.py`, `read.py`) plus
-  the dspy frontend bridge (`frontends/dspy.py`). The engine boundary test
-  additionally pins that `_engine` never imports `programir`; the neutral
-  compiler imports no settings/modules/clients/teleprompt, and a fixture
-  frontend proves it compiles without importing dspy runtime objects.
+  the dspy bridge (`_dspy.py`). `ProgramIR` is the only program value; the
+  shared plain-component builder performs no framework introspection while
+  frontend resolution remains isolated in the bridge. The engine boundary
+  test additionally pins that `_engine` never imports `programir`.
   Components 1/2/3a/3b/3c/4/8-declared/10/11/12 + versions stamped first
   + provenance; dspy resolution rule (ambient + `set_lm`; adapter
   ambient-only until I-2); canonical writer; deterministic naming; the
   byte-absence scan. `read()` validates + link-checks through the same
   grade-1 implementation exposed by the shim. DoD: a two-predictor
   program's artifact passes the four grade-1 ops through the **reference**
-  shim; `read(write(compile(snapshot)))` returns the same ProgramIR;
+  shim; `read(write(compile(program)))` returns the same ProgramIR;
   refusal tests: no-LM, non-engine adapter, non-serializable demo.
 - **I-2 — `set_adapter` (public surface, flagged).** As decided. DoD:
   sync/async parity; exporter reads it; a two-adapter pool with two
@@ -455,20 +461,20 @@ the dedicated corpus commit and any push.)
 Maxime's direction: the recommended authoring surface (the graph dialect,
 `roadmap/exemplar-program-graph.py`; conventions in
 `roadmap/frontend-contract.md`) ships in **FunctAI first**. Consequence
-for this epic: **I-1's neutral `FrontendProgram` model/compiler and I-3's
-forward compiler land extraction-ready** behind a mechanical import
-boundary. Framework introspection lives in frontend bridges: dspy's bridge
-may import settings/modules/clients to RESOLVE a compat program into plain
-data; FunctAI's bridge has no ambient imports and refuses unbound leaves.
-The compiler after that boundary imports neither framework. In this epic it
-remains under `dspy/programir/`, extraction-ready behind the same mechanical
-boundary used by D-021. FunctAI consumes it without importing dspy runtime
-objects only AFTER that neutral core is extracted; I-1 proves today's boundary
-with the fixture frontend, not with a cross-package FunctAI import. After
-extraction, dspy's class dialect and FunctAI's graph dialect remain two skins
-over one save pipeline. The boundary test compiles equivalent fixture-frontend
-and dspy snapshots and demands identical ProgramIR; the strict FunctAI bridge
-replaces the fixture after extraction.
+for this epic: **I-1's canonical plain-component builder and I-3's forward
+compiler land extraction-ready** behind a mechanical import boundary.
+Framework introspection lives in frontend bridges: dspy's bridge may import
+settings/modules/clients to RESOLVE a compat program directly into ProgramIR;
+FunctAI's bridge has no ambient imports and refuses unbound leaves. Immutable
+fragments may be cached at Signature/Module class creation, but no
+`FrontendProgram` or other second IR exists. In this epic the builder remains
+under `dspy/programir/`, extraction-ready behind the same mechanical boundary
+used by D-021. FunctAI consumes it without importing dspy runtime objects only
+AFTER that neutral core is extracted. After extraction, dspy's class dialect
+and FunctAI's graph dialect remain two skins over one save pipeline. The
+boundary test feeds equivalent plain fragments from fixture and dspy bridges
+and demands identical ProgramIR; the strict FunctAI bridge replaces the
+fixture after extraction.
 
 ## Open questions for Maxime
 
