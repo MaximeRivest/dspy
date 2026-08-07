@@ -2,6 +2,7 @@ import runpy
 from pathlib import Path
 
 import dspy
+from dspy.clients.openai_compat_lm import _OpenAICompatLM
 from dspy.programir import compile, link, read, write
 
 
@@ -94,6 +95,38 @@ def test_compile_composite_module_builds_tree_pools_and_forwards():
     }
 
 
+def test_openai_compatible_lm_emits_packaged_local_endpoint():
+    program = dspy.Predict("question -> answer")
+    program.set_lm(
+        _OpenAICompatLM(
+            model="org/canonical-weights",
+            base_url="http://localhost:8000/v1",
+            api_key="not-written",
+            require_auth=True,
+        )
+    )
+
+    components = compile(program).to_manifest()["components"]
+    entry = components["8_lm"]["org-canonical-weights"]
+
+    assert entry["weights_identity"] == "org/canonical-weights"
+    assert entry["class"] == {
+        "identity": "dspy.clients.openai_compat_lm._OpenAICompatLM",
+        "origin": "packaged",
+        "language": "python",
+        "deps": ["dspy"],
+    }
+    assert entry["placement"] == {
+        "rung": "http_local",
+        "contract": "forward(LMRequest)->LMResponse",
+        "endpoint_ref": "LM_ENDPOINT",
+        "default_endpoint": "http://localhost:8000/v1",
+        "isolation": "none",
+        "credential_ref": "LM_API_KEY",
+    }
+    assert components["9_environment"]["python"]["dependencies"] == ["dspy==3.3.0"]
+
+
 def test_pooling_deduplicates_by_object_not_equal_configuration():
     program = TwoStage()
     program.draft.set_lm(dspy.LM("openai/same-model"))
@@ -118,10 +151,10 @@ def test_composite_module_roundtrips_and_links(tmp_path):
     original = compile(configured_two_stage())
     destination = tmp_path / "two-stage.ir"
 
-    write(original, destination)
+    finalized = write(original, destination)
     restored = read(destination)
 
-    assert restored == original
+    assert restored == finalized
     assert link(restored) == {
         "draft": {"adapter": "json", "lm": "openai-shared-model", "delta": None},
         "finish": {"adapter": "chat", "lm": "openai-shared-model", "delta": None},

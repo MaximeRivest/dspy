@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import dspy
+from dspy.clients.openai_compat_lm import _OpenAICompatLM
 from dspy.programir import ProgramIR
 
 
@@ -67,6 +68,22 @@ def test_export_scans_live_lm_credentials_across_finalized_bytes(monkeypatch, tm
         dspy.export(program, destination)
 
     assert not destination.exists()
+
+
+def test_export_scans_direct_openai_compatible_credentials(monkeypatch, tmp_path):
+    program = SecretProgram()
+    program.set_lm(
+        _OpenAICompatLM(
+            model="org/model",
+            base_url="http://localhost:8000/v1",
+            api_key="super-secret-value",
+        )
+    )
+    write_module = importlib.import_module("dspy.programir.write")
+    monkeypatch.setattr(write_module.subprocess, "run", fake_uv_lock)
+
+    with pytest.raises(ValueError, match="LM_API_KEY.*tools/lookup.py"):
+        dspy.export(program, tmp_path / "secret.ir")
 
 
 def test_export_returns_the_finalized_artifact(monkeypatch, tmp_path):

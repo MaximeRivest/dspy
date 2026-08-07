@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from dspy.clients.base_lm import SENSITIVE_HEADER_NAMES, SENSITIVE_LM_KWARG_NAMES
+from dspy.dsp.utils.settings import settings
 from dspy.predict.predict import Predict
 from dspy.primitives.module import Module
 from dspy.programir.compile import compile
@@ -49,7 +50,7 @@ def _credential_values(program: Module) -> dict[str, str]:
     seen_lms: set[int] = set()
     lm_index = 0
     for predictor in predictors:
-        lm = predictor.lm
+        lm = predictor.lm or settings.lm
         if lm is None or id(lm) in seen_lms:
             continue
         seen_lms.add(id(lm))
@@ -62,4 +63,8 @@ def _credential_values(program: Module) -> dict[str, str]:
                 for header, header_value in value.items():
                     if str(header).lower() in SENSITIVE_HEADER_NAMES and isinstance(header_value, str) and header_value:
                         found[f"LM_HEADER{suffix}_{str(header).upper()}"] = header_value
+        for attribute in ("api_key", "_api_key"):
+            value = getattr(lm, attribute, None)
+            if isinstance(value, str) and value:
+                found[f"LM_API_KEY{suffix}"] = value
     return found

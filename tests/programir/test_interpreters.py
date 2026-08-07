@@ -56,8 +56,8 @@ def test_compile_structural_interpreter_profile(tmp_path):
     }
 
     destination = tmp_path / "interpreter.ir"
-    write(ir, destination)
-    assert read(destination) == ir
+    finalized = write(ir, destination)
+    assert read(destination) == finalized
 
 
 def test_structural_profile_refuses_placement_inside_isolation_floor():

@@ -17,10 +17,10 @@ def test_read_write_roundtrip_returns_same_programir(tmp_path):
     original = compiled_predict()
     destination = tmp_path / "program.ir"
 
-    write(original, destination)
+    finalized = write(original, destination)
     restored = read(destination)
 
-    assert restored == original
+    assert restored == finalized
     assert link(restored) == {
         "self": {"adapter": "chat", "lm": "openai-example-model", "delta": None}
     }
@@ -29,12 +29,16 @@ def test_read_write_roundtrip_returns_same_programir(tmp_path):
 def test_read_preserves_sidecars_as_uninterpreted_bytes(tmp_path):
     destination = tmp_path / "program.ir"
     original = compiled_predict()
-    with_sidecar = ProgramIR(manifest=original.manifest, sidecars={"tools/a.py": b"raise SystemExit\n"})
+    with_sidecar = ProgramIR(
+        manifest=original.manifest,
+        sidecars={**original.sidecars, "tools/a.py": b"raise SystemExit\n"},
+    )
 
-    write(with_sidecar, destination)
+    finalized = write(with_sidecar, destination)
     restored = read(destination)
 
-    assert restored.sidecars == {"tools/a.py": b"raise SystemExit\n"}
+    assert restored == finalized
+    assert restored.sidecars["tools/a.py"] == b"raise SystemExit\n"
 
 
 def test_read_refuses_unknown_manifest_key(tmp_path):

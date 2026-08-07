@@ -72,14 +72,12 @@ class _DSPyCompiler:
                 "devset": [_devset_record(example) for example in (self.devset or [])],
             }
 
-        environment = {}
         authored_lms = [entry["class"] for entry in self.lms.values() if entry.get("class", {}).get("origin") == "authored"]
         authored_python = [*self.tools.values(), *metrics.values(), *authored_lms]
-        if authored_python:
-            dependencies = [dependency for entry in authored_python for dependency in entry.get("deps", [])]
-            python_block, entry_source = python_environment(dependencies)
-            environment["python"] = python_block
-            self.sidecars[python_block["pep723_entry"]] = entry_source
+        dependencies = [dependency for entry in authored_python for dependency in entry.get("deps", [])]
+        python_block, entry_source = python_environment(dependencies)
+        environment = {"python": python_block}
+        self.sidecars[python_block["pep723_entry"]] = entry_source
 
         components = {
             "1_module_tree": tree,
@@ -176,7 +174,7 @@ class _DSPyCompiler:
             raise ValueError(f"ProgramIR compile cannot resolve an LM for predictor {path!r}")
         if not isinstance(lm, BaseLM):
             raise ValueError(f"ProgramIR cannot compile non-BaseLM {type(lm).__name__} bound to predictor {path!r}")
-        if not isinstance(lm, LM) and not has_weight_spec(lm):
+        if not isinstance(lm, LM) and not _is_openai_compatible_lm(lm) and not has_weight_spec(lm):
             raise ValueError(
                 f"ProgramIR cannot compile {type(lm).__name__} bound to predictor {path!r}; "
                 "custom BaseLM subclasses must declare programir_weight_spec()"
@@ -303,18 +301,37 @@ def _devset_record(example: Any) -> dict[str, Any]:
     return values
 
 
-def _lm_entry(lm: LM, *, endpoint_ref: str, credential_ref: str) -> dict[str, Any]:
-    return {
+def _lm_entry(lm: BaseLM, *, endpoint_ref: str, credential_ref: str) -> dict[str, Any]:
+    placement = {
+        "rung": "http_remote",
+        "contract": "forward(LMRequest)->LMResponse",
+        "endpoint_ref": endpoint_ref,
+        "isolation": "none",
+        "credential_ref": credential_ref,
+    }
+    entry = {
         "forward_contract": "typed_lm",
         "weights_identity": lm.model,
-        "placement": {
-            "rung": "http_remote",
-            "contract": "forward(LMRequest)->LMResponse",
-            "endpoint_ref": endpoint_ref,
-            "isolation": "none",
-            "credential_ref": credential_ref,
-        },
+        "placement": placement,
     }
+    if _is_openai_compatible_lm(lm):
+        base_url = lm.base_url
+        if base_url.startswith(("http://localhost", "http://127.0.0.1", "http://[::1]")):
+            placement["rung"] = "http_local"
+        placement["default_endpoint"] = base_url
+        entry["class"] = {
+            "identity": "dspy.clients.openai_compat_lm._OpenAICompatLM",
+            "origin": "packaged",
+            "language": "python",
+            "deps": ["dspy"],
+        }
+    return entry
+
+
+def _is_openai_compatible_lm(lm: Any) -> bool:
+    from dspy.clients.openai_compat_lm import _OpenAICompatLM
+
+    return isinstance(lm, _OpenAICompatLM)
 
 
 def _predict_forward(input_names: list[str]) -> dict[str, Any]:
