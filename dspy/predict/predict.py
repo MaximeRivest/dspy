@@ -253,9 +253,9 @@ class Predict(Module, Parameter):
             trace.append((self, {**kwargs}, pred))
         return pred
 
-    def _resolve_adapter(self):
+    def _resolve_adapter(self, *, default=None):
         """Resolve this predictor's adapter using the runtime precedence rule."""
-        return self.adapter or settings.adapter or ChatAdapter()
+        return self.adapter or settings.adapter or default or ChatAdapter()
 
     def _should_stream(self):
         stream_listeners = settings.stream_listeners or []

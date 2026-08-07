@@ -46,6 +46,33 @@ def splat_forward(self, kwargs):
     return self.predict(**kwargs)
 
 
+def with_forward(self, question):
+    with context():
+        return question
+
+
+def yield_forward(self, question):
+    return (yield question)
+
+
+def lambda_forward(self, question):
+    transform = lambda value: value
+    return question
+
+
+def import_forward(self, question):
+    import example  # noqa: F401
+
+    return question
+
+
+def nested_def_forward(self, question):
+    def helper(value):
+        return value
+
+    return question
+
+
 def test_compile_forward_matches_nested_module_fixture_shape():
     compiled = compile_forward(
         answerer_forward,
@@ -138,3 +165,21 @@ def test_compile_forward_refuses_unresolved_call_by_name():
 def test_compile_forward_refuses_kwargs_splat():
     with pytest.raises(ProgramIRRefusal, match="keyword splats"):
         compile_forward(splat_forward, {"predict": LeafRef("predict", "predict")})
+
+
+@pytest.mark.parametrize(
+    ("function", "node"),
+    [
+        (with_forward, "With"),
+        (yield_forward, "Yield"),
+        (lambda_forward, "Lambda"),
+        (import_forward, "Import"),
+        (nested_def_forward, "FunctionDef"),
+    ],
+)
+def test_compile_forward_refuses_named_constructs(function, node):
+    with pytest.raises(ProgramIRRefusal) as caught:
+        compile_forward(function, {})
+
+    assert caught.value.code == "PIR-E-NODE-001"
+    assert caught.value.detail["node"] == node

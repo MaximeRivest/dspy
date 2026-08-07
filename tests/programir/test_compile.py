@@ -66,16 +66,9 @@ def test_compile_refuses_predict_without_lm():
         compile(dspy.Predict("question -> answer"))
 
 
-def test_compile_refuses_composite_module_before_forward_compiler():
-    class Program(dspy.Module):
-        def __init__(self):
-            self.predict = dspy.Predict("question -> answer")
-
-        def forward(self, question):
-            return self.predict(question=question)
-
-    with pytest.raises(TypeError, match="composite DSPy modules"):
-        compile(Program())
+def test_compile_refuses_non_module_frontend_values():
+    with pytest.raises(TypeError, match="does not support object"):
+        compile(object())
 
 
 def test_compile_refuses_evaluation_until_metric_extractor_lands():

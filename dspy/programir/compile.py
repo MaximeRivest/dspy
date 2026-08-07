@@ -32,17 +32,14 @@ def compile(program: Any, *, metric: Any = None, devset: Any = None) -> ProgramI
     if metric is not None or devset is not None:
         raise NotImplementedError("ProgramIR metric and devset extraction lands in exporter step I-4")
 
-    from dspy.predict.predict import Predict
+    from dspy.primitives.module import Module
 
-    if isinstance(program, Predict):
-        from dspy.programir._dspy import compile_predict
+    if isinstance(program, Module):
+        from dspy.programir._dspy import compile_program
 
-        return compile_predict(program)
+        return compile_program(program)
 
-    raise TypeError(
-        f"programir.compile() does not yet support {type(program).__name__}; "
-        "composite DSPy modules land with the forward compiler"
-    )
+    raise TypeError(f"programir.compile() does not support {type(program).__name__}")
 
 
 def build_program_ir(
