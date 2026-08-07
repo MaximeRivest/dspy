@@ -1,4 +1,4 @@
-"""Lower framework-neutral snapshots into ProgramIR values."""
+"""Compile frontend programs into canonical ProgramIR values."""
 
 from __future__ import annotations
 
@@ -6,69 +6,66 @@ import json
 from copy import deepcopy
 from typing import Any
 
-from dspy.programir.model import FrontendProgram, ProgramIR
-
-_REQUIRED_VERSION_KEYS = (
-    "ir_version",
-    "node_set",
-    "roles",
-    "strategies",
-    "codecs",
-    "adapter_ir",
-    "lm15",
-)
+from dspy.programir.model import ProgramIR
 
 
-def compile(frontend: FrontendProgram) -> ProgramIR:
-    """Compile a framework-neutral snapshot into one ProgramIR value.
+def compile(program: Any, *, metric: Any = None, devset: Any = None) -> ProgramIR:
+    """Compile a supported frontend program into one ProgramIR value.
 
-    This function is pure: it reads no settings, filesystem state, clock,
-    environment variables, or credentials. Framework frontends must resolve
-    those inputs before calling it.
+    `ProgramIR` is the only in-memory program representation produced by this
+    API. Frontend-specific code may collect temporary component fragments, but
+    no second frontend IR crosses this boundary.
 
     Args:
-        frontend: Plain component data from a framework frontend.
+        program: A program from a supported frontend.
+        metric: Optional evaluation metric. Metric extraction lands in I-4.
+        devset: Optional evaluation examples. Evaluation extraction lands in
+            I-4.
 
     Returns:
-        A ProgramIR value ready for validation or writing.
+        A detached ProgramIR value.
+
+    Raises:
+        TypeError: If no frontend recognizes `program`.
+        NotImplementedError: If evaluation extraction is requested before I-4.
     """
-    if not isinstance(frontend, FrontendProgram):
-        raise TypeError(
-            "programir.compile() takes a FrontendProgram snapshot; live framework "
-            "objects must pass through their frontend bridge first"
-        )
+    if metric is not None or devset is not None:
+        raise NotImplementedError("ProgramIR metric and devset extraction lands in exporter step I-4")
 
-    missing_versions = [key for key in _REQUIRED_VERSION_KEYS if key not in frontend.versions]
-    if missing_versions:
-        raise ValueError(f"FrontendProgram versions block is missing required entries: {missing_versions}")
+    from dspy.predict.predict import Predict
 
-    components: dict[str, Any] = {
-        "1_module_tree": deepcopy(dict(frontend.module_tree)),
-        "2_signature": deepcopy(dict(frontend.signatures)),
-        "3a_instructions": deepcopy(dict(frontend.instructions)),
-        "3b_demos": deepcopy(dict(frontend.demos)),
-        "3c_predictor_config": deepcopy(dict(frontend.predictor_config)),
-        "4_adapter": deepcopy(dict(frontend.adapters)),
-        "5_forward": deepcopy(dict(frontend.forwards)),
-        "6_tools": deepcopy(dict(frontend.tools)),
-        "7_interpreter": deepcopy(dict(frontend.interpreters)),
-        "8_lm": deepcopy(dict(frontend.lms)),
-        "9_environment": deepcopy(dict(frontend.environment)),
-        "10_credentials": deepcopy(list(frontend.credentials)),
-        "11_ambient_policy": deepcopy(dict(frontend.ambient_policy)),
-    }
-    if frontend.evaluation is not None:
-        components["12_metric"] = deepcopy(dict(frontend.evaluation))
+    if isinstance(program, Predict):
+        from dspy.programir._dspy import compile_predict
 
+        return compile_predict(program)
+
+    raise TypeError(
+        f"programir.compile() does not yet support {type(program).__name__}; "
+        "composite DSPy modules land with the forward compiler"
+    )
+
+
+def build_program_ir(
+    *,
+    versions: dict[str, str],
+    components: dict[str, Any],
+    provenance: dict[str, Any] | None = None,
+    sidecars: dict[str, bytes] | None = None,
+) -> ProgramIR:
+    """Assemble validated component fragments into a ProgramIR value.
+
+    This private-facing builder is the common endpoint for framework bridges
+    and direct graph frontends. It accepts plain data and performs no framework
+    introspection, filesystem access, environment reads, or clock reads.
+    """
     manifest: dict[str, Any] = {
-        "versions": deepcopy(dict(frontend.versions)),
-        "components": components,
+        "versions": deepcopy(versions),
+        "components": deepcopy(components),
     }
-    if frontend.provenance is not None:
-        manifest["provenance"] = deepcopy(dict(frontend.provenance))
-
+    if provenance is not None:
+        manifest["provenance"] = deepcopy(provenance)
     _require_json_data(manifest)
-    return ProgramIR(manifest=manifest)
+    return ProgramIR(manifest=manifest, sidecars=deepcopy(sidecars or {}))
 
 
 def _require_json_data(value: Any) -> None:
@@ -76,4 +73,4 @@ def _require_json_data(value: Any) -> None:
     try:
         json.dumps(value, allow_nan=False)
     except (TypeError, ValueError) as error:
-        raise ValueError(f"FrontendProgram contains a non-JSON value: {error}") from error
+        raise ValueError(f"ProgramIR contains a non-JSON value: {error}") from error
