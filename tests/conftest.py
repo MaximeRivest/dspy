@@ -1,4 +1,5 @@
 import copy
+import importlib
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -31,10 +32,22 @@ def clear_settings(tmp_path: Path) -> Iterator[None]:
     try:
         yield
     finally:
-        from dspy.dsp.utils.settings import DEFAULT_CONFIG
+        # Restore the settings module to its import-time state directly instead
+        # of calling `dspy.configure(...)`: configure runs the ownership check,
+        # so it can itself raise during teardown, and it can never un-latch
+        # `config_owner_thread_id` / `config_owner_async_task`. Leaving those
+        # latched leaks one test's (dead) event-loop task into the next test,
+        # which made `test_dspy_configure_allowance_async` order-dependent
+        # under xdist. (The star-import in `dspy.dsp.utils.__init__` shadows
+        # the `settings` submodule with the `Settings` instance, hence
+        # importlib to reach the module itself.)
+        settings_module = importlib.import_module("dspy.dsp.utils.settings")
 
         try:
-            dspy.configure(**copy.deepcopy(DEFAULT_CONFIG), inherit_config=False)
+            with settings_module.global_lock:
+                settings_module.main_thread_config = copy.deepcopy(settings_module.DEFAULT_CONFIG)
+                settings_module.config_owner_thread_id = None
+                settings_module.config_owner_async_task = None
         finally:
             try:
                 _close_cache(dspy.cache)
