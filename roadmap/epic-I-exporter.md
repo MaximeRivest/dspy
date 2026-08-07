@@ -4,9 +4,9 @@
 canonical `ProgramIR`, compile/write/read/link foundations, bare-Predict
 DSPy compilation, predictor-level `set_adapter`, and the v0.1 composite-module
 forward compiler plus authored tool/metric/devset and structural interpreter
-extraction, portable Python environment locking, and the phase-1 public
-`dspy.export` composition landed; the dspy grade-1 conformance row is green.
-Weights baking and corpus regeneration remain.
+extraction, portable Python environment locking, phase-1 public `dspy.export`,
+and structural in-process LM weight baking landed; the dspy grade-1 conformance
+row is green. The on-server ex-12 reproduction and corpus regeneration remain.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -460,11 +460,18 @@ registration.)
 **Wave I-γ — weights and the corpus flip.** (Checkpoint: Maxime approves
 the dedicated corpus commit and any push.)
 
-- **I-7 — weights baking (phase 2).** The detection seam (declared
-  protocol), sidecar family, shared-entry dedup, frozen/weight-ref tags,
-  `engine` on baked entries, authored LM source baking. DoD: re-exporting
-  ex-12's authoring program reproduces the proven sidecar layout; one
-  blob, two bindings; scan gate covers the weights directory.
+- **I-7 — weights baking (phase 2) — STRUCTURAL CORE SHIPPED.** Custom
+  `BaseLM` subclasses opt in through `programir_weight_spec()`, which names the
+  live model/tokenizer attributes and declares identity, engine, device,
+  frozen/weight-ref state, and explicit tensor ties. The exporter writes one
+  safetensors blob per identity-pooled LM, rebuild config, tokenizer files,
+  tying/device declarations, and introspected authored LM source; LM deps join
+  the portable environment lock. Tests prove one shared entry/two bindings,
+  duplicate tensor removal by declared tie, no remote credential declaration,
+  schema validity, and all sidecar paths. Remaining DoD evidence: re-export
+  ex-12's authoring program on-server against its proven model and compare the
+  complete sidecar family; the writer's recursive credential scan already
+  covers `weights/`.
 - **I-8 — regeneration + corpus commit.** The nine examples re-exported
   **through `dspy.export`** on-server (build scripts become authoring
   program + one export call); includes re-authoring the ex-04/ex-12
