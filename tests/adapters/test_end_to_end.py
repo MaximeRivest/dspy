@@ -154,13 +154,14 @@ def test_unknown_role_kwarg_raises_at_declaration():
         dspy.OutputField(role="vibes")
 
 
-def test_conflicting_role_spellings_refuse_loudly():
-    class Conflicted(dspy.Signature):
-        question: str = dspy.InputField()
-        answer: Annotated[str, R.citations] = dspy.OutputField(role="reasoning")
+def test_conflicting_role_spellings_refuse_loudly_at_declaration():
+    """Conflicts raise at class construction naming the field (D-δ) —
+    'raise immediately', never at the first paid call."""
+    with pytest.raises(ValueError, match="'answer'.*conflicting semantic roles"):
 
-    with pytest.raises(ValueError):
-        _predict(dspy.ChatAdapter(), Conflicted, [{"answer": "x"}], question="q")
+        class Conflicted(dspy.Signature):
+            question: str = dspy.InputField()
+            answer: Annotated[str, R.citations] = dspy.OutputField(role="reasoning")
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +352,22 @@ def test_strategies_binding_refuses_unknown_names_eagerly():
         dspy.ChatAdapter(strategies={"tools": "native_fc"})  # use_native_function_calling defaults False
     with pytest.raises(ValueError, match="must agree"):
         dspy.JSONAdapter(strategies={"tools": "textual_json"})  # JSONAdapter defaults native FC on
+
+
+def test_preview_and_explain_plan_on_class_adapters():
+    """D-δ public surface: every adapter has the learn-by-looking loop
+    (preview) and the plan read surface (explain_plan)."""
+    adapter = dspy.ChatAdapter()
+    signature = dspy.Signature("question -> answer")
+    assert adapter.preview("question -> answer", inputs={"question": "q"}) == adapter.format(
+        signature, [], {"question": "q"}
+    )
+
+    lm = DummyLM([])
+    plan = adapter.explain_plan("question -> thoughts @reasoning, answer", lm=lm)
+    assert plan["strategy_resolution"]["thoughts"]["role"] == "reasoning"
+    assert plan["strategy_resolution"]["thoughts"]["served"] == "textual"  # DummyLM has no native channel
+    assert plan["hidden_fields"] == []
 
 
 def test_epic_d_literal_table_export():

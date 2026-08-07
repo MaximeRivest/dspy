@@ -167,12 +167,27 @@ def _render_value_slot(name: str, ctx: RenderContext) -> str:
     for collection in ("inputs", "outputs"):
         fields = _field_map(ctx, collection)
         if name in fields:
+            if ctx.mode == "schema":
+                # Schema positions render without call values; silently
+                # rendering empty with the value in hand would be a silent
+                # partial — refuse exactly as {f.value} does (D-δ).
+                raise TemplateRenderError(
+                    f"value slot {{{name}}} needs call values, and schema positions (system messages) "
+                    "render without them — move the slot to a user message, or spell the schema side "
+                    "with a loop attribute ({f.placeholder}/{f.typed_placeholder})"
+                )
             if ctx.values is None or name not in ctx.values:
                 return ""
             return _codec_for(ctx, collection).render_value(ctx.values[name], fields[name])
-    available = [*ctx.signature.input_fields, *ctx.signature.output_fields]
+    declared = [*ctx.signature.input_fields, *ctx.signature.output_fields]
+    if ctx.mode == "schema":
+        raise TemplateRenderError(
+            f"unknown value slot {{{name}}} — declared fields: {spell_out(declared) or '(none)'}; note that "
+            "schema positions (system messages) render without call values, so value slots refuse here "
+            "even for declared fields"
+        )
     raise TemplateRenderError(
-        f"unknown value slot {{{name}}} — fields available here: {spell_out(available) or '(none)'}"
+        f"unknown value slot {{{name}}} — fields available here: {spell_out(declared) or '(none)'}"
     )
 
 
@@ -219,6 +234,10 @@ def _loop_attr(attr: str, ctx: RenderContext) -> str:
         return f"[[ ## {name} ## ]]"
     if attr == "chat_type_hint":
         return _chat_type_hint(info.annotation)
+    if attr == "role":
+        from dspy.signatures.roles import resolve_semantic_role
+
+        return resolve_semantic_role(info, field_name=name)
     raise TemplateRenderError(f"unknown loop attribute {attr!r}")  # pragma: no cover - parser prevents
 
 

@@ -16,7 +16,12 @@ from dspy.signatures.field import SEMANTIC_ROLES_VERSION
 
 #: Version of the adapter IR contract itself (roadmap/adapter-ir-spec.md;
 #: provisional, hence 0.x — minor bumps are breaking until 1.0.0).
-ADAPTER_IR_VERSION = "0.1.0"
+#: 0.2.0 (D-δ): entry ``config`` carries behavior-bearing constructor flags
+#: (optional-but-honored), the incomplete-demo preamble became directive
+#: data, and bare-history pattern inheritance was retired — 0.1.0 entries
+#: would render different bytes under this engine, so they refuse loudly
+#: (D-024: refuse over misread; regeneration is one dump/load away).
+ADAPTER_IR_VERSION = "0.2.0"
 
 
 def versions_block() -> dict:

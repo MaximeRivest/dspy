@@ -222,7 +222,7 @@ def derive_literal_table(template: ParsedTemplate, parser: str) -> dict:
 
     demos = template.demos_directive
     user_nodes, assistant_nodes = (
-        directive_pair(demos, None, parser) if demos is not None else (None, None)
+        directive_pair(demos, parser) if demos is not None else (None, None)
     )
 
     input_loop = _first_loop(user_nodes, "inputs")

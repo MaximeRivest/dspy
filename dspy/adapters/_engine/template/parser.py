@@ -125,12 +125,19 @@ class ContentMessage:
 
 @dataclass(frozen=True)
 class DemosDirective:
-    """``{"role": "demos"}`` — expands to user/assistant pairs per demo."""
+    """``{"role": "demos"}`` — expands to user/assistant pairs per demo.
+
+    ``preamble`` is directive data (D-δ): when present, it is prepended
+    (blank-line joined) to the user turn of each *incomplete* demo. A
+    directive without it renders exactly the author's pattern — the builtin
+    presets carry the historical incomplete-demo sentence explicitly.
+    """
 
     user: tuple | None
     assistant: tuple | None
     raw_user: str | None
     raw_assistant: str | None
+    preamble: str | None = None
 
 
 @dataclass(frozen=True)
@@ -617,10 +624,12 @@ def parse_message_template(messages) -> ParsedTemplate:
             nodes = _parse_message_content(content, fragment_targets_seen)
             parsed.append(ContentMessage(role=role, nodes=nodes, raw=content))
         elif role in directive_roles:
-            extra = set(message) - {"role", "user", "assistant"}
+            valid_keys = {"role", "user", "assistant"} | ({"preamble"} if role == "demos" else set())
+            extra = set(message) - valid_keys
             if extra:
                 raise TemplateError(
-                    f"unknown keys {sorted(extra)} on {role!r} directive — valid keys: role, user, assistant"
+                    f"unknown keys {sorted(extra)} on {role!r} directive — valid keys: "
+                    f"{', '.join(sorted(valid_keys, key=('role', 'user', 'assistant', 'preamble').index))}"
                 )
             user_raw = message.get("user")
             assistant_raw = message.get("assistant")
@@ -631,7 +640,16 @@ def parse_message_template(messages) -> ParsedTemplate:
             cls = DemosDirective if role == "demos" else HistoryDirective
             if any(isinstance(m, cls) for m in parsed):
                 raise TemplateError(f"at most one {role!r} directive per template")
-            parsed.append(cls(user_nodes, assistant_nodes, user_raw, assistant_raw))
+            if role == "demos":
+                preamble = message.get("preamble")
+                if preamble is not None and not isinstance(preamble, str):
+                    raise TemplateError(
+                        f"'demos' directive 'preamble' must be a string (prepended to incomplete demos' "
+                        f"user turns), got {preamble!r}"
+                    )
+                parsed.append(cls(user_nodes, assistant_nodes, user_raw, assistant_raw, preamble))
+            else:
+                parsed.append(cls(user_nodes, assistant_nodes, user_raw, assistant_raw))
         else:
             raise TemplateError(
                 f"unknown message role {role!r} — valid message roles: {spell_out(message_roles)}; "
@@ -688,19 +706,19 @@ DEFAULT_DIRECTIVE_PATTERNS: dict = {
 }
 
 
-def directive_pair(directive, demos_directive, parser: str | None = None) -> tuple:
+def directive_pair(directive, parser: str | None = None) -> tuple:
     """The user/assistant patterns a directive renders through.
 
-    Its own pair when authored; else the demos directive's (history turns
-    follow the demo shapes, the historical behavior); else the language's
-    default patterns keyed by ``parser`` — the preset's parser binding when
-    rendering through a preset context, the chat marker pair otherwise — so
-    every directive that parses can render, an example turn demonstrates
-    the shape the parser reads back, and zero demos/turns expand to
-    nothing.
+    Its own pair when authored; else the language's default patterns keyed
+    by ``parser`` — the preset's parser binding when rendering through a
+    preset context, the chat marker pair otherwise — so every directive
+    that parses can render, an example turn demonstrates the shape the
+    parser reads back, and zero demos/turns expand to nothing. (The D-γ
+    rule that a bare history directive inherits the demos directive's
+    patterns was retired in D-δ: one-directional pattern inheritance was an
+    undocumented trap, and the builtin presets spell their history patterns
+    explicitly as data.)
     """
     if directive.user is not None:
         return directive.user, directive.assistant
-    if demos_directive is not None and demos_directive.user is not None:
-        return demos_directive.user, demos_directive.assistant
     return DEFAULT_DIRECTIVE_PATTERNS.get(parser, DEFAULT_DIRECTIVE_PATTERNS[None])

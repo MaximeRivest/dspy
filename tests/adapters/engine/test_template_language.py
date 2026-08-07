@@ -81,6 +81,7 @@ def test_vocabulary_matches_spec_loop_variable_set():
         "typed_placeholder",
         "marker",
         "chat_type_hint",
+        "role",
     }
 
 
@@ -808,6 +809,85 @@ def test_authored_directive_patterns_ignore_the_parser_key():
     assert messages[2] == {"role": "assistant", "content": "A a"}
 
 
+def test_authored_demo_patterns_get_no_injected_preamble():
+    """Persona repro (few-shot user, bug 2): an authored user= pattern gets
+    exactly what the author wrote — no incomplete-demo prose injected (D-δ:
+    the preamble is directive data, absent unless declared)."""
+    template = [
+        {"role": "system", "content": "S"},
+        {"role": "demos", "user": "Q: {question} [{context}]", "assistant": "A: {answer}"},
+        {"role": "user", "content": "{question}"},
+    ]
+    sig = dspy.Signature("question, context -> answer")
+    incomplete = [{"question": "Sky color?", "answer": "blue"}]  # no context: incomplete
+    messages = preview(template, sig, demos=incomplete, inputs={"question": "x", "context": "y"})
+    assert messages[1]["content"] == "Q: Sky color? []"
+    assert "This is an example of the task" not in str(messages)
+
+
+def test_demos_directive_preamble_is_data():
+    template = [
+        {"role": "system", "content": "S"},
+        {"role": "demos", "user": "Q: {question}", "assistant": "A: {answer}", "preamble": "EXAMPLE (partial):"},
+        {"role": "user", "content": "{question}"},
+    ]
+    sig = dspy.Signature("question, context -> answer")
+    incomplete = [{"question": "Sky?", "answer": "blue"}]
+    complete = [{"question": "1+1?", "context": "math", "answer": "2"}]
+    messages = preview(template, sig, demos=incomplete + complete, inputs={"question": "x", "context": "y"})
+    assert messages[1]["content"] == "EXAMPLE (partial):\n\nQ: Sky?"  # incomplete demo gets the preamble
+    assert messages[3]["content"] == "Q: 1+1?"  # complete demo does not
+
+
+def test_demos_directive_preamble_key_validates():
+    with pytest.raises(TemplateError, match="preamble"):
+        parse_message_template([{"role": "demos", "preamble": 42}, {"role": "user", "content": "x"}])
+    with pytest.raises(TemplateError, match="valid keys: role, user, assistant"):
+        parse_message_template([{"role": "history", "preamble": "x"}, {"role": "user", "content": "x"}])
+
+
+def test_bare_history_directive_no_longer_inherits_demo_patterns():
+    """Persona repro (few-shot user): patterned demos must not leak into a
+    bare history directive — each falls back to its own parser-keyed
+    default (D-δ; the inheritance rule is retired)."""
+
+    class Chatty(dspy.Signature):
+        """Chat."""
+
+        history: dspy.History = dspy.InputField()
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    template = [
+        {"role": "system", "content": "S"},
+        {"role": "demos", "user": "DEMO-Q: {question}", "assistant": "DEMO-A: {answer}"},
+        {"role": "history"},
+        {"role": "user", "content": "{question}"},
+    ]
+    messages = preview(
+        template,
+        Chatty,
+        inputs={"question": "Now?", "history": dspy.History(messages=[{"question": "past q", "answer": "past a"}])},
+    )
+    assert messages[1] == {"role": "user", "content": "[[ ## question ## ]]\npast q"}
+    assert messages[2] == {"role": "assistant", "content": "[[ ## answer ## ]]\npast a"}
+    assert "DEMO-Q" not in str(messages)
+
+
+def test_f_role_loop_variable_renders_the_semantic_role():
+    class Sig(dspy.Signature):
+        question: str = dspy.InputField()
+        thoughts: str = dspy.OutputField(role="reasoning")
+        answer: str = dspy.OutputField()
+
+    out = preview(
+        [{"role": "user", "content": "{% for f in outputs separator='\\n' %}{f.name}={f.role}{% endfor %}"}],
+        Sig,
+        inputs={"question": "q"},
+    )
+    assert out[0]["content"] == "thoughts=reasoning\nanswer=plain"
+
+
 def test_duplicate_loop_options_refuse_with_a_teaching_error():
     """Matching call-kwargs behavior (spec section 3): each loop option
     appears once; last-wins lexing is gone."""
@@ -891,11 +971,37 @@ def test_loop_value_refuses_in_schema_mode_even_with_values_present():
         render("{% for f in inputs %}{f.value}{% endfor %}", values={"question": "leak"})
 
 
-def test_preview_renders_system_value_slots_and_aggregates_without_call_values():
-    """Bare value slots and aggregates in schema position render the same
-    bytes on the preview walker and the engine schema context."""
+def test_bare_value_slot_in_schema_position_refuses_like_f_value():
+    """Persona repro (exact-control + generic-template authors): `{question}`
+    in a system message must refuse exactly as `{f.value}` does — never
+    silently render empty with the value in hand (D-δ). Preview and the
+    engine schema context refuse identically."""
     template = [
-        {"role": "system", "content": "Context: {question}\n{inputs()}"},
+        {"role": "system", "content": "Context: {question}"},
+        {"role": "user", "content": "{question}"},
+    ]
+    parsed = parse_message_template(template)
+    with pytest.raises(TemplateRenderError, match="schema positions .*render without"):
+        preview(parsed, QA, inputs={"question": "SECRET-INPUT"})
+    with pytest.raises(TemplateRenderError, match="schema positions .*render without"):
+        render_nodes(parsed.messages[0].nodes, ctx())
+
+
+def test_unknown_slot_in_schema_position_does_not_claim_availability():
+    """The unknown-slot error is mode-aware (D-δ): in a schema position it
+    must not claim the field is 'available here'."""
+    parsed = parse_message_template([{"role": "system", "content": "{nosuch}"}, {"role": "user", "content": "x"}])
+    with pytest.raises(TemplateRenderError) as excinfo:
+        preview(parsed, QA, inputs={})
+    message = str(excinfo.value)
+    assert "declared fields" in message
+    assert "available here" not in message
+
+
+def test_aggregates_in_schema_position_render_without_call_values():
+    """Aggregates stay schema-side in schema positions, on both surfaces."""
+    template = [
+        {"role": "system", "content": "{inputs()}"},
         {"role": "user", "content": "{question}"},
     ]
     parsed = parse_message_template(template)

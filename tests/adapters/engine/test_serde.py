@@ -167,6 +167,45 @@ def test_loaded_tools_native_binding_enables_native_function_calling():
     assert loaded.dump_entry() == entry
 
 
+def test_behavior_bearing_constructor_flags_ride_the_entry_config():
+    """Persona repro (portability, bug 1): behaviorally different adapters
+    must not serialize byte-identically — the flags ride config and load
+    honors them (D-δ)."""
+    default_entry = dspy.ChatAdapter().dump_entry()
+    no_fallback = dspy.ChatAdapter(use_json_adapter_fallback=False)
+    entry = no_fallback.dump_entry()
+    assert entry != default_entry
+    assert entry["config"]["use_json_adapter_fallback"] is False
+    loaded = load_entry(entry)
+    assert loaded.use_json_adapter_fallback is False
+    assert loaded.dump_entry() == entry
+
+    json_source = dspy.JSONAdapter(use_native_function_calling=True)
+    json_entry = json_source.dump_entry()
+    assert json_entry["config"]["use_native_function_calling"] is True
+    json_loaded = load_entry(json_entry)
+    assert json_loaded.use_native_function_calling is True
+    assert json_loaded.dump_entry() == json_entry
+
+    # The default-off spelling stays absent: default-constructed adapters
+    # keep minimal entries.
+    assert "use_native_function_calling" not in default_entry["config"]
+    off = dspy.JSONAdapter(use_native_function_calling=False).dump_entry()
+    assert "use_native_function_calling" not in off["config"]
+    assert load_entry(off).use_native_function_calling is False
+
+
+def test_pre_ddelta_entries_refuse_naming_both_versions():
+    """0.1.0 entries predate the D-δ semantics (directive preamble as data,
+    no history-pattern inheritance, config flags); loading them here would
+    silently change their bytes — they refuse instead (D-024)."""
+    entry = _entry()
+    entry["adapter_ir_version"] = "0.1.0"
+    with pytest.raises(ValueError, match="0.1.0") as excinfo:
+        load_preset(entry)
+    assert "0.2.0" in str(excinfo.value)
+
+
 def test_declared_but_unimplemented_strategy_refuses_at_load():
     """Load-time validation admits exactly what construction admits: a
     vocabulary name with no implementation refuses with the same teaching

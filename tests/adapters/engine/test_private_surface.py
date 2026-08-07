@@ -37,6 +37,9 @@ EXPECTED_PUBLIC_SURFACE = {
     # the section-9 registration APIs with admission gates, and the
     # language-discoverability call the contract requires.
     "TemplateAdapter",
+    # D-δ: load_entry's return type and register_preset's consumer —
+    # users already hold instances of it (design-eval C1 verdict).
+    "PresetAdapter",
     "describe_template_language",
     "register_codec",
     "register_preset",

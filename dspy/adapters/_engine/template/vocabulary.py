@@ -17,8 +17,9 @@ from copy import deepcopy
 
 #: Version of the template language's vocabulary; carried in every
 #: serialized preset's versions block (D-024). Extending the language is a
-#: versioned act.
-TEMPLATE_LANGUAGE_VERSION = "1.0.0"
+#: versioned act. 1.1.0 (D-δ): the demos directive's ``preamble=`` key and
+#: the ``{f.role}`` loop variable (additive).
+TEMPLATE_LANGUAGE_VERSION = "1.1.0"
 
 VOCABULARY: dict = {
     "value_slots": {
@@ -92,6 +93,7 @@ VOCABULARY: dict = {
         "typed_placeholder": "the field's schema, spelled by the direction's codec (the shared text codec renders the placeholder plus the historical type note)",
         "marker": "the [[ ## field_name ## ]] marker",
         "chat_type_hint": "the historical non-str output hint suffix, empty for str",
+        "role": "the field's resolved semantic role name (plain, reasoning, citations, ...)",
     },
     "loop_options": {
         "separator": {
@@ -104,7 +106,10 @@ VOCABULARY: dict = {
         },
     },
     "directive_roles": {
-        "demos": "expands into user/assistant message pairs per demo; optional user=/assistant= content templates",
+        "demos": (
+            "expands into user/assistant message pairs per demo; optional user=/assistant= content "
+            "templates and an optional preamble= string prepended to incomplete demos' user turns"
+        ),
         "history": "expands prior conversation turns; optional user=/assistant= content templates",
     },
     "message_roles": {

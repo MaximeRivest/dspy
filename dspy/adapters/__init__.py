@@ -10,7 +10,7 @@ from dspy.adapters.registry import (
     unregister_preset,
     unregister_strategy,
 )
-from dspy.adapters.serde import load_entry
+from dspy.adapters.serde import PresetAdapter, load_entry
 from dspy.adapters.template_adapter import TemplateAdapter
 from dspy.adapters.two_step_adapter import TwoStepAdapter
 from dspy.adapters.types import Audio, Code, File, History, Image, Reasoning, Tool, ToolCallResults, ToolCalls, Type
@@ -28,6 +28,7 @@ __all__ = [
     "JSONAdapter",
     "XMLAdapter",
     "TemplateAdapter",
+    "PresetAdapter",
     "TwoStepAdapter",
     "Tool",
     "ToolCalls",

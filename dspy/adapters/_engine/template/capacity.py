@@ -126,7 +126,6 @@ def declared_capacity(template: ParsedTemplate, parser: str | None = None) -> Te
             elif isinstance(node, ValueSlot):
                 slots.add(node.name)
 
-    demos_directive = template.demos_directive
     for message in template.messages:
         if isinstance(message, ContentMessage):
             visit(message.nodes, live, live_slots)
@@ -135,7 +134,7 @@ def declared_capacity(template: ParsedTemplate, parser: str | None = None) -> Te
                 hosts_demos = True
             else:
                 hosts_history = True
-            user_nodes, assistant_nodes = directive_pair(message, demos_directive, parser)
+            user_nodes, assistant_nodes = directive_pair(message, parser)
             visit(user_nodes, example, example_slots)
             visit(assistant_nodes, example, example_slots)
 

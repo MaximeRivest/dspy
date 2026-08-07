@@ -45,6 +45,7 @@ from dspy.adapters._engine.template import (
     render_nodes,
     render_user_content,
 )
+from dspy.adapters._engine.template.renderer import INCOMPLETE_DEMO_PREFIX
 from dspy.adapters._engine.template.vocabulary import VOCABULARY
 
 
@@ -153,12 +154,23 @@ Respond with the corresponding output fields, starting with the field \
 {% for f in outputs separator=', then ' %}`[[ ## {f.name} ## ]]`{f.chat_type_hint}{% endfor %}, \
 and then ending with the marker for `[[ ## completed ## ]]`."""
 
+# The demos directives carry the historical incomplete-demo preamble and
+# the history directives spell their turn patterns explicitly (D-δ): both
+# are directive DATA now — an authored template without them renders
+# exactly what its author wrote, while these presets byte-reproduce the
+# legacy pipeline (history turns share the demo shape, completed marker
+# included).
 CHAT = _make_preset(
     name="chat",
     template_messages=[
         {"role": "system", "content": _CHAT_SYSTEM},
-        {"role": "demos", "user": _CHAT_DEMO_USER, "assistant": _CHAT_DEMO_ASSISTANT},
-        {"role": "history"},
+        {
+            "role": "demos",
+            "user": _CHAT_DEMO_USER,
+            "assistant": _CHAT_DEMO_ASSISTANT,
+            "preamble": INCOMPLETE_DEMO_PREFIX,
+        },
+        {"role": "history", "user": _CHAT_DEMO_USER, "assistant": _CHAT_DEMO_ASSISTANT},
         {"role": "user", "content": _CHAT_USER},
     ],
     parser="chat",
@@ -211,8 +223,13 @@ JSON = _make_preset(
     name="json",
     template_messages=[
         {"role": "system", "content": _JSON_SYSTEM},
-        {"role": "demos", "user": _CHAT_DEMO_USER, "assistant": _JSON_DEMO_ASSISTANT},
-        {"role": "history"},
+        {
+            "role": "demos",
+            "user": _CHAT_DEMO_USER,
+            "assistant": _JSON_DEMO_ASSISTANT,
+            "preamble": INCOMPLETE_DEMO_PREFIX,
+        },
+        {"role": "history", "user": _CHAT_DEMO_USER, "assistant": _JSON_DEMO_ASSISTANT},
         {"role": "user", "content": _JSON_USER},
     ],
     parser="json",
@@ -281,8 +298,13 @@ XML = _make_preset(
     name="xml",
     template_messages=[
         {"role": "system", "content": _XML_SYSTEM},
-        {"role": "demos", "user": _XML_DEMO_USER, "assistant": _XML_DEMO_ASSISTANT},
-        {"role": "history"},
+        {
+            "role": "demos",
+            "user": _XML_DEMO_USER,
+            "assistant": _XML_DEMO_ASSISTANT,
+            "preamble": INCOMPLETE_DEMO_PREFIX,
+        },
+        {"role": "history", "user": _XML_DEMO_USER, "assistant": _XML_DEMO_ASSISTANT},
         {"role": "user", "content": _XML_USER},
     ],
     parser="xml",

@@ -33,7 +33,6 @@ from dspy.adapters._engine.template.parser import (
 from dspy.adapters._engine.template.renderer import (
     COMPLETE_DEMO_MISSING_FIELD_MESSAGE,
     INCOMPLETE_DEMO_MISSING_FIELD_MESSAGE,
-    INCOMPLETE_DEMO_PREFIX,
     RenderContext,
     classify_demos,
     render_nodes,
@@ -62,6 +61,7 @@ def render_template_messages(
     inputs = dict(inputs or {})
     fragments = fragments or {}
 
+    _refuse_second_history_field(signature)
     history_field_name = _history_field_name(signature)
     history_turns: list[dict[str, Any]] = []
     values_signature = signature
@@ -83,7 +83,6 @@ def render_template_messages(
             history=tuple(history_turns),
         )
 
-    parsed_demos = template.demos_directive
     rendered: list[dict[str, Any]] = []
     for message in template.messages:
         if isinstance(message, ContentMessage):
@@ -104,7 +103,7 @@ def render_template_messages(
         elif isinstance(message, DemosDirective):
             rendered.extend(_expand_demos(message, signature, demos, ctx, parser))
         elif isinstance(message, HistoryDirective):
-            rendered.extend(_expand_history(message, parsed_demos, history_turns, ctx, parser))
+            rendered.extend(_expand_history(message, history_turns, ctx, parser))
     return rendered
 
 
@@ -117,13 +116,30 @@ def _history_field_name(signature) -> str | None:
     return None
 
 
+def _refuse_second_history_field(signature) -> None:
+    """A template hosts exactly one conversation history; a second History
+    field's turns would silently vanish — refuse naming both fields (D-δ)."""
+    from dspy.adapters.types.history import History
+
+    names = [name for name, info in signature.input_fields.items() if info.annotation == History]
+    if len(names) > 1:
+        raise ValueError(
+            f"signature declares {len(names)} History fields ({', '.join(names)}) but a template hosts "
+            f"exactly one conversation history — the turns of {', '.join(names[1:])} would silently "
+            "vanish; merge the histories into one field"
+        )
+
+
 def _expand_demos(directive: DemosDirective, signature, demos, ctx, parser=None) -> list[dict[str, Any]]:
-    user_nodes, assistant_nodes = directive_pair(directive, None, parser)
+    user_nodes, assistant_nodes = directive_pair(directive, parser)
     incomplete, complete = classify_demos(signature, demos)
     messages = []
     for demo in incomplete:
+        # The incomplete-demo preamble is directive DATA (D-δ): an authored
+        # directive without the key gets exactly the author's pattern; the
+        # builtin presets carry the historical sentence explicitly.
         user = render_user_content(
-            user_nodes, ctx("user_values", values=dict(demo), sig=signature), prefix=INCOMPLETE_DEMO_PREFIX
+            user_nodes, ctx("user_values", values=dict(demo), sig=signature), prefix=directive.preamble or ""
         )
         assistant = render_nodes(
             assistant_nodes,
@@ -142,8 +158,8 @@ def _expand_demos(directive: DemosDirective, signature, demos, ctx, parser=None)
     return messages
 
 
-def _expand_history(directive: HistoryDirective, demos_directive, turns, ctx, parser=None) -> list[dict[str, Any]]:
-    user_nodes, assistant_nodes = directive_pair(directive, demos_directive, parser)
+def _expand_history(directive: HistoryDirective, turns, ctx, parser=None) -> list[dict[str, Any]]:
+    user_nodes, assistant_nodes = directive_pair(directive, parser)
     messages = []
     for turn in turns:
         user = render_user_content(user_nodes, ctx("user_values", values=dict(turn)))
