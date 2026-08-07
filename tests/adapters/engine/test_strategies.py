@@ -842,3 +842,17 @@ def test_list_valued_binding_gets_a_teaching_error_not_a_type_error():
 
     with pytest.raises(ValueError, match="a binding names a strategy as a string"):
         ChatAdapter(strategies={"reasoning": ["textual_field"]})
+
+
+def test_binding_for_a_role_no_strategy_serves_refuses_cleanly():
+    """An explicit binding for a role with no output-side strategy (media on
+    an output field) refuses with a teaching error, never a crash."""
+    import pytest
+
+    sig = dspy.Signature("question -> pic @media, answer")
+    adapter = ChatAdapter(strategies={"media": "native_parts"})
+    with pytest.raises(ValueError, match="no strategy serves role 'media'"):
+        build_plan(adapter, _lm(), {}, sig, {"question": "Q?"})
+    # Under auto the declaration is simply inert — the field stays textual.
+    built = build_plan(ChatAdapter(), _lm(), {}, sig, {"question": "Q?"})
+    assert built.plan.find_field("output", "pic").hidden is False

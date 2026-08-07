@@ -164,6 +164,16 @@ def build_plan(adapter, lm, lm_kwargs: dict[str, Any], signature, inputs: dict[s
         else:
             strategy = next(iter(registered.values()), None) or builtin_role_strategy_for(semantic_role)
             resolved_by = "role"
+            if strategy is None:
+                # A binding was declared for a role no strategy serves on
+                # this side of the exchange (e.g. media on an output).
+                if binding != "auto":
+                    raise ValueError(
+                        f"strategies binding {semantic_role}={binding!r} cannot be honored for field "
+                        f"{name!r}: no strategy serves role {semantic_role!r} for this field — an "
+                        "explicit binding refuses instead of silently falling back to the textual lane"
+                    )
+                continue
 
         # Declared capability requirements are consulted at plan time
         # (declare-don't-discover): unmet requirements skip the strategy
