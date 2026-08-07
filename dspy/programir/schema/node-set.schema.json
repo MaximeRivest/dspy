@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProgramIR node set v0 (SEM-8)",
+  "description": "The forward grammar's JSON encoding, spec/node-set.md SEM-8 ruling: the observed encoding of examples 13-15 adopted as node_set v0 -- the `node` discriminator, the statement/expression vocabulary below, leaves as {leaf: {kind, ref?}} with the interpreter leaf carrying a required ref (D-029; the examples' unnamed singleton is pre-ratification, the migrator adds ref: 'main'), dynamic tools as {leaf: {kind: 'tool'}, name: <expr>}. Artifact form carries no source spans (SEM-8: refusal locations are an input-side concern). The root of this schema is one forward object -- the input to the node_compile op (harness/PROTOCOL.md). Anything outside this closed vocabulary refuses at compile with PIR-E-NODE-* (spec/errors.md).",
+  "$ref": "#/$defs/forward",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "description": "A simple name. Assignment targets are simple names only (spec/node-set.md SEM-5 ruling: subscript and tuple targets refuse at compile)."
+    },
+    "forward": {
+      "type": "object",
+      "description": "One module's forward, spec/manifest.md component 5: the language tag, the argument names, and the statement body (spec/node-set.md SEM-8 v0 envelope, from examples 13-15).",
+      "properties": {
+        "language": {
+          "const": "restricted-python-ast",
+          "description": "The v0 language tag adopted by SEM-8 from the observed corpus. The vocabulary is this contract's own, operationally defined and CPython-independent, despite the historical name."
+        },
+        "args": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/identifier"},
+          "uniqueItems": true,
+          "description": "The forward's declared input names ('self' excluded), SEM-8 v0 envelope."
+        },
+        "body": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/statement"},
+          "minItems": 1,
+          "description": "The statement list; at least one statement (a forward must produce its Prediction via Return, spec/node-set.md statement whitelist)."
+        }
+      },
+      "required": ["language", "args", "body"],
+      "additionalProperties": false
+    },
+    "statement": {
+      "description": "A whitelisted statement, spec/node-set.md statement whitelist, discriminated on `node`. v0 statements: Assign, Return, If, For, While, Break, Continue, Try, Raise. Note: IfExp and BoolOp appear in the whitelist table but have NO observed v0 encoding in examples 13-15 and are therefore absent here -- admitting them is an additive versioned act (see schema/README.md).",
+      "oneOf": [
+        {"$ref": "#/$defs/stmt_assign"},
+        {"$ref": "#/$defs/stmt_return"},
+        {"$ref": "#/$defs/stmt_if"},
+        {"$ref": "#/$defs/stmt_for"},
+        {"$ref": "#/$defs/stmt_while"},
+        {"$ref": "#/$defs/stmt_break"},
+        {"$ref": "#/$defs/stmt_continue"},
+        {"$ref": "#/$defs/stmt_try"},
+        {"$ref": "#/$defs/stmt_raise"}
+      ]
+    },
+    "expression": {
+      "description": "A whitelisted expression, discriminated on `node`. v0 expressions: Call, Attr, Var, Const, Compare, BinOp (spec/node-set.md SEM-8; SEM-4 pins the operator subsets).",
+      "oneOf": [
+        {"$ref": "#/$defs/expr_call"},
+        {"$ref": "#/$defs/expr_attr"},
+        {"$ref": "#/$defs/expr_var"},
+        {"$ref": "#/$defs/expr_const"},
+        {"$ref": "#/$defs/expr_compare"},
+        {"$ref": "#/$defs/expr_binop"}
+      ]
+    },
+    "stmt_assign": {
+      "type": "object",
+      "description": "Assign: thread values between leaf calls (spec/node-set.md whitelist). Target is a single simple name (SEM-5 ruling); no attribute/global mutation.",
+      "properties": {
+        "node": {"const": "Assign", "description": "The node discriminator (SEM-8)."},
+        "target": {
+          "$ref": "#/$defs/identifier",
+          "description": "The bound name, SEM-5 ruling: simple names only."
+        },
+        "value": {
+          "$ref": "#/$defs/expression",
+          "description": "The assigned expression."
+        }
+      },
+      "required": ["node", "target", "value"],
+      "additionalProperties": false
+    },
+    "stmt_return": {
+      "type": "object",
+      "description": "Return: the module output, a Prediction (spec/node-set.md whitelist; PIR-013: Prediction fields = declared output fields exactly).",
+      "properties": {
+        "node": {"const": "Return", "description": "The node discriminator (SEM-8)."},
+        "value": {
+          "$ref": "#/$defs/expression",
+          "description": "The returned expression. v0 encodes this as an expression node (examples 13-15); the bare-string form of example 01 is pre-v0 and fails here."
+        }
+      },
+      "required": ["node", "value"],
+      "additionalProperties": false
+    },
+    "stmt_if": {
+      "type": "object",
+      "description": "If: data-dependent branch (spec/node-set.md whitelist). The test must evaluate to a boolean at runtime; any other value raises InterpreterTypeError -- no truthiness table (SEM-1 ruling).",
+      "properties": {
+        "node": {"const": "If", "description": "The node discriminator (SEM-8)."},
+        "test": {
+          "$ref": "#/$defs/expression",
+          "description": "The condition; boolean at runtime per SEM-1 ruling."
+        },
+        "body": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/statement"},
+          "minItems": 1,
+          "description": "The then-branch; non-empty (the source form cannot author an empty block and v0 has no pass node)."
+        },
+        "orelse": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/statement"},
+          "description": "The else-branch; may be empty (observed form always carries the key)."
+        }
+      },
+      "required": ["node", "test", "body", "orelse"],
+      "additionalProperties": false
+    },
+    "stmt_for": {
+      "type": "object",
+      "description": "For: bounded loop (spec/node-set.md whitelist). v0 iterates range(<non-negative int literal>) ONLY -- the compiled form; list iteration is a future additive change (SEM-2 ruling). Bounded by its literal (SEM-6 ruling). for/else is not representable.",
+      "properties": {
+        "node": {"const": "For", "description": "The node discriminator (SEM-8)."},
+        "target": {
+          "$ref": "#/$defs/identifier",
+          "description": "The loop variable, a simple name (SEM-2/SEM-5)."
+        },
+        "range": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The literal iteration count: range(<non-negative int literal>), SEM-2 ruling."
+        },
+        "body": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/statement"},
+          "minItems": 1,
+          "description": "The loop body; non-empty."
+        }
+      },
+      "required": ["node", "target", "range", "body"],
+      "additionalProperties": false
+    },
+    "stmt_while": {
+      "type": "object",
+      "description": "While: condition-driven loop (spec/node-set.md whitelist). Boolean test per SEM-1. Interpretation-side default cap of 1000 iterations; breach raises LoopCapError, a harness guard NOT catchable by program handlers (SEM-6 ruling -- v0 carries no per-loop override field). while/else is not representable.",
+      "properties": {
+        "node": {"const": "While", "description": "The node discriminator (SEM-8)."},
+        "test": {
+          "$ref": "#/$defs/expression",
+          "description": "The condition; boolean at runtime per SEM-1 ruling."
+        },
+        "body": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/statement"},
+          "minItems": 1,
+          "description": "The loop body; non-empty."
+        }
+      },
+      "required": ["node", "test", "body"],
+      "additionalProperties": false
+    },
+    "stmt_break": {
+      "type": "object",
+      "description": "Break: exit the innermost loop (spec/node-set.md whitelist).",
+      "properties": {
+        "node": {"const": "Break", "description": "The node discriminator (SEM-8)."}
+      },
+      "required": ["node"],
+      "additionalProperties": false
+    },
+    "stmt_continue": {
+      "type": "object",
+      "description": "Continue: next iteration of the innermost loop (spec/node-set.md whitelist; emitted by the ex-15 reference compiler, hence in the v0 observed vocabulary).",
+      "properties": {
+        "node": {"const": "Continue", "description": "The node discriminator (SEM-8)."}
+      },
+      "required": ["node"],
+      "additionalProperties": false
+    },
+    "stmt_try": {
+      "type": "object",
+      "description": "Try: error + recovery flow over typed errors (spec/node-set.md whitelist; SEM-3 ruling). try/finally and try/else are not representable (v0, per the ex-15 compiler).",
+      "properties": {
+        "node": {"const": "Try", "description": "The node discriminator (SEM-8)."},
+        "body": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/statement"},
+          "minItems": 1,
+          "description": "The guarded statements; non-empty."
+        },
+        "handlers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/except_handler"},
+          "minItems": 1,
+          "description": "The handler list; at least one (a Try without handlers is meaningless in v0 -- no finally/else forms)."
+        }
+      },
+      "required": ["node", "body", "handlers"],
+      "additionalProperties": false
+    },
+    "except_handler": {
+      "type": "object",
+      "description": "One except clause. Handler matching is exact name, or 'Exception' which catches every table error -- including Raise'd ones, which flow through the same channel as leaf errors (SEM-3 ruling). Binding the caught error to a name is not representable (v0).",
+      "properties": {
+        "type": {
+          "enum": ["ToolError", "InterpreterError", "AdapterParseError", "LMError", "Exception"],
+          "description": "The caught type: the SEM-3 typed-error table plus 'Exception'. LoopCapError is deliberately absent -- it is a harness guard, never catchable (SEM-6 ruling). The runtime-raised InterpreterTypeError/InterpreterKeyError (SEM-1/SEM-7) are not in the table; whether they are catchable by exact name is an unresolved spec tension recorded in schema/README.md -- until ruled, only 'Exception' can catch them."
+        },
+        "body": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/statement"},
+          "minItems": 1,
+          "description": "The handler body; non-empty."
+        }
+      },
+      "required": ["type", "body"],
+      "additionalProperties": false
+    },
+    "stmt_raise": {
+      "type": "object",
+      "description": "Raise: throw a typed error (spec/node-set.md whitelist). Raise-able names are restricted to the SEM-3 table -- an unknown name is a compile refusal, never a runtime fallback. Only the `raise SomeError(<constant>)` source form is representable (ex-15 compiler); example 14's `ValueError` is pre-ratification and fails here (see schema/README.md).",
+      "properties": {
+        "node": {"const": "Raise", "description": "The node discriminator (SEM-8)."},
+        "exc": {
+          "enum": ["ToolError", "InterpreterError", "AdapterParseError", "LMError"],
+          "description": "The raised type: exactly the SEM-3 typed-error table."
+        },
+        "message": {
+          "type": ["string", "number", "boolean", "null"],
+          "description": "The constant carried by the raise (the ex-15 compiler admits any constant; observed messages are strings). Carried data only -- refusal/trace comparison never matches message text (spec/errors.md discipline)."
+        }
+      },
+      "required": ["node", "exc", "message"],
+      "additionalProperties": false
+    },
+    "leaf": {
+      "type": "object",
+      "description": "A Call's declared leaf: {kind, ref?} (SEM-8 ruling). Every Call resolves to a declared, typed leaf -- Predict, sub-module, tool/UDF, or interpreter -- or compile refuses naming the call (spec/node-set.md leaf rule; PIR-E-NODE-002). Kind-specific ref requirements are enforced on the Call node ($defs/expr_call).",
+      "properties": {
+        "kind": {
+          "enum": ["predict", "module", "tool", "interpreter"],
+          "description": "The leaf type, spec/node-set.md leaf rule."
+        },
+        "ref": {
+          "$ref": "#/$defs/identifier",
+          "description": "The declared target: a child Predict name (kind=predict), a sub-module name (kind=module), a component-6 tool name (kind=tool, static form), or a component-7 interpreter pool entry name (kind=interpreter; REQUIRED by D-029 -- the examples' ref-less interpreter leaf is pre-ratification; the migrator adds ref: 'main')."
+        }
+      },
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "expr_call": {
+      "type": "object",
+      "description": "Call: invoke a declared leaf (spec/node-set.md leaf rule). Arguments are keywords only -- positional args and **splat are not representable (ex-15 compiler; example 01's args: '**inputs' is pre-v0 and fails). Dynamic tool dispatch (tools[name](...)) is the model-dispatched call convention: {leaf: {kind: 'tool'}, name: <expr>}, unknown names raising a catchable typed ToolError (SEM-8 ruling).",
+      "properties": {
+        "node": {"const": "Call", "description": "The node discriminator (SEM-8)."},
+        "leaf": {
+          "$ref": "#/$defs/leaf",
+          "description": "The declared leaf being invoked."
+        },
+        "kwargs": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/identifier"},
+          "additionalProperties": {"$ref": "#/$defs/expression"},
+          "description": "Keyword arguments: name -> expression. Always present, possibly empty (the observed v0 form)."
+        },
+        "name": {
+          "$ref": "#/$defs/expression",
+          "description": "Dynamic tool dispatch ONLY: the expression evaluating to the tool's name at runtime (SEM-8: dynamic tools as {leaf: {kind: 'tool'}, name: <expr>}). Forbidden on every other leaf kind -- enforced by the allOf below."
+        }
+      },
+      "required": ["node", "leaf", "kwargs"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "predict/module/interpreter leaves: ref required (D-029 for interpreter), dynamic `name` forbidden.",
+          "if": {
+            "properties": {
+              "leaf": {
+                "properties": {"kind": {"enum": ["predict", "module", "interpreter"]}},
+                "required": ["kind"]
+              }
+            },
+            "required": ["leaf"]
+          },
+          "then": {
+            "properties": {
+              "leaf": {"required": ["ref"]}
+            },
+            "not": {"required": ["name"]}
+          }
+        },
+        {
+          "description": "tool leaves: exactly one of static ref (leaf.ref, no `name`) or dynamic dispatch (`name`, no leaf.ref).",
+          "if": {
+            "properties": {
+              "leaf": {
+                "properties": {"kind": {"const": "tool"}},
+                "required": ["kind"]
+              }
+            },
+            "required": ["leaf"]
+          },
+          "then": {
+            "oneOf": [
+              {
+                "description": "Static tool call: leaf names a component-6 entry.",
+                "properties": {
+                  "leaf": {"required": ["ref"]}
+                },
+                "not": {"required": ["name"]}
+              },
+              {
+                "description": "Dynamic (model-dispatched) tool call: name expression, no ref.",
+                "required": ["name"],
+                "properties": {
+                  "leaf": {
+                    "not": {"required": ["ref"]}
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "expr_attr": {
+      "type": "object",
+      "description": "Attr: field access on a Prediction/record held in a variable -- only simple `var.field` access is representable (ex-15 compiler; SEM-7 ruling: key lookup, a missing key raises typed catchable InterpreterKeyError, never a raw host exception).",
+      "properties": {
+        "node": {"const": "Attr", "description": "The node discriminator (SEM-8)."},
+        "obj": {
+          "$ref": "#/$defs/identifier",
+          "description": "The variable name holding the record. NOTE: a bare name string, not an expression node -- the v0 observed encoding."
+        },
+        "attr": {
+          "$ref": "#/$defs/identifier",
+          "description": "The accessed field/key name."
+        }
+      },
+      "required": ["node", "obj", "attr"],
+      "additionalProperties": false
+    },
+    "expr_var": {
+      "type": "object",
+      "description": "Var: read a bound name. An unbound Var raises InterpreterKeyError (SEM-7 ruling).",
+      "properties": {
+        "node": {"const": "Var", "description": "The node discriminator (SEM-8)."},
+        "name": {
+          "$ref": "#/$defs/identifier",
+          "description": "The variable name."
+        }
+      },
+      "required": ["node", "name"],
+      "additionalProperties": false
+    },
+    "expr_const": {
+      "type": "object",
+      "description": "Const: a literal. Values flowing between leaves are JSON values, Prediction records, and typed errors (SEM-7 ruling); v0 literals are the JSON scalars -- container literals have no observed encoding.",
+      "properties": {
+        "node": {"const": "Const", "description": "The node discriminator (SEM-8)."},
+        "value": {
+          "type": ["string", "number", "boolean", "null"],
+          "description": "The literal value, a JSON scalar (SEM-7; int/float distinction follows the serde profile, PIR-004)."
+        }
+      },
+      "required": ["node", "value"],
+      "additionalProperties": false
+    },
+    "expr_compare": {
+      "type": "object",
+      "description": "Compare: single eq/ne comparison (spec/node-set.md whitelist, closed operator subset). SEM-4 ruling: eq/ne is JSON-value equality; different JSON types are unequal, never an error. Chained comparisons and other operators are not representable in v0.",
+      "properties": {
+        "node": {"const": "Compare", "description": "The node discriminator (SEM-8)."},
+        "op": {
+          "enum": ["eq", "ne"],
+          "description": "The comparison operator, SEM-4 ruling's closed subset."
+        },
+        "left": {
+          "$ref": "#/$defs/expression",
+          "description": "Left operand."
+        },
+        "right": {
+          "$ref": "#/$defs/expression",
+          "description": "Right operand (exactly one comparator in v0)."
+        }
+      },
+      "required": ["node", "op", "left", "right"],
+      "additionalProperties": false
+    },
+    "expr_binop": {
+      "type": "object",
+      "description": "BinOp: binary operation. SEM-4 ruling: `add` ONLY -- string+string concatenation or number+number addition; any other operand pairing raises InterpreterTypeError at runtime. Other operators refuse at compile.",
+      "properties": {
+        "node": {"const": "BinOp", "description": "The node discriminator (SEM-8)."},
+        "op": {
+          "const": "add",
+          "description": "The only v0 binary operator (SEM-4 ruling)."
+        },
+        "left": {
+          "$ref": "#/$defs/expression",
+          "description": "Left operand."
+        },
+        "right": {
+          "$ref": "#/$defs/expression",
+          "description": "Right operand."
+        }
+      },
+      "required": ["node", "op", "left", "right"],
+      "additionalProperties": false
+    }
+  }
+}

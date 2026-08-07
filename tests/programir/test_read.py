@@ -48,8 +48,8 @@ def test_read_refuses_unknown_manifest_key(tmp_path):
     with pytest.raises(ProgramIRRefusal) as caught:
         read(destination)
 
-    assert caught.value.code == "PIR-E-MANIFEST-001"
-    assert caught.value.detail == {"unknown": ["mystery"]}
+    assert caught.value.code == "PIR-E-MANIFEST-002"
+    assert caught.value.detail["constraint"] == "additionalProperties"
 
 
 def test_read_refuses_incompatible_version_before_linking(tmp_path):

@@ -1,0 +1,789 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProgramIR manifest (ratified shape)",
+  "description": "The RATIFIED manifest shape: spec/manifest.md components table + the D-029 rulings, spec/versions.md (PIR-001), spec/placement.md placement blocks, spec/invariants.md discipline laws. This schema validates the post-ratification form, NOT the pre-ratification example artifacts (which fail by design -- see schema/README.md for the counterexample audit and the migrator's checklist). Feature subset is deliberately restricted so a stdlib-only hand-rolled validator can implement it exactly; see schema/README.md.",
+  "type": "object",
+  "properties": {
+    "versions": {
+      "$ref": "#/$defs/versions_block",
+      "description": "REQUIRED versions block, spec/versions.md + PIR-001. Written at save; the first thing `explain` prints. An absent block is PIR-E-MANIFEST-* malformed -- no unversioned grandfathering."
+    },
+    "components": {
+      "$ref": "#/$defs/components",
+      "description": "The numbered component map, spec/manifest.md components table. Keys keep the examples' numbered form; 8a/8b are conceptual rows only and never appear as keys (spec/manifest.md D-029 ruling 1)."
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Optional artifact-level provenance {source, date, evidence, ...} -- AUTHORITY.md evidence discipline and PIR-014 (machine-written mutation chains). Shape intentionally loose until ratified."
+    }
+  },
+  "required": ["versions", "components"],
+  "additionalProperties": false,
+  "$defs": {
+    "version_string": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A version entry. The string grammar (MAJOR.MINOR vs full semver) is explicitly NOT ratified -- spec/versions.md open item 0 -- so this schema requires only a non-empty string. Same-major accepts; otherwise refuse with PIR-E-VERSION-* naming the entry and both versions."
+    },
+    "versions_block": {
+      "type": "object",
+      "description": "The ratified versions block, spec/versions.md (D-024) + PIR-001: ir_version plus every closed vocabulary and consumed contract. All seven entries are required; a missing required entry is PIR-E-MANIFEST-* malformed.",
+      "properties": {
+        "ir_version": {
+          "$ref": "#/$defs/version_string",
+          "description": "This contract's own version, spec/versions.md."
+        },
+        "node_set": {
+          "$ref": "#/$defs/version_string",
+          "description": "The forward node-set grammar version, spec/versions.md + spec/node-set.md SEM-8 (v0 is the observed encoding of examples 13-15). Whether it rides ir_version is open item 2 -- the entry itself is required either way."
+        },
+        "roles": {
+          "$ref": "#/$defs/version_string",
+          "description": "The semantic_role closed vocabulary version, spec/versions.md; the vocabulary itself is in $defs/semantic_role."
+        },
+        "strategies": {
+          "$ref": "#/$defs/version_string",
+          "description": "The adapter-ir strategy vocabulary version in force, spec/versions.md."
+        },
+        "codecs": {
+          "$ref": "#/$defs/version_string",
+          "description": "The adapter-ir codec vocabulary version in force, spec/versions.md."
+        },
+        "adapter_ir": {
+          "$ref": "#/$defs/version_string",
+          "description": "The consumed adapter-ir contract version, spec/versions.md; exact-vs-range pinning is open item 1."
+        },
+        "lm15": {
+          "$ref": "#/$defs/version_string",
+          "description": "The consumed lm15 wire-contract version, spec/versions.md; exact-vs-range pinning is open item 1."
+        }
+      },
+      "required": ["ir_version", "node_set", "roles", "strategies", "codecs", "adapter_ir", "lm15"],
+      "additionalProperties": {
+        "$ref": "#/$defs/version_string",
+        "description": "Additional entries are permitted as version strings: extending a vocabulary is a versioned act recorded in changes/ and reflected in the block (spec/versions.md). How a reader treats an entry it does not implement is not yet ratified -- recorded in schema/README.md."
+      }
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "description": "A simple name: variable, field, or predictor segment. The node set's assignment targets are simple names only (spec/node-set.md SEM-5 ruling)."
+    },
+    "predictor_path": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+      "description": "A dotted predictor/module path keying the per-predictor maps (components 2/3a/3b/3c) and 5_forward -- e.g. 'self', 'gen', 'drafter.classifier.classify'. spec/manifest.md shape rules: per-predictor learned state is keyed by predictor path."
+    },
+    "pool_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$",
+      "description": "A pool-entry name (adapter/LM/tool/interpreter/metric pools). Identity-bearing shareable components are named pools; the tree carries bindings by name (PIR-009). Deterministic base normalization and -2/-3 collision suffixing are specified in spec/manifest.md."
+    },
+    "language_tag": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_+.-]*$",
+      "description": "A declared language tag, e.g. 'python' -- PIR-012: every packaged and authored code entry carries `language`; the artifact carries one env block per language present (D-025). No closed vocabulary is ratified yet."
+    },
+    "json_schema": {
+      "type": ["object", "boolean"],
+      "description": "An embedded JSON Schema value (draft 2020-12 admits boolean schemas). Used for signature field `shape` and tool `return_schema`. Contents are not meta-validated here."
+    },
+    "placement": {
+      "type": "object",
+      "description": "The per-component placement block, spec/placement.md. The contract never moves; only rung/endpoint/isolation/credential do. Identity deviations detach scores; placement changes do not (PIR-010).",
+      "properties": {
+        "rung": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The ladder rung, spec/placement.md. Observed values: 'in_process', 'http_local', 'http_remote'. The rung vocabulary is not ratified as closed, so any non-empty string is accepted here."
+        },
+        "contract": {
+          "type": ["string", "object"],
+          "description": "The typed interface, identical across rungs, spec/placement.md. The spec sketch shows an object; the reference artifacts carry a string signature (e.g. 'forward(LMRequest)->LMResponse'); both are accepted until the form is ratified."
+        },
+        "endpoint_ref": {
+          "type": ["string", "null"],
+          "description": "Name of the receiver-bound endpoint binding (an env-var-like reference the receiver resolves), spec/placement.md. Null/absent for in-process placements. The declared-tier profile requires endpoint rungs to bind through this (D-023)."
+        },
+        "default_endpoint": {
+          "type": ["string", "null"],
+          "description": "Advisory default URL for endpoint_ref, spec/placement.md placement block."
+        },
+        "isolation": {
+          "type": ["string", "null"],
+          "description": "Isolation level, spec/placement.md placement block. Observed: 'none'. No closed vocabulary ratified."
+        },
+        "credential_ref": {
+          "type": ["string", "null"],
+          "description": "Name of a declared credential (component 10 entry) this placement authenticates with, spec/placement.md + PIR-005 (names, never values)."
+        }
+      },
+      "required": ["rung", "contract"],
+      "additionalProperties": false
+    },
+    "code_identity": {
+      "type": "object",
+      "description": "A declared code identity for packaged/authored entries (PIR-003 declare-don't-discover; PIR-014 provenance). Used by LM entries' `class`.",
+      "properties": {
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Import-path-like identity of the class/function, spec/manifest.md components 6/8a (identity is baked; PIR-003)."
+        },
+        "origin": {
+          "enum": ["packaged", "authored"],
+          "description": "Where the code comes from: 'packaged' (shipped with a named library) or 'authored' (source baked into the artifact). PIR-012/D-025; adapter-layer authored code never rung-walks (D-026)."
+        },
+        "language": {
+          "$ref": "#/$defs/language_tag",
+          "description": "REQUIRED declared language -- PIR-012: every packaged and authored code entry carries `language`."
+        },
+        "source": {
+          "type": "string",
+          "description": "Artifact-relative path to the baked source (required when origin='authored'), spec/manifest.md on-disk layout: binary/code sidecars never inline (PIR-004)."
+        },
+        "deps": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Declared dependency names, spec/manifest.md components 6/8a + PIR-003."
+        },
+        "authored_by": {
+          "type": "string",
+          "description": "PIR-014: machine-written or machine-mutated code carries authored_by into the artifact."
+        },
+        "mutations": {
+          "type": "array",
+          "items": {"type": "object"},
+          "description": "PIR-014: the mutation chain of machine-mutated code. Entry shape not yet ratified; loose."
+        }
+      },
+      "required": ["identity", "origin", "language", "deps"],
+      "if": {
+        "properties": {"origin": {"const": "authored"}},
+        "required": ["origin"]
+      },
+      "then": {"required": ["source"]},
+      "additionalProperties": false
+    },
+    "semantic_role": {
+      "enum": ["plain", "reasoning", "tools", "tool_calls", "citations", "history", "media", "code"],
+      "description": "The closed semantic-role vocabulary from the adapter-ir contract (dspy roadmap epic C; IR-program-spec section b component 2): what the field means to the exchange -- intent, hence frozen. Versioned by versions.roles; extension requires the admission rule ('must change how the exchange is conducted', spec/versions.md)."
+    },
+    "signature_field": {
+      "type": "object",
+      "description": "One signature field, spec/manifest.md component 2: {name, direction, prefix, desc, shape, semantic_role}. This is the RATIFIED shape -- the examples' {role, description, annotation} keys are pre-ratification and fail here (migrator renames; see schema/README.md).",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier",
+          "description": "The semantic field name (Prediction key), spec/manifest.md component 2; PIR-013: Prediction fields = declared output fields, no more, no less."
+        },
+        "direction": {
+          "enum": ["input", "output"],
+          "description": "Input/output designation -- the renamed old `role` key (IR-program-spec section b component 2; adapter-ir SignatureCore)."
+        },
+        "prefix": {
+          "type": ["string", "null"],
+          "description": "Rendering prefix, nullable (adapter-ir SignatureCore: prefix: str | null)."
+        },
+        "desc": {
+          "type": ["string", "null"],
+          "description": "Field description, nullable (adapter-ir SignatureCore: desc: str | null). The canonical key is 'desc'; 'description' is not an alias (spec/manifest.md, ratified 2026-08-07)."
+        },
+        "shape": {
+          "$ref": "#/$defs/json_schema",
+          "description": "The field's data type as JSON Schema -- arbitrary, no blessed type list; hints with no JSON-schema meaning refuse loudly at lowering (IR-program-spec section b component 2; adapter-ir ADP-010)."
+        },
+        "semantic_role": {
+          "$ref": "#/$defs/semantic_role",
+          "description": "The field's relationship to the exchange, spec/manifest.md component 2. Intent, frozen; the strategy answering it is component-4 mechanism."
+        }
+      },
+      "required": ["name", "direction", "prefix", "desc", "shape", "semantic_role"],
+      "additionalProperties": false
+    },
+    "signature": {
+      "type": "object",
+      "description": "A per-predictor signature, spec/manifest.md component 2: ordered fields[]. Instructions are NOT stored here -- they live once in 3a (IR-program-spec section b: component 2 does not duplicate them). The examples duplicate instructions into component 2; that pre-ratification form fails here.",
+      "properties": {
+        "fields": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/signature_field"},
+          "minItems": 1,
+          "description": "Ordered field list, spec/manifest.md component 2."
+        }
+      },
+      "required": ["fields"],
+      "additionalProperties": false
+    },
+    "demo": {
+      "type": "object",
+      "description": "One demo or devset example: a flat record whose non-reserved keys are field values and whose required input_keys[] carries the input/label designation. 'input_keys' is reserved metadata; frontend lowering refuses a signature field with that name (spec/manifest.md, ratified 2026-08-07).",
+      "properties": {
+        "input_keys": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/identifier"},
+          "uniqueItems": true,
+          "description": "Which of this demo's fields are inputs (the rest are labels), spec/manifest.md component 3b."
+        }
+      },
+      "required": ["input_keys"],
+      "additionalProperties": true
+    },
+    "bindings": {
+      "type": "object",
+      "description": "A Predict leaf's pool bindings, spec/manifest.md shape rules (pools + tree bindings) + component 1: leaves bind {adapter, lm, delta} by name. Every name must resolve to a declared pool entry at link or load refuses (PIR-009, PIR-E-LINK-*).",
+      "properties": {
+        "adapter": {
+          "$ref": "#/$defs/pool_name",
+          "description": "Names a component-4 adapter pool entry, spec/manifest.md component 1 + spec/linking.md step 4."
+        },
+        "lm": {
+          "$ref": "#/$defs/pool_name",
+          "description": "Names a component-8 LM pool entry, spec/manifest.md component 1 + spec/linking.md step 4."
+        },
+        "delta": {
+          "anyOf": [
+            {"$ref": "#/$defs/pool_name"},
+            {"type": "null"}
+          ],
+          "description": "Optional weights-delta name: effective weights are the LM entry's base (+) this delta, each carrying its own frozen/weight-ref tag (spec/manifest.md shape rules, base-plus-delta). Null when no delta. Where delta entries live (a pool of their own vs nested under the LM entry) is NOT yet ratified -- recorded in schema/README.md; a delta name that resolves nowhere is PIR-E-LINK-002."
+        }
+      },
+      "required": ["adapter", "lm", "delta"],
+      "additionalProperties": false
+    },
+    "tree_node": {
+      "description": "A module-tree node, spec/manifest.md component 1. Discriminated on kind: 'Predict' nodes are binding-carrying leaves; every other kind is a module node with a forward.",
+      "if": {
+        "properties": {"kind": {"const": "Predict"}},
+        "required": ["kind"]
+      },
+      "then": {"$ref": "#/$defs/predict_leaf"},
+      "else": {"$ref": "#/$defs/module_node"}
+    },
+    "predict_leaf": {
+      "type": "object",
+      "description": "A Predict leaf, spec/manifest.md component 1: carries bindings {adapter, lm, delta}; never has children. A root-level bare-Predict program is this node at the root with the trivial forward under 5_forward/'self'.",
+      "properties": {
+        "kind": {
+          "const": "Predict",
+          "description": "Discriminator, spec/manifest.md component 1."
+        },
+        "name": {
+          "$ref": "#/$defs/identifier",
+          "description": "The leaf's attribute name; the root is conventionally 'self'."
+        },
+        "children": {
+          "type": "array",
+          "maxItems": 0,
+          "description": "Always empty on a Predict leaf, spec/manifest.md component 1."
+        },
+        "bindings": {
+          "$ref": "#/$defs/bindings",
+          "description": "The leaf's pool bindings, spec/manifest.md component 1 + PIR-009."
+        },
+        "forward_ref": {
+          "type": "string",
+          "pattern": "^5_forward/[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+          "description": "Optional pointer to this predictor's trivial forward (root bare-Predict programs), keyed into component 5."
+        }
+      },
+      "required": ["kind", "name", "children", "bindings"],
+      "additionalProperties": false
+    },
+    "module_node": {
+      "type": "object",
+      "description": "A composite module node, spec/manifest.md component 1: names its forward in component 5 and carries children (Predict leaves and sub-modules).",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The module class name (never 'Predict' -- that form is the leaf), spec/manifest.md component 1."
+        },
+        "name": {
+          "$ref": "#/$defs/identifier",
+          "description": "The node's attribute name in its parent; the root is conventionally 'self'."
+        },
+        "module_class": {
+          "type": "string",
+          "description": "Optional duplicate of the authored class name (observability; matches kind in the reference artifacts)."
+        },
+        "forward_ref": {
+          "type": "string",
+          "pattern": "^5_forward/[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+          "description": "Pointer to this module's forward under component 5, spec/manifest.md component 5 (per-module node-set JSON)."
+        },
+        "uses_interpreter": {
+          "type": "boolean",
+          "description": "Optional declaration hint that this module's forward contains interpreter leaves (PIR-003 declare-don't-discover); the authoritative reference is each leaf's ref (D-029)."
+        },
+        "tools": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pool_name"},
+          "description": "Optional declaration of the component-6 tool names this module's forward may dispatch to (the model-dispatched call convention, spec/node-set.md leaf rule; PIR-003)."
+        },
+        "children": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/tree_node"},
+          "description": "Child nodes: Predict leaves and sub-modules, spec/manifest.md component 1."
+        }
+      },
+      "required": ["kind", "name", "forward_ref", "children"],
+      "additionalProperties": false
+    },
+    "forward_stub": {
+      "type": "object",
+      "description": "A per-module forward, spec/manifest.md component 5. This schema pins only the envelope; the statement grammar is schema/node-set.schema.json (spec/node-set.md SEM-8), applied by the node_compile op -- kept out of this file so neither schema needs cross-file $ref (hand-rolled-validator discipline, schema/README.md).",
+      "properties": {
+        "language": {
+          "const": "restricted-python-ast",
+          "description": "The node-set language tag adopted by SEM-8 v0 (the observed encoding of examples 13-15), spec/node-set.md."
+        },
+        "args": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/identifier"},
+          "uniqueItems": true,
+          "description": "The forward's input names ('self' excluded), spec/node-set.md SEM-8 v0 envelope."
+        },
+        "body": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node": {"type": "string", "minLength": 1}
+            },
+            "required": ["node"],
+            "description": "A statement carrying the `node` discriminator; full per-node validation is schema/node-set.schema.json."
+          },
+          "minItems": 1,
+          "description": "The statement list, spec/node-set.md statement whitelist."
+        }
+      },
+      "required": ["language", "args", "body"],
+      "additionalProperties": false
+    },
+    "adapter_entry": {
+      "description": "A component-4 adapter pool entry: an adapter-ir preset, by reference to that contract (spec/manifest.md component 4). EITHER a builtin preset reference OR a full serialized preset object. The full form's internals (template, strategies block, codec bindings, literal_table) are owned by the adapter-ir contract and deliberately left loose here -- schema/README.md.",
+      "oneOf": [
+        {"$ref": "#/$defs/adapter_preset_ref"},
+        {"$ref": "#/$defs/adapter_full_preset"}
+      ]
+    },
+    "adapter_preset_ref": {
+      "type": "object",
+      "description": "A builtin preset reference. Builtin presets resolve internally in any conforming engine, in any language (adapter-ir contract: builtin needs no language tag; the D-023 declared-tier profile requires builtin presets only).",
+      "properties": {
+        "preset": {
+          "enum": ["chat", "json", "xml"],
+          "description": "The builtin preset name (adapter-ir contract: built-in presets chat, json, xml, each byte-reproducing the historical class adapters). BAML is NOT a preset (it is json + baml codec bindings) and full_text is not yet ratified into this reference vocabulary."
+        },
+        "versions": {
+          "type": "object",
+          "description": "The preset's own versions block: the adapter-ir contract version plus the vocabulary entries in force (spec/versions.md: serialized adapter presets carry their own block; adapter-ir contract section 4). Entry set owned by the adapter-ir contract; loose here."
+        }
+      },
+      "required": ["preset", "versions"],
+      "additionalProperties": false
+    },
+    "adapter_full_preset": {
+      "type": "object",
+      "description": "A full serialized adapter-ir preset object. Its internal shape (template, strategies, codecs, literal_table, config, transforms, parsers) is the adapter-ir contract's to pin -- this schema requires only its own versions block (spec/versions.md: a preset with no block is refused as malformed) and that it not masquerade as a builtin reference. Note: an authored-origin adapter class inside such an entry makes the artifact fail the declared-tier profile with PIR-E-PROFILE-002 (D-026), a profile_check concern, not a schema one.",
+      "properties": {
+        "versions": {
+          "type": "object",
+          "description": "The preset's own versions block (spec/versions.md; adapter-ir contract section 4)."
+        }
+      },
+      "required": ["versions"],
+      "not": {"required": ["preset"]},
+      "additionalProperties": true
+    },
+    "tool_entry": {
+      "type": "object",
+      "description": "A component-6 tool pool entry, spec/manifest.md component 6: identity + return_schema + source + deps + language + placement. Also the shape of component-12 metric entries ('tool-shaped', spec/manifest.md component 12).",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier",
+          "description": "The tool's dispatch name (identity); conventionally equal to its pool key."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human/model-facing description of the tool. Optional."
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Named parameter schemas ({param: JSON Schema}), declared not discovered (PIR-003)."
+        },
+        "return_schema": {
+          "$ref": "#/$defs/json_schema",
+          "description": "The tool's return type as JSON Schema, spec/manifest.md component 6. For metric entries this is the score shape (metric(example, prediction) -> score, IR-program-spec section b component 12)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Artifact-relative path to the baked source at rung 0, spec/manifest.md component 6 + on-disk layout (sidecars never inline, PIR-004)."
+        },
+        "deps": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Declared dependency names, spec/manifest.md component 6 + PIR-003."
+        },
+        "language": {
+          "$ref": "#/$defs/language_tag",
+          "description": "REQUIRED declared language, PIR-012; a foreign-language rung 0 triggers the rung-walk (PIR-010, spec/placement.md)."
+        },
+        "placement": {
+          "$ref": "#/$defs/placement",
+          "description": "Where this tool runs, spec/placement.md."
+        },
+        "authored_by": {
+          "type": "string",
+          "description": "PIR-014 provenance for machine-written tool code."
+        }
+      },
+      "required": ["return_schema", "source", "deps", "language", "placement"],
+      "additionalProperties": false
+    },
+    "interpreter_runtime": {
+      "type": "object",
+      "description": "The exact runtime implementation whose semantics are program identity (D-033).",
+      "properties": {
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Runtime identity, e.g. cpython, pyodide, gnu-bash, node, duckdb, or a remote sandbox service."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact runtime version or immutable service revision."
+        }
+      },
+      "required": ["identity", "version"],
+      "additionalProperties": false
+    },
+    "interpreter_entry": {
+      "description": "A named component-7 interpreter identity profile plus receiver-controlled placement (D-029, D-033). New writers emit the structural branch and stamp versions.interpreter_profile=1.0. The fused kind branch is legacy-readable only.",
+      "oneOf": [
+        {"$ref": "#/$defs/interpreter_legacy_entry"},
+        {"$ref": "#/$defs/interpreter_structural_entry"}
+      ]
+    },
+    "interpreter_legacy_entry": {
+      "type": "object",
+      "description": "Legacy v0.1 fused-kind profile. Readers retain it for existing artifacts; writers never emit it after D-033.",
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "placement": {"$ref": "#/$defs/placement"}
+      },
+      "required": ["kind", "placement"],
+      "additionalProperties": true
+    },
+    "interpreter_structural_entry": {
+      "type": "object",
+      "description": "The canonical open structural interpreter profile (D-033). Every behavior-bearing identity field is explicit; arbitrary interpreter classes do not extend this fixed envelope nominally.",
+      "properties": {
+        "language": {
+          "$ref": "#/$defs/language_tag",
+          "description": "Open language tag: python, bash, javascript, sql, r, or another declared language."
+        },
+        "runtime": {"$ref": "#/$defs/interpreter_runtime"},
+        "contract": {
+          "type": ["string", "object"],
+          "description": "Language-neutral execute(code, vars) interface and typed result/error contract."
+        },
+        "namespace_policy": {
+          "type": ["string", "object"],
+          "description": "How names, builtins, tools, and persistent scope are exposed."
+        },
+        "result_convention": {
+          "type": ["string", "object"],
+          "description": "How successful execution produces the typed result."
+        },
+        "vars_marshaling": {
+          "type": ["string", "object"],
+          "description": "How input variables cross into the runtime."
+        },
+        "packages": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Ordered package identities visible to generated code."
+        },
+        "resource_limits": {
+          "type": "object",
+          "description": "Declared resource limits; empty means no limits are claimed."
+        },
+        "isolation_floor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Least isolation this identity permits; placement may move outward, never inward."
+        },
+        "placement": {
+          "$ref": "#/$defs/placement",
+          "description": "Receiver-controlled execution placement."
+        }
+      },
+      "required": [
+        "language", "runtime", "contract", "namespace_policy",
+        "result_convention", "vars_marshaling", "packages",
+        "resource_limits", "isolation_floor", "placement"
+      ],
+      "additionalProperties": false
+    },
+    "weights_files": {
+      "type": "object",
+      "description": "Named weight sidecar files, spec/manifest.md component 8a/8b row: safetensors + tying.json + rebuild config; on-disk layout puts them under weights/ (binary sidecars never inline, PIR-004).",
+      "properties": {
+        "tensors": {
+          "type": "string",
+          "description": "Path to the safetensors tensor file, spec/manifest.md components table (8a/8b row)."
+        },
+        "rebuild_config": {
+          "type": "string",
+          "description": "Path to the rebuild config, spec/manifest.md components table (8a/8b row)."
+        },
+        "tying": {
+          "type": "string",
+          "description": "Path to tying.json -- tensor ties are declared data verified at load, PIR-003."
+        },
+        "tokenizer": {
+          "type": "string",
+          "description": "Optional path to the tokenizer directory/file."
+        },
+        "device": {
+          "type": "string",
+          "description": "Optional path to the device map declaration."
+        }
+      },
+      "required": ["tensors", "rebuild_config", "tying"],
+      "additionalProperties": {
+        "type": "string",
+        "description": "Additional named sidecar files (e.g. shards), each an artifact-relative path."
+      }
+    },
+    "weights_block": {
+      "type": "object",
+      "description": "Nested baked weights on an LM entry, spec/manifest.md D-029 ruling 1 (one entry per LM: identity + placement + nested weights when baked). Executing rung-0 weights is out of 1.0 conformance scope, but this slot's FORMAT is structural and in scope (spec/SCOPE.md).",
+      "properties": {
+        "format": {
+          "const": "safetensors",
+          "description": "The only ratified weights format, spec/manifest.md components table + PIR-004 (no pickle, weights never base64-in-JSON)."
+        },
+        "files": {
+          "$ref": "#/$defs/weights_files",
+          "description": "The named sidecar files."
+        },
+        "frozen": {
+          "type": "boolean",
+          "description": "The frozen tag of the base-plus-delta rule: each of base and delta carries its own frozen/weight-ref tag (spec/manifest.md shape rules)."
+        },
+        "weight_ref": {
+          "type": "string",
+          "description": "The weight-ref tag of the base-plus-delta rule (spec/manifest.md shape rules)."
+        },
+        "placement": {
+          "$ref": "#/$defs/placement",
+          "description": "Optional weights-specific placement, spec/placement.md."
+        }
+      },
+      "required": ["format", "files"],
+      "additionalProperties": false
+    },
+    "lm_entry": {
+      "type": "object",
+      "description": "A component-8 LM pool entry: ONE object per LM -- identity + placement + nested weights when baked (spec/manifest.md D-029 ruling 1; 8a/8b are conceptual rows, never manifest keys). `engine` appears ONLY on baked entries (D-029 ruling 3: remote engines are the server's fact, not program identity) -- enforced via dependentRequired. `served_aliases` is an optional evidence hint (D-029 ruling 4).",
+      "properties": {
+        "forward_contract": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The typed LM forward contract this entry serves (lm15 identity), spec/manifest.md component 8a row; component 8a IS the lm15 contract (README.md, the stack)."
+        },
+        "class": {
+          "$ref": "#/$defs/code_identity",
+          "description": "The LM class identity. For declared/remote entries this block is ADVISORY: the entry is served through the engine's own lm15 client after weights_identity verification, recorded as a binding substitution (spec/placement.md D-023)."
+        },
+        "weights_identity": {
+          "type": "string",
+          "minLength": 1,
+          "description": "REQUIRED model identity (D-029 ruling 4: weights_identity is the required identity). Verified against the serving endpoint at verify (spec/linking.md step 6; PIR-E-VERIFY-002 on mismatch)."
+        },
+        "served_aliases": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "OPTIONAL evidence hint: names the endpoint may serve this identity under (D-029 ruling 4; example 09 is the aliases-absent fixture)."
+        },
+        "engine": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The in-process execution engine (e.g. 'transformers', 'vllm-offline'). ONLY lawful on baked entries -- presence requires nested weights (D-029 ruling 3), enforced by dependentRequired below."
+        },
+        "weights": {
+          "$ref": "#/$defs/weights_block",
+          "description": "Nested baked weights (the presence of this block is what 'baked' means), spec/manifest.md D-029 ruling 1."
+        },
+        "config": {
+          "type": "object",
+          "description": "Optional entry-level LM configuration (loose; per-predictor sampling config lives in component 3c)."
+        },
+        "placement": {
+          "$ref": "#/$defs/placement",
+          "description": "Where this LM is served, spec/placement.md; the declared-tier profile requires every LM entry at a receiver-bound endpoint rung (D-023)."
+        }
+      },
+      "required": ["forward_contract", "weights_identity", "placement"],
+      "dependentRequired": {
+        "engine": ["weights"]
+      },
+      "additionalProperties": false
+    },
+    "env_block": {
+      "type": "object",
+      "description": "One per-language environment block, spec/manifest.md component 9 + PIR-012/D-025: the artifact carries one env block per language present; PEP 723/uv is the Python instance (keys like pep723_entry, lock, python_version, system_deps). The neutral cross-language schema is 1.x-provisional (spec/SCOPE.md, D-025 candidate: rat's runtime.yaml shape), so contents are loose here."
+    },
+    "credential": {
+      "type": "object",
+      "description": "A declared credential, spec/manifest.md component 10 + PIR-005: the artifact declares {name, scope} ONLY; values are byte-absent and checked positively at load (verify: PIR-E-VERIFY-001 names name+scope).",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The credential's name, referenced by placement.credential_ref (PIR-005)."
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the credential is for, in words a verifier can name back (PIR-005; spec/errors.md VERIFY-001)."
+        }
+      },
+      "required": ["name", "scope"],
+      "additionalProperties": false
+    },
+    "evaluation_block": {
+      "type": "object",
+      "description": "Component 12 in the train/dev object: the named metric pool plus the ordered devset it scores. The whole component is droppable in ship objects; when present, both slots are explicit and required (PIR-004: absent, null, and empty are distinct).",
+      "properties": {
+        "metrics": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/pool_name"},
+          "additionalProperties": {"$ref": "#/$defs/tool_entry"},
+          "description": "Named pool of tool-shaped metric entries. Empty means the train/dev object explicitly carries no metric."
+        },
+        "devset": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/demo"},
+          "description": "Ordered evaluation examples, encoded exactly like component-3b demos: flat field values plus required input_keys[]. Empty means an explicitly empty devset."
+        }
+      },
+      "required": ["metrics", "devset"],
+      "additionalProperties": false
+    },
+    "components": {
+      "type": "object",
+      "description": "The component map, spec/manifest.md components table. All rows except 12_metric are required; empty pools are empty objects, never null (PIR-004: absent, null, and {} are different values -- and the pool rows are required objects).",
+      "properties": {
+        "1_module_tree": {
+          "$ref": "#/$defs/tree_node",
+          "description": "Component 1: the module tree; leaves bind {adapter, lm, delta} by name (spec/manifest.md component 1; PIR-009)."
+        },
+        "2_signature": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/predictor_path"},
+          "additionalProperties": {"$ref": "#/$defs/signature"},
+          "description": "Component 2: per-predictor signatures keyed by predictor path (spec/manifest.md component 2). Key-set agreement with 3a/3b/3c and the tree's Predict paths is a LINK concern (PIR-009), not schema-expressible."
+        },
+        "3a_instructions": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/predictor_path"},
+          "additionalProperties": {
+            "type": "string",
+            "description": "The resolved instruction text -- the single canonical home for instructions (spec/manifest.md component 3a; IR-program-spec section b)."
+          },
+          "description": "Component 3a: per-predictor instructions -- instructions live here ONLY (spec/manifest.md component 3a)."
+        },
+        "3b_demos": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/predictor_path"},
+          "additionalProperties": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/demo"},
+            "description": "The predictor's demo list; may be empty."
+          },
+          "description": "Component 3b: per-predictor demos, each carrying input_keys[] (spec/manifest.md component 3b)."
+        },
+        "3c_predictor_config": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/predictor_path"},
+          "additionalProperties": {
+            "type": "object",
+            "description": "Resolved LM call config ({temperature, n, max_tokens, top_p, stop, ...}), spec/manifest.md component 3c; contents loose until the LMConfig vocabulary is ratified."
+          },
+          "description": "Component 3c: per-predictor resolved config -- the state dump_state historically dropped (IR-program-spec section b)."
+        },
+        "4_adapter": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/pool_name"},
+          "additionalProperties": {"$ref": "#/$defs/adapter_entry"},
+          "description": "Component 4: the adapter pool -- named adapter-ir preset entries, by reference to that contract (spec/manifest.md component 4; README.md, the stack)."
+        },
+        "5_forward": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/predictor_path"},
+          "additionalProperties": {"$ref": "#/$defs/forward_stub"},
+          "description": "Component 5: per-module forwards keyed by module path, node-set JSON (spec/manifest.md component 5; spec/node-set.md)."
+        },
+        "6_tools": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/pool_name"},
+          "additionalProperties": {"$ref": "#/$defs/tool_entry"},
+          "description": "Component 6: the tool pool (spec/manifest.md component 6). Empty object when the program has no tools."
+        },
+        "7_interpreter": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/pool_name"},
+          "additionalProperties": {"$ref": "#/$defs/interpreter_entry"},
+          "description": "Component 7: the interpreter pool -- NAMED entries like tools (D-029 ruling 2); interpreter leaves reference an entry by name, default 'main'. Empty object when unused; the examples' null / unnamed-singleton forms are pre-ratification and fail here."
+        },
+        "8_lm": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/pool_name"},
+          "additionalProperties": {"$ref": "#/$defs/lm_entry"},
+          "description": "Component 8: the LM pool -- one object per LM (D-029 ruling 1). The pre-ratification 8a_lm/8b_weights split fails here by construction (those keys are not in this closed component set)."
+        },
+        "9_environment": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/language_tag"},
+          "additionalProperties": {"$ref": "#/$defs/env_block"},
+          "description": "Component 9: per-language env blocks keyed by language tag (PIR-012/D-025). The examples' flat single-language block is pre-ratification; the migrator wraps it under its language key."
+        },
+        "10_credentials": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/credential"},
+          "description": "Component 10: declared credential names, values byte-absent (PIR-005)."
+        },
+        "11_ambient_policy": {
+          "type": "object",
+          "description": "Component 11: the flat ambient-policy block (spec/manifest.md component 11 -- 'annotated IOU in the source spec'); contents loose until ratified."
+        },
+        "12_metric": {
+          "$ref": "#/$defs/evaluation_block",
+          "description": "Component 12: metrics plus devset; DROPPABLE in ship objects, hence the only optional component row (spec/manifest.md component 12)."
+        }
+      },
+      "required": [
+        "1_module_tree",
+        "2_signature",
+        "3a_instructions",
+        "3b_demos",
+        "3c_predictor_config",
+        "4_adapter",
+        "5_forward",
+        "6_tools",
+        "7_interpreter",
+        "8_lm",
+        "9_environment",
+        "10_credentials",
+        "11_ambient_policy"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

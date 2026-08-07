@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from dspy.programir import contract_validate
 from dspy.programir.errors import ProgramIRRefusal
 from dspy.programir.interpreters import validate_interpreter_profile
 from dspy.programir.versions import IMPLEMENTED_VERSIONS, REQUIRED_VERSION_KEYS
@@ -30,6 +31,14 @@ _TOP_LEVEL_KEYS = {"versions", "components", "provenance"}
 
 def validate_manifest(manifest: Any) -> None:
     """Validate the closed manifest envelope and load-bearing component shape."""
+    refusal = contract_validate.manifest_refusal(manifest)
+    if refusal is not None:
+        raise ProgramIRRefusal(
+            refusal["code"],
+            refusal.get("component", "manifest"),
+            refusal.get("detail", {}),
+            refusal.get("message", refusal["code"]),
+        )
     if not isinstance(manifest, dict):
         _manifest_refusal("manifest must be a JSON object", {"type": _json_type(manifest)})
     unknown = sorted(set(manifest) - _TOP_LEVEL_KEYS)
