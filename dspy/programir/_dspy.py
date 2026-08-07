@@ -16,6 +16,7 @@ from dspy.predict.predict import Predict
 from dspy.primitives.module import Module
 from dspy.programir.compile import build_program_ir
 from dspy.programir.forward import LeafRef, compile_forward
+from dspy.programir.interpreters import extract_interpreter
 from dspy.programir.leaves import extract_metric, extract_tool
 from dspy.programir.model import ProgramIR
 from dspy.programir.versions import IMPLEMENTED_VERSIONS
@@ -37,6 +38,7 @@ class _DSPyCompiler:
         self.lms: dict[str, Any] = {}
         self.forwards: dict[str, Any] = {}
         self.tools: dict[str, Any] = {}
+        self.interpreters: dict[str, Any] = {}
         self.sidecars: dict[str, bytes] = {}
         self.credentials: list[dict[str, str]] = []
         self.metric = metric
@@ -45,6 +47,7 @@ class _DSPyCompiler:
         self._lm_names: dict[int, str] = {}
         self._module_owners: dict[int, str] = {}
         self._predictor_owners: dict[int, str] = {}
+        self._interpreter_names: dict[int, str] = {}
         self._default_adapter = ChatAdapter()
 
     def compile(self, program: Module) -> ProgramIR:
@@ -61,7 +64,7 @@ class _DSPyCompiler:
             "4_adapter": self.adapters,
             "5_forward": self.forwards,
             "6_tools": self.tools,
-            "7_interpreter": {},
+            "7_interpreter": self.interpreters,
             "8_lm": self.lms,
             "9_environment": {},
             "10_credentials": self.credentials,
@@ -98,6 +101,7 @@ class _DSPyCompiler:
         children: list[dict[str, Any]] = []
         leaves: dict[str, LeafRef] = {}
         module_tools: list[str] = []
+        uses_interpreter = False
         for child_name, child in module.__dict__.items():
             if not _is_identifier(child_name):
                 continue
@@ -122,6 +126,10 @@ class _DSPyCompiler:
                 for tool_name, tool in child.items():
                     module_tools.append(self.register_tool(tool, name=tool_name))
                 leaves[child_name] = LeafRef("tool")
+            elif _is_interpreter(child):
+                interpreter_name = self.register_interpreter(child, name=child_name)
+                leaves[child_name] = LeafRef("interpreter", interpreter_name)
+                uses_interpreter = True
 
         self.forwards[path] = compile_forward(type(module).forward, leaves)
         class_name = type(module).__name__
@@ -134,6 +142,8 @@ class _DSPyCompiler:
         }
         if module_tools:
             node["tools"] = list(dict.fromkeys(module_tools))
+        if uses_interpreter:
+            node["uses_interpreter"] = True
         return node
 
     def predict_node(self, predictor: Predict, *, path: str, name: str, root: bool = False) -> dict[str, Any]:
@@ -180,6 +190,15 @@ class _DSPyCompiler:
             node["forward_ref"] = "5_forward/self"
             self.forwards["self"] = _predict_forward(input_names)
         return node
+
+    def register_interpreter(self, interpreter: Any, *, name: str) -> str:
+        existing = self._interpreter_names.get(id(interpreter))
+        if existing is not None:
+            return existing
+        pool_name = _allocate_name(_pool_name(name), self.interpreters)
+        self.interpreters[pool_name] = extract_interpreter(interpreter, name=pool_name)
+        self._interpreter_names[id(interpreter)] = pool_name
+        return pool_name
 
     def register_tool(self, tool: Tool | Any, *, name: str) -> str:
         extracted = extract_tool(tool, name=name)
@@ -305,3 +324,9 @@ def _pool_name(identity: str) -> str:
 
 def _is_identifier(value: str) -> bool:
     return value.isidentifier() and value.isascii()
+
+
+def _is_interpreter(value: Any) -> bool:
+    from dspy.primitives.python_interpreter import PythonInterpreter
+
+    return isinstance(value, PythonInterpreter) or callable(getattr(value, "programir_profile", None))

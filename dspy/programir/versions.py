@@ -8,6 +8,15 @@ IMPLEMENTED_VERSIONS = {
     "codecs": "0.1",
     "adapter_ir": "0.1",
     "lm15": "0.1",
+    "interpreter_profile": "1.0",
 }
 
-REQUIRED_VERSION_KEYS = tuple(IMPLEMENTED_VERSIONS)
+REQUIRED_VERSION_KEYS = (
+    "ir_version",
+    "node_set",
+    "roles",
+    "strategies",
+    "codecs",
+    "adapter_ir",
+    "lm15",
+)

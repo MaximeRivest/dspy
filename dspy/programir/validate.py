@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from dspy.programir.errors import ProgramIRRefusal
+from dspy.programir.interpreters import validate_interpreter_profile
 from dspy.programir.versions import IMPLEMENTED_VERSIONS, REQUIRED_VERSION_KEYS
 
 _REQUIRED_COMPONENTS = (
@@ -56,6 +57,18 @@ def validate_manifest(manifest: Any) -> None:
             _manifest_refusal(f"{name} must be an object", {"component": name})
     if not isinstance(components["10_credentials"], list):
         _manifest_refusal("10_credentials must be an array", {"component": "10_credentials"})
+    for name, profile in components["7_interpreter"].items():
+        if isinstance(profile, dict) and isinstance(profile.get("kind"), str):
+            continue  # legacy fused profile
+        if manifest["versions"].get("interpreter_profile") != "1.0":
+            _manifest_refusal(
+                "structural interpreters require versions.interpreter_profile=1.0",
+                {"component": "7_interpreter", "entry": name},
+            )
+        try:
+            validate_interpreter_profile(profile, name=name)
+        except ValueError as error:
+            _manifest_refusal(str(error), {"component": "7_interpreter", "entry": name})
     if "12_metric" in components:
         evaluation = components["12_metric"]
         if not isinstance(evaluation, dict) or set(evaluation) != {"metrics", "devset"}:
