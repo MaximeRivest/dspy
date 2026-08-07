@@ -1,3 +1,6 @@
+import runpy
+from pathlib import Path
+
 import dspy
 from dspy.programir import compile, link, read, write
 
@@ -138,6 +141,18 @@ def test_compile_nested_module_uses_dotted_predictor_paths():
         "kind": "module",
         "ref": "stage",
     }
+
+
+def test_v01_exemplar_compiles_as_authored():
+    namespace = runpy.run_path(Path("roadmap/exemplar-program-v01.py"))
+    program = namespace["TicketAssistant"]()
+    program.set_lm(dspy.LM("openai/model"))
+    program.set_adapter(dspy.JSONAdapter())
+
+    ir = compile(program)
+
+    assert list(ir.manifest["components"]["5_forward"]) == ["policy", "self"]
+    assert ir.manifest["components"]["5_forward"]["self"]["body"][3]["node"] == "If"
 
 
 def test_compile_refuses_shared_predictor_instance():
