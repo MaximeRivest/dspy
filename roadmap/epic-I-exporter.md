@@ -2,8 +2,9 @@
 
 **Status:** v4 IN PROGRESS (2026-08-07) — contract readiness pass complete;
 canonical `ProgramIR`, compile/write/read/link foundations, bare-Predict
-DSPy compilation, and predictor-level `set_adapter` landed. Composite modules
-and the public exporter remain.
+DSPy compilation, predictor-level `set_adapter`, and the v0.1 composite-module
+forward compiler landed. Tool/interpreter extraction and the public exporter
+remain.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -396,10 +397,16 @@ fails the epic, full stop.
   machinery observe the same binding. DoD proven for runtime precedence and
   bare-Predict export; the two-entry pool roundtrip rides I-3's composite
   module compiler.
-- **I-3 — the forward compiler, v0.1 node set.** `inspect.getsource` +
-  `ast.parse` + whitelist; leaf resolution; D-029 interpreter `ref`;
-  refusal text per the boundary section; authors
-  `exemplar-program-v01.py`. DoD: item 7 above.
+- **I-3 — the forward compiler, v0.1 node set — CORE SHIPPED.**
+  `inspect.getsource` + `ast.parse` + the contract's closed encoding;
+  Predict/sub-module leaf resolution; deterministic nested module trees and
+  object-identity pools; D-029 interpreter `ref`; static and dynamic tool-call
+  encodings; construct+source-line refusals with v0.2 teaching hints; authored
+  `exemplar-program-v01.py`. Composite two-adapter/one-shared-LM artifacts pass
+  load/version/link/profile/node-compile/explain through the reference shim.
+  Ex-14/15's tool/interpreter object census and fixture-equality check complete
+  in I-4 when those live objects enter the bridge; the node encodings already
+  pass the reference `node_compile` operation.
 
 **Wave I-β — leaves, environment, conformance.** (Checkpoint: Maxime
 ratifies `dspy.export`/`set_adapter` names and the cross-repo shim
