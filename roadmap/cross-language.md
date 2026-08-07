@@ -263,6 +263,12 @@ corpus become permanent cross-language obligations:
 
 ### 8 · Language-specific (posture 2/3)
 
+- **Authoring surfaces are now drafted** — seven exemplar dialects of one
+  program (`roadmap/exemplar-program*.{py,ts,go}`), conventions collected
+  in `roadmap/frontend-contract.md` (the D-030 draft; FunctAI is the
+  intended first consumer). The flow dialect proves the compile-free
+  builder path: combinator frontends construct the tree directly, no
+  per-language AST work.
 - **TS**: zod/typebox as SignatureCore surface? typed Prediction via
   inference (the reason a native TS framework beats calling Python)? ALS
   caveats in edge runtimes; 2^53 number limits; UTF-16 offsets.
