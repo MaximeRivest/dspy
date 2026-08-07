@@ -133,10 +133,11 @@ is not the ProgramIR reconstruction door.
 scope: deps-comment tools, the ReAct tool pool, nested modules
 (`PolicyCheck`), per-predictor `set_lm`/`set_adapter`, demos with
 `input_keys`, metric + devset, credentials as declared names, the shared
-weight-owning LM (one pool entry, two bindings — phase 2). Out, each named
-where it falls below: `dspy.BashInterpreter` (no such class; its
-component-7 vocabulary is the PROPOSED kind-split, unratified); the
-exemplar's forward *body* (v0.2 constructs — see the boundary);
+weight-owning LM (one pool entry, two bindings — phase 2), and every
+interpreter object that supplies D-033's structural identity profile. Out,
+each named where it falls below: `dspy.BashInterpreter` (no such class; an
+authored Bash interpreter is representable when it supplies the profile);
+the exemplar's forward *body* (v0.2 constructs — see the boundary);
 `BootstrapFinetune`/LoRA-delta plumbing (non-goal); `PythonInterpreter(scope=)`
 (the current dspy class is the Deno sandbox; the scope-declared in-process
 namespace interpreter is ex-15's reference form — the exporter emits the
@@ -229,7 +230,7 @@ Target shapes are the D-029-migrated forms in
 | 4 | effective adapters | `dump_entry()` — canonical `ENTRY_KEYS` shape, own versions block | non-engine adapter (loud, names the adapter) |
 | 5 | `forward` per module | `ast.parse` + v0.1 whitelist → node JSON; leaf `Call`s resolve against the walked tree (`self.x(...)` → predict/module ref; dict/`self.tools` dispatch → the dynamic-tool convention with `name` expr; interpreter attr → interpreter leaf **with `ref`, D-029**) | any non-whitelist node, naming construct + line; unresolvable leaf |
 | 6 | plain-function tools | `{name, parameters, return_schema, source, deps, language: "python", placement}`; source baked to `tools/<name>.py`; `# deps:` comment scan (grammar below); schemas via the `dspy.Tool` machinery | closure/global-reading function (not self-contained); missing hints |
-| 7 | interpreter objects | **named pool** (default `main`), identity profile + placement; **the RATIFIED fused kind string (`"python-inproc-namespace"`) — the proposed kind-split is NOT emitted until ratified** | an interpreter kind outside the ratified vocabulary (e.g. bash) |
+| 7 | interpreter objects | **named pool** (default `main`), D-033 structural identity profile + placement; builtins extracted explicitly, custom objects via `programir_profile()`; stamp `versions.interpreter_profile = "1.0"` | absent/malformed profile, or placement inward of its declared isolation floor |
 | 8 | effective LMs | one entry per LM (D-029): identity + placement; `engine` only on baked entries; `served_aliases` optional, `weights_identity` required; nested `weights` only in phase 2 | phase 1: weight-owning in-process LM (see phase split) |
 | 9 | aggregated deps | per-language env blocks; Python = PEP 723 entry + `uv lock --script` (defect gate below) | lock failure |
 | 10 | api-key-bearing configs | **declared names only** (PIR-005), `credential_ref` in placement blocks | the byte-absence scan hits (below) |
@@ -471,9 +472,9 @@ the dedicated corpus commit and any push.)
   `verify` arrive with Epic F, upgrading the same shim to grade 2.
 - **`set_adapter` beyond the minimal twin.** No context-manager form, no
   per-call override surface changes.
-- **Interpreter kind-split emission / `BashInterpreter`.** Blocked on the
-  PROPOSED manifest.md section; the exporter emits the ratified fused kind
-  and revisits at ratification.
+- **Inventing interpreter implementations.** D-033 makes every interpreter
+  structurally representable, but this epic adds no `BashInterpreter` or new
+  sandbox. Grade-2 execution support remains Epic F.
 
 ## Addendum (2026-08-07) — FunctAI-first consequence
 

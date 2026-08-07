@@ -114,13 +114,16 @@ learned+resolved program; declare the irreducibly-external; never bake secrets.*
 weights when baked (8a/8b stay conceptual rows, never separate manifest
 keys); **interpreters (7) are a named pool** and interpreter leaves carry a
 `ref`; `engine` appears **only on baked entries**; `served_aliases` is
-**optional**. Proposed, awaiting ratification (contract
-`spec/manifest.md`): module tree nodes (1) additionally carry their
+**optional**. Ratified (D-033): interpreter profiles are **open structural
+identity**, not a closed `kind` vocabulary: `language`, exact runtime,
+contract, namespace/result/vars conventions, packages, limits, and isolation
+floor travel as data; placement remains the receiver's. The fused kind is
+legacy-readable only, and structural entries carry
+`versions.interpreter_profile = "1.0"`. Proposed, awaiting ratification
+(contract `spec/manifest.md`): module tree nodes (1) additionally carry their
 **external signature** (making L1/PIR-013 checkable per module and typing
-sub-module leaves); the interpreter `kind` **splits into profile `language`
-+ placement rung** with a closed language vocabulary carrying per-language
-result/vars/scope conventions and isolation floors; authored-code
-**admission becomes structural** (implements the contract), never nominal.
+sub-module leaves); authored-code **admission becomes structural** (implements
+the contract), never nominal.
 
 **Instructions have exactly one home (3a), by design.** dspy's `dump_state`
 nests instructions inside the signature, so a naïve IR would store the same text
@@ -905,16 +908,21 @@ OUTER layer (OS namespaces / WASM), not the default.
 
 **The interpreter's identity is program identity (§e0-binding's third
 instance).** An optimized program's behavior — and therefore its scores — is
-a claim about the interpreter semantics it was tuned against: the Python
-version, the namespace/builtins policy, the packages visible to generated
-code, the resource limits, the result convention. So component 7 bakes that
-**identity profile**, and load verifies the engine satisfies the *profile*,
-not merely the kind — a program tuned against no-builtins CPython 3.11 does
-not silently run against a package-rich sandbox and keep its warranted
-scores. Placement (which rung, which sandbox envelope) remains the receiver's
-binding, because the `execute` contract is rung-invariant; the semantics
-profile travels baked, exactly as `weights_identity` does for the LM. The
-declarable profile is the floor, not the ceiling — two engines matching it
+a claim about the interpreter semantics it was tuned against. Component 7
+therefore bakes an **open structural profile**: `language`, exact
+`runtime {identity, version}`, `contract`, `namespace_policy`,
+`result_convention`, `vars_marshaling`, `packages`, `resource_limits`, and
+`isolation_floor`. Load verifies that profile, never merely a nominal class or
+kind — a program tuned against no-builtins CPython 3.11 does not silently run
+against package-rich Pyodide and keep its warranted scores. Placement (which
+rung, which sandbox envelope) remains the receiver's binding because the
+execute contract is rung-invariant. Grade-1 readers hold any structurally
+valid profile; grade-2 engines satisfy it, rung-walk it, or refuse naming the
+unsatisfied profile. Builtins have explicit extractors; custom interpreter
+objects return the same plain-data shape from `programir_profile()`. The fused
+`python-inproc-namespace` kind is legacy-readable only; newly emitted
+structural profiles carry `versions.interpreter_profile = "1.0"` (D-033).
+The declarable profile is the floor, not the ceiling — two engines matching it
 could still differ in an undocumented exec corner — the same honest limit as
 string-named weight identity vs a checksum.
 
