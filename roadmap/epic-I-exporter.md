@@ -4,8 +4,9 @@
 canonical `ProgramIR`, compile/write/read/link foundations, bare-Predict
 DSPy compilation, predictor-level `set_adapter`, and the v0.1 composite-module
 forward compiler plus authored tool/metric/devset and structural interpreter
-extraction and portable Python environment locking landed. The public
-exporter remains; the dspy grade-1 conformance row is green.
+extraction, portable Python environment locking, and the phase-1 public
+`dspy.export` composition landed; the dspy grade-1 conformance row is green.
+Weights baking and corpus regeneration remain.
 Letter I because D–H are claimed (`03-campaign.md`); the
 proposed slot is **between D and E** (dependencies: Epic D only), which
 amends the D-016 ratified order — that amendment is this doc's first
@@ -320,22 +321,23 @@ fails the epic, full stop.
 
 ## Definition of done (mechanical)
 
-1. `dspy.export(program, path, metric=None, devset=None)` public
-   (sync-only — export is not a hot path; **flagged public-surface
+1. **SHIPPED:** `dspy.export(program, path, metric=None, devset=None)` is
+   public (sync-only — export is not a hot path; **flagged public-surface
    addition**, ratified with `set_adapter` at the I-β checkpoint). `path`
    names the artifact **directory** (the contract ships directories; the
-   exemplar's `"ticket_assistant.ir"` is a directory name). Its body is
-   mechanically limited to `compile + write`; a test monkeypatches those
-   operations and proves delegation. The internal `compile`, `write`, and
-   `read` operations are independently testable; no public wrapper mints a
-   manifest itself.
+   exemplar's `"ticket_assistant.ir"` is a directory name). Its body composes
+   `compile + write`; a test monkeypatches those operations and proves
+   delegation. The wrapper additionally performs the live credential-value
+   census required by the writer's positive byte scan; component traversal
+   and manifest construction remain exclusively `compile`'s job. The internal
+   operations are independently testable, no wrapper mints a manifest, and
+   `dspy.export` returns the finalized ProgramIR produced by `write`.
 2. The emitted artifact is the self-contained directory form:
    `manifest.json`, `tools/`, `metric/`, `lm/`, `weights/` (phase 2),
    `env_entry.py` + lock. Deterministic per the rule above.
 3. Every emitted artifact passes `load_manifest` + `check_versions` +
-   `link` + `profile_check` **GREEN through all three shims** at the
-   pinned contract SHA:
-   `cd ~/Projects/programir-contract && python3 harness/check.py --shim reference|go|ts`.
+   `link` + `profile_check` **GREEN through all four shims** at the pinned
+   contract SHA: reference, Go, TypeScript, and dspy.
 4. The nine provisional fixtures (`ap-01..03, 09, 10, 12, 13, 14, 15`)
    are replaced by exporter-emitted equivalents in a **dedicated
    contract-repo corpus commit — zero spec or source changes in that
