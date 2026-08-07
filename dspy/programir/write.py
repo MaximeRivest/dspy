@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import subprocess
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
@@ -18,8 +19,8 @@ def write(
     path: str | os.PathLike[str],
     *,
     credential_values: Mapping[str, str] | None = None,
-) -> None:
-    """Write one ProgramIR artifact directory.
+) -> ProgramIR:
+    """Write one ProgramIR artifact directory and return its finalized value.
 
     The destination must not already exist. The writer stages every file,
     scans the finished bytes for credential values, and only then publishes
@@ -31,6 +32,9 @@ def write(
         credential_values: Credential names and their live values. Values are
             scanned but never written; a match refuses and names only the
             credential and file.
+
+    Returns:
+        The finalized ProgramIR, including lockfiles generated during writing.
     """
     if not isinstance(ir, ProgramIR):
         raise TypeError(f"programir.write() takes a ProgramIR, got {type(ir).__name__}")
@@ -43,14 +47,25 @@ def write(
     with tempfile.TemporaryDirectory(prefix=f".{destination.name}.", dir=destination.parent) as temporary:
         root = Path(temporary) / "artifact"
         root.mkdir()
-        (root / "manifest.json").write_bytes(canonical_json_bytes(ir.to_manifest()))
+        manifest = ir.to_manifest()
+        (root / "manifest.json").write_bytes(canonical_json_bytes(manifest))
         for relative, content in ir.sidecars.items():
             target = root / _safe_relative_path(relative)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(bytes(content))
 
+        _materialize_environment_locks(root, manifest)
         _scan_credentials(root, credential_values or {})
+        finalized = ProgramIR(
+            manifest=manifest,
+            sidecars={
+                file.relative_to(root).as_posix(): file.read_bytes()
+                for file in sorted(root.rglob("*"))
+                if file.is_file() and file != root / "manifest.json"
+            },
+        )
         os.replace(root, destination)
+        return finalized
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -94,6 +109,36 @@ def _safe_relative_path(value: str) -> Path:
     if path.is_absolute() or not path.parts or any(part in ("", ".", "..") for part in path.parts):
         raise ValueError(f"ProgramIR sidecar path must be a safe relative POSIX path, got {value!r}")
     return Path(*path.parts)
+
+
+def _materialize_environment_locks(root: Path, manifest: Mapping[str, Any]) -> None:
+    environments = manifest.get("components", {}).get("9_environment", {})
+    python = environments.get("python") if isinstance(environments, Mapping) else None
+    if not isinstance(python, Mapping):
+        return
+    entry_name = python.get("pep723_entry")
+    lock_name = python.get("lock")
+    if not isinstance(entry_name, str) or not isinstance(lock_name, str):
+        raise ValueError("ProgramIR Python environment must declare pep723_entry and lock paths")
+    entry = root / _safe_relative_path(entry_name)
+    lock = root / _safe_relative_path(lock_name)
+    if not entry.is_file():
+        raise ValueError(f"ProgramIR Python environment entry is missing: {entry_name!r}")
+    if lock.is_file():
+        return
+    try:
+        result = subprocess.run(
+            ["uv", "lock", "--script", str(entry)],
+            cwd=root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("ProgramIR could not run `uv lock --script` for the Python environment") from error
+    if result.returncode != 0 or not lock.is_file():
+        raise ValueError("ProgramIR `uv lock --script` failed to produce the declared lockfile")
 
 
 def _scan_credentials(root: Path, credential_values: Mapping[str, str]) -> None:

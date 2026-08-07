@@ -15,6 +15,7 @@ from dspy.dsp.utils.settings import settings
 from dspy.predict.predict import Predict
 from dspy.primitives.module import Module
 from dspy.programir.compile import build_program_ir
+from dspy.programir.environment import python_environment
 from dspy.programir.forward import LeafRef, compile_forward
 from dspy.programir.interpreters import extract_interpreter
 from dspy.programir.leaves import extract_metric, extract_tool
@@ -55,6 +56,27 @@ class _DSPyCompiler:
             tree = self.predict_node(program, path="self", name="self", root=True)
         else:
             tree = self.module_node(program, path="self", name="self")
+        evaluation = None
+        metrics = {}
+        if self.metric is not None:
+            metric_name = self.metric.__name__ if inspect.isfunction(self.metric) else type(self.metric).__name__
+            extracted = extract_metric(self.metric, name=metric_name)
+            metrics[metric_name] = extracted.entry
+            self.sidecars[extracted.source_path] = extracted.source
+        if self.metric is not None or self.devset is not None:
+            evaluation = {
+                "metrics": metrics,
+                "devset": [_devset_record(example) for example in (self.devset or [])],
+            }
+
+        environment = {}
+        authored_python = [*self.tools.values(), *metrics.values()]
+        if authored_python:
+            dependencies = [dependency for entry in authored_python for dependency in entry.get("deps", [])]
+            python_block, entry_source = python_environment(dependencies)
+            environment["python"] = python_block
+            self.sidecars[python_block["pep723_entry"]] = entry_source
+
         components = {
             "1_module_tree": tree,
             "2_signature": self.signatures,
@@ -66,7 +88,7 @@ class _DSPyCompiler:
             "6_tools": self.tools,
             "7_interpreter": self.interpreters,
             "8_lm": self.lms,
-            "9_environment": {},
+            "9_environment": environment,
             "10_credentials": self.credentials,
             "11_ambient_policy": {
                 "max_errors": settings.max_errors,
@@ -74,17 +96,8 @@ class _DSPyCompiler:
                 "allow_tool_async_sync_conversion": settings.allow_tool_async_sync_conversion,
             },
         }
-        if self.metric is not None or self.devset is not None:
-            metrics = {}
-            if self.metric is not None:
-                metric_name = self.metric.__name__ if inspect.isfunction(self.metric) else type(self.metric).__name__
-                extracted = extract_metric(self.metric, name=metric_name)
-                metrics[metric_name] = extracted.entry
-                self.sidecars[extracted.source_path] = extracted.source
-            components["12_metric"] = {
-                "metrics": metrics,
-                "devset": [_devset_record(example) for example in (self.devset or [])],
-            }
+        if evaluation is not None:
+            components["12_metric"] = evaluation
         return build_program_ir(
             versions=dict(IMPLEMENTED_VERSIONS),
             components=components,

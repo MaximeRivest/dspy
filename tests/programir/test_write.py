@@ -1,3 +1,5 @@
+import importlib
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -37,6 +39,58 @@ def test_write_scans_every_emitted_file_for_credentials(tmp_path):
 
     with pytest.raises(ValueError, match="API_KEY.*tools/lookup.py"):
         write(ir, destination, credential_values={"API_KEY": "secret-value"})
+
+    assert not destination.exists()
+
+
+def test_write_materializes_declared_python_lock(tmp_path, monkeypatch):
+    destination = tmp_path / "program.ir"
+    manifest = {
+        "versions": {},
+        "components": {
+            "9_environment": {
+                "python": {
+                    "pep723_entry": "env_entry.py",
+                    "lock": "env_entry.py.lock",
+                }
+            }
+        },
+    }
+    ir = ProgramIR(manifest=manifest, sidecars={"env_entry.py": b"# /// script\n# ///\n"})
+
+    def fake_uv_lock(command, **kwargs):
+        assert command[:3] == ["uv", "lock", "--script"]
+        Path(f"{command[-1]}.lock").write_bytes(b"revision = 1\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    write_module = importlib.import_module("dspy.programir.write")
+    monkeypatch.setattr(write_module.subprocess, "run", fake_uv_lock)
+
+    finalized = write(ir, destination)
+
+    assert finalized.sidecars["env_entry.py.lock"] == b"revision = 1\n"
+    assert (destination / "env_entry.py.lock").read_bytes() == b"revision = 1\n"
+
+
+def test_write_refuses_lock_failure_atomically(tmp_path, monkeypatch):
+    destination = tmp_path / "program.ir"
+    manifest = {
+        "components": {
+            "9_environment": {
+                "python": {"pep723_entry": "env_entry.py", "lock": "env_entry.py.lock"}
+            }
+        }
+    }
+    ir = ProgramIR(manifest=manifest, sidecars={"env_entry.py": b"# /// script\n# ///\n"})
+    write_module = importlib.import_module("dspy.programir.write")
+    monkeypatch.setattr(
+        write_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1),
+    )
+
+    with pytest.raises(ValueError, match="failed to produce"):
+        write(ir, destination)
 
     assert not destination.exists()
 

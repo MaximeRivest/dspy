@@ -1,3 +1,7 @@
+import importlib
+import subprocess
+from pathlib import Path
+
 import pytest
 
 import dspy
@@ -66,7 +70,7 @@ def test_extract_tool_refuses_global_reads():
         extract_tool(global_reader, name="bad")
 
 
-def test_compile_static_tool_and_metric_sidecars(tmp_path):
+def test_compile_static_tool_and_metric_sidecars(tmp_path, monkeypatch):
     program = ToolProgram()
     program.set_lm(dspy.LM("openai/model"))
     devset = [dspy.Example(query="DSPy", answer="yes").with_inputs("query")]
@@ -84,11 +88,23 @@ def test_compile_static_tool_and_metric_sidecars(tmp_path):
         {"query": "DSPy", "answer": "yes", "input_keys": ["query"]}
     ]
     assert list(components["12_metric"]["metrics"]) == ["quality"]
-    assert set(ir.sidecars) == {"tools/lookup.py", "metric/quality.py"}
+    assert set(ir.sidecars) == {"tools/lookup.py", "metric/quality.py", "env_entry.py"}
+    assert components["9_environment"]["python"]["dependencies"] == [
+        "beautifulsoup4",
+        "dspy==3.3.0",
+        "httpx",
+    ]
 
+    def fake_uv_lock(command, **kwargs):
+        Path(f"{command[-1]}.lock").write_text("version = 1\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    write_module = importlib.import_module("dspy.programir.write")
+    monkeypatch.setattr(write_module.subprocess, "run", fake_uv_lock)
     destination = tmp_path / "tools.ir"
-    write(ir, destination)
-    assert read(destination) == ir
+    finalized = write(ir, destination)
+    assert read(destination) == finalized
+    assert finalized.sidecars["env_entry.py.lock"] == b"version = 1\n"
 
 
 def test_compile_dynamic_tool_table_uses_dispatch_keys_as_identity():
