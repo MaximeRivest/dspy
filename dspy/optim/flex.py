@@ -153,7 +153,7 @@ key, or a source that fails admission is refused, and the refusal is shown to yo
 Propose an empty array to change nothing."""
 
 
-def _reflection_signature(extra_imports: frozenset[str] | None = None):
+def _reflection_signature(extra_imports: frozenset[str] | None = None, allowed_deps: frozenset[str] | None = None):
     fields = {
         "program_report": (
             str,
@@ -163,6 +163,13 @@ def _reflection_signature(extra_imports: frozenset[str] | None = None):
     }
     allowlist = ADMITTED_IMPORTS | (extra_imports or frozenset())
     instructions = _REFLECTION_INSTRUCTIONS.replace("ALLOWLIST", ", ".join(sorted(allowlist)))
+    if allowed_deps:
+        instructions += (
+            " Generated code may declare `# deps: ...` ONLY for these packages: "
+            + ", ".join(sorted(allowed_deps))
+            + ". A dep's IMPORT name must ALSO be in the import allowlist above "
+            "(e.g. beautifulsoup4 imports as bs4); otherwise the import refuses."
+        )
     return make_signature(fields, instructions, signature_name="FlexReflection")
 
 
@@ -206,6 +213,18 @@ class FlexIR(Optimizer):
             module-level `ADMITTED_IMPORTS` is never mutated). Widening
             the allowlist widens what generated code can do; the
             denylisted builtins and dunder walks stay denied regardless.
+        allowed_deps: Package names (as they appear on `# deps:` lines,
+            e.g. "beautifulsoup4") that optimizer-authored code may
+            declare as third-party dependencies. The default (None) keeps
+            today's law: any `# deps:` refuses. Admitted deps ride the
+            pool entry's `deps[]` into the artifact's environment block
+            (PEP 723 union) with no extra plumbing. Two deliberate-act
+            notes: (1) a dep typically implies IMPURE code, so pairing
+            this with `code_trust` and `extra_imports` is the user's own
+            choice, made knowingly; (2) a dep name does NOT admit its
+            import name — beautifulsoup4 imports as bs4, and the import
+            allowlist stays governed by `extra_imports` alone, so grant
+            the IMPORT name there as well.
 
     Attributes:
         trajectory: After `compile`, one record per round (plus the
@@ -233,6 +252,7 @@ class FlexIR(Optimizer):
         eps: float = 1e-9,
         code_trust: str = "isolated",
         extra_imports: frozenset[str] | None = None,
+        allowed_deps: frozenset[str] | None = None,
     ):
         if isinstance(iterations, bool) or not isinstance(iterations, int) or iterations < 1:
             raise ValueError(f"FlexIR iterations must be an int >= 1, got {iterations!r}")
@@ -242,6 +262,10 @@ class FlexIR(Optimizer):
             isinstance(extra_imports, str) or not all(isinstance(name, str) for name in extra_imports)
         ):
             raise ValueError(f"FlexIR extra_imports must be an iterable of module-name strings, got {extra_imports!r}")
+        if allowed_deps is not None and (
+            isinstance(allowed_deps, str) or not all(isinstance(name, str) for name in allowed_deps)
+        ):
+            raise ValueError(f"FlexIR allowed_deps must be an iterable of package-name strings, got {allowed_deps!r}")
         self.metric = metric
         self.iterations = iterations
         self.reward = reward
@@ -249,7 +273,8 @@ class FlexIR(Optimizer):
         self.eps = eps
         self.code_trust = code_trust
         self.extra_imports = frozenset(extra_imports) if extra_imports is not None else None
-        self.reflect = Predict(_reflection_signature(self.extra_imports), lm=reflection_lm)
+        self.allowed_deps = frozenset(allowed_deps) if allowed_deps is not None else None
+        self.reflect = Predict(_reflection_signature(self.extra_imports, self.allowed_deps), lm=reflection_lm)
         self.trajectory: list[dict[str, Any]] = []
 
     def compile(self, program: Module, *, trainset: Any, checkpoint_dir: Any = None) -> Module:
@@ -661,6 +686,7 @@ class FlexIR(Optimizer):
                 partial=partial,
                 extra_imports=self.extra_imports,
                 code_trust=self.code_trust,
+                allowed_deps=self.allowed_deps,
             )
         except ValueError as error:
             return f"refused {tag}: python_source rejected by admission — {error}"
@@ -841,6 +867,7 @@ class FlexIR(Optimizer):
                 partial=False,
                 extra_imports=self.extra_imports,
                 code_trust=self.code_trust,
+                allowed_deps=self.allowed_deps,
             )
         except ValueError as error:
             return f"refused {tag}: python_source rejected by admission — {error}"

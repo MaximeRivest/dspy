@@ -731,3 +731,98 @@ class TestHoldoutGateOnRewrites:
         # Unwound: the predict stands, no tool shipped.
         assert program.to_manifest()["components"]["6_tools"] == {}
         assert program(text="elk").tag == "ELK"
+
+
+# ---------------------------------------------------------------------------
+# (10) allowed_deps — user-gated third-party dependencies on authored leaves
+# ---------------------------------------------------------------------------
+
+
+DEP_TOOL = 'def tag_code(text: str) -> dict:\n    # deps: beautifulsoup4\n    return {"tag": text.upper()}\n'
+
+DEP_OPS = [
+    {"op": "add_tool", "path": "self", "name": "tag_code", "python_source": DEP_TOOL},
+    {"op": "rewrite_forward", "path": "self", "python_source": REWIRE_TO_TOOL},
+    {"op": "delete_dead_leaf", "path": "tagger"},
+]
+
+
+class TestAllowedDeps:
+    def test_default_refuses_any_dep_verbatim(self):
+        # The default pins today's law exactly: no deps, with the same
+        # teaching message as before allowed_deps existed.
+        program = Tagger()
+        optimizer = run_one(program, DEP_OPS, holdout=tag_devset("owl"))
+        refusal = optimizer.trajectory[1]["refusals"][0]
+        assert "declares `# deps: beautifulsoup4`" in refusal
+        assert "optimizer-authored code carries no third-party dependencies" in refusal
+        assert "use the stdlib allowlist only" in refusal
+        assert program.to_manifest()["components"]["6_tools"] == {}
+
+    def test_allowed_dep_admits_and_rides_the_pool_entry_and_environment(self):
+        program = Tagger()
+        optimizer = run_one(
+            program,
+            DEP_OPS,
+            devset=tag_devset("cat", "dog"),
+            holdout=tag_devset("owl"),
+            allowed_deps=frozenset({"beautifulsoup4"}),
+        )
+        entry = optimizer.trajectory[1]
+        assert entry["refusals"] == []
+        assert entry["accepted"] is True
+        manifest = program.to_manifest()
+        # The dep lands in the pool entry exactly as parse_deps produces it...
+        assert manifest["components"]["6_tools"]["tag_code"]["deps"] == ["beautifulsoup4"]
+        # ...and the export env-union (PEP 723) picks it up with zero new
+        # plumbing.
+        assert "beautifulsoup4" in manifest["components"]["9_environment"]["python"]["dependencies"]
+
+    def test_disallowed_dep_refuses_naming_the_allowed_set(self):
+        program = Tagger()
+        optimizer = run_one(
+            program,
+            DEP_OPS,
+            holdout=tag_devset("owl"),
+            allowed_deps=frozenset({"numpy"}),
+        )
+        refusal = optimizer.trajectory[1]["refusals"][0]
+        assert "['beautifulsoup4']" in refusal
+        assert "outside the allowed set ['numpy']" in refusal
+        assert "allowed_deps" in refusal
+
+    def test_dep_name_never_admits_the_import_name(self):
+        # beautifulsoup4 imports as bs4: granting the DEP must not admit
+        # the IMPORT. The refusal teaches the extra_imports pairing.
+        program = Tagger()
+        source = (
+            "def tag_code(text: str) -> dict:\n"
+            "    # deps: beautifulsoup4\n"
+            "    import bs4\n"
+            '    return {"tag": str(bs4) + text}\n'
+        )
+        ops = [{"op": "add_tool", "path": "self", "name": "tag_code", "python_source": source}]
+        optimizer = run_one(program, ops, holdout=tag_devset("owl"), allowed_deps=frozenset({"beautifulsoup4"}))
+        refusal = optimizer.trajectory[1]["refusals"][0]
+        assert "['bs4']" in refusal
+        assert "outside the optimizer allowlist" in refusal
+        assert "extra_imports" in refusal
+        assert "does NOT admit its import name" in refusal
+
+    def test_bad_allowed_deps_refuses_at_construction(self):
+        with pytest.raises(ValueError, match="allowed_deps"):
+            optim.FlexIR(dspy.DummyLM([]), exact_tag, allowed_deps="beautifulsoup4")
+
+    def test_the_reflection_prompt_spells_the_pairing_rule(self):
+        optimizer = optim.FlexIR(
+            dspy.DummyLM([]),
+            exact_tag,
+            allowed_deps=frozenset({"beautifulsoup4"}),
+            extra_imports=frozenset({"bs4"}),
+        )
+        instructions = optimizer.reflect.signature.instructions
+        assert "ONLY for these packages: beautifulsoup4" in instructions
+        assert "IMPORT name must ALSO be in the import allowlist" in instructions
+        # A default instance says nothing about deps at all.
+        plain = optim.FlexIR(dspy.DummyLM([]), exact_tag)
+        assert "# deps:" not in plain.reflect.signature.instructions

@@ -150,6 +150,7 @@ def admit_tool_source(
     partial: bool,
     extra_imports: frozenset[str] | None = None,
     code_trust: str = "isolated",
+    allowed_deps: frozenset[str] | None = None,
 ) -> AdmittedCode:
     """Admit optimizer-authored source as a tool leaf, or refuse loudly.
 
@@ -182,6 +183,14 @@ def admit_tool_source(
             ambient authority; the caller makes that choice for their own
             loop. `authored_by: "optimizer"` survives in the entry either
             way, so a receiver can audit or re-place the leaf.
+        allowed_deps: Package names a `# deps:` line may declare. The
+            default (None) keeps the hard rule: any dep refuses. A dep
+            outside the set refuses naming the allowed set. Admitted deps
+            flow into the pool entry's `deps[]` (via `parse_deps`, as for
+            any authored leaf), so the artifact's environment union picks
+            them up. A dep name does NOT admit its IMPORT name — the
+            import allowlist is governed by `extra_imports` alone
+            (beautifulsoup4 imports as bs4; grant "bs4" there too).
 
     Returns:
         An `AdmittedCode` (leaf entry + sidecar + live callable).
@@ -189,8 +198,9 @@ def admit_tool_source(
     Raises:
         ValueError: On any admission failure — non-parseable source, more
             than one def, a decorator, a closure or global read, a
-            disallowed import, a non-empty `# deps:`, or an io-contract
-            mismatch against the signature. The message teaches the fix.
+            disallowed import, a `# deps:` package outside `allowed_deps`
+            (or any dep when it is None), or an io-contract mismatch
+            against the signature. The message teaches the fix.
     """
     if not isinstance(python_source, str) or not python_source.strip():
         raise ValueError(f"tool {name!r}: python_source must be a non-empty string of one function definition")
@@ -234,14 +244,24 @@ def admit_tool_source(
     # allowlist walk alone cannot catch them and `_check_self_contained`
     # admits them (they live in `dir(builtins)`). This is the only layer
     # that closes those builtin-mediated escapes.
-    _refuse_disallowed_imports(tree, subject=subject, extra_imports=extra_imports)
-    _refuse_builtin_escapes(definition, subject=subject)
+    # Deps are validated FIRST so the import walk can teach the dep/import
+    # pairing rule when the source both declares deps and imports outside
+    # the allowlist (a dep name never admits its import name).
     deps = parse_deps(python_source)
-    if deps:
+    granted = allowed_deps or frozenset()
+    if deps and not granted:
         raise ValueError(
             f"ProgramIR {subject} declares `# deps: {', '.join(deps)}` — optimizer-authored code carries no "
             "third-party dependencies; use the stdlib allowlist only"
         )
+    disallowed_deps = sorted(set(deps) - granted)
+    if disallowed_deps:
+        raise ValueError(
+            f"ProgramIR {subject} declares dep(s) {disallowed_deps} outside the allowed set "
+            f"{sorted(granted)}; only the packages the user granted via allowed_deps may ride `# deps:`"
+        )
+    _refuse_disallowed_imports(tree, subject=subject, extra_imports=extra_imports, declares_deps=bool(deps))
+    _refuse_builtin_escapes(definition, subject=subject)
 
     # Step 4: the io-contract from the replaced signature.
     _check_io_contract(definition, signature, subject=subject, partial=partial)
@@ -279,12 +299,18 @@ class _SourceOnly:
         self.__name__ = name
 
 
-def _refuse_disallowed_imports(tree: ast.Module, *, subject: str, extra_imports: frozenset[str] | None = None) -> None:
+def _refuse_disallowed_imports(
+    tree: ast.Module, *, subject: str, extra_imports: frozenset[str] | None = None, declares_deps: bool = False
+) -> None:
     """Refuse any import outside the pure-stdlib allowlist (risk 2).
 
     `extra_imports` widens the allowlist for THIS call only — a per-
     optimizer-instance grant the user made explicitly. The module-level
-    `ADMITTED_IMPORTS` frozenset is never mutated.
+    `ADMITTED_IMPORTS` frozenset is never mutated. An admitted `# deps:`
+    package does NOT widen this list (`declares_deps` only sharpens the
+    teaching message): a dep name and its import name differ
+    (beautifulsoup4 imports as bs4), so the import name must be granted
+    via extra_imports in its own right.
     """
     allowed = ADMITTED_IMPORTS | (extra_imports or frozenset())
     for node in ast.walk(tree):
@@ -296,10 +322,16 @@ def _refuse_disallowed_imports(tree: ast.Module, *, subject: str, extra_imports:
             continue
         disallowed = sorted({module for module in names if module not in allowed})
         if disallowed:
+            pairing = (
+                "; a declared `# deps:` package does NOT admit its import name — grant the IMPORT name via "
+                "FlexIR(extra_imports=...) as well (beautifulsoup4 imports as bs4)"
+                if declares_deps
+                else ""
+            )
             raise ValueError(
                 f"ProgramIR {subject} imports {disallowed}, which is outside the optimizer allowlist "
                 f"{sorted(allowed)}; network/process/reflection modules refuse (a code leaf may not "
-                "hide an LM call or a side effect)"
+                f"hide an LM call or a side effect){pairing}"
             )
 
 
