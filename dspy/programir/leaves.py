@@ -30,13 +30,15 @@ class AuthoredLeaf:
 
 def extract_tool(value: Tool | Callable[..., Any], *, name: str) -> AuthoredLeaf:
     """Extract one self-contained Python function as a tool entry."""
-    tool = value if isinstance(value, Tool) and value.name == name else Tool(value.func if isinstance(value, Tool) else value, name=name)
+    tool = (
+        value
+        if isinstance(value, Tool) and value.name == name
+        else Tool(value.func if isinstance(value, Tool) else value, name=name)
+    )
     function = tool.func
     signature = inspect.signature(function)
     missing = [
-        parameter.name
-        for parameter in signature.parameters.values()
-        if parameter.annotation is inspect.Parameter.empty
+        parameter.name for parameter in signature.parameters.values() if parameter.annotation is inspect.Parameter.empty
     ]
     if missing:
         raise ValueError(f"ProgramIR tool {name!r} has parameters without type hints: {missing}")
@@ -55,6 +57,14 @@ def extract_tool(value: Tool | Callable[..., Any], *, name: str) -> AuthoredLeaf
         "language": "python",
         "placement": _in_process_placement("call(kwargs)->result"),
     }
+    # PIR-014: machine-written code carries its provenance into the
+    # artifact. A function tagged `_dspy_authored_by` (FlexIR stamps
+    # "optimizer" on generated code leaves) surfaces it here so the
+    # provenance survives every recompile — a receiver can audit or
+    # re-place the leaf before trusting it.
+    authored_by = getattr(function, "_dspy_authored_by", None)
+    if authored_by is not None:
+        entry["authored_by"] = authored_by
     return AuthoredLeaf(name=name, entry=entry, source_path=path, source=source.encode("utf-8"))
 
 
@@ -137,11 +147,7 @@ def _check_self_contained(function: Callable[..., Any], source: str, *, subject:
         elif isinstance(item, (ast.Import, ast.ImportFrom)):
             for alias in item.names:
                 local.add(alias.asname or alias.name.split(".")[0])
-    loaded = {
-        item.id
-        for item in ast.walk(node)
-        if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load)
-    }
+    loaded = {item.id for item in ast.walk(node) if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load)}
     allowed = local | set(dir(builtins))
     global_reads = sorted(loaded - allowed)
     if global_reads:
