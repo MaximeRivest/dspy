@@ -1,0 +1,47 @@
+{
+  "name": "chat",
+  "adapter_ir_version": "0.3.0-draft",
+  "versions": {
+    "roles": "1.0.0",
+    "strategies": "1.0.0",
+    "codecs": "1.0.0",
+    "template_language": "1.1.0"
+  },
+  "template": [
+    {
+      "role": "system",
+      "content": "Your input fields are:\n{% for f in inputs strip %}\n{f.i}. `{f.name}` ({f.type}):{f.desc_suffix}\n{% endfor %}\nYour output fields are:\n{% for f in outputs strip %}\n{f.i}. `{f.name}` ({f.type}):{f.desc_suffix}\n{% endfor %}\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n{% for f in inputs separator='\\n\\n' strip %}\n[[ ## {f.name} ## ]]\n{{{f.name}}}\n{% endfor %}\n\n{% for f in outputs separator='\\n\\n' strip %}\n[[ ## {f.name} ## ]]\n{f.typed_placeholder}\n{% endfor %}\n\n[[ ## completed ## ]]\n{fragments('system')}\nIn adhering to this structure, your objective is: {instruction(style='indented')}"
+    },
+    {
+      "role": "demos",
+      "user": "{% for f in inputs separator='\\n\\n' %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}",
+      "assistant": "{% for f in outputs separator='\\n\\n' strip %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}\n\n[[ ## completed ## ]]\n",
+      "preamble": "This is an example of the task, though some input or output fields are not supplied."
+    },
+    {
+      "role": "history",
+      "user": "{% for f in inputs separator='\\n\\n' %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}",
+      "assistant": "{% for f in outputs separator='\\n\\n' strip %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}\n\n[[ ## completed ## ]]\n"
+    },
+    {
+      "role": "user",
+      "content": "{% for f in inputs separator='\\n\\n' %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}\n\n{fragments('user')}\nRespond with the corresponding output fields, starting with the field {% for f in outputs separator=', then ' %}`[[ ## {f.name} ## ]]`{f.chat_type_hint}{% endfor %}, and then ending with the marker for `[[ ## completed ## ]]`."
+    }
+  ],
+  "parser": {
+    "kind": "lens",
+    "of": "template"
+  },
+  "codecs": {
+    "input": "text_pythonish",
+    "output": "text_pythonish"
+  },
+  "strategies": {
+    "reasoning": "auto",
+    "citations": "auto",
+    "tools": "auto",
+    "media": "auto",
+    "history": "directive_turns"
+  },
+  "config": {}
+}

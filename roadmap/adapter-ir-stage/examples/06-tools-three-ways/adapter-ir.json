@@ -1,0 +1,206 @@
+[
+  {
+    "name": "chat_tools_native_fc",
+    "adapter_ir_version": "0.3.0-draft",
+    "versions": {
+      "roles": "1.0.0",
+      "strategies": "1.1.0-draft",
+      "codecs": "1.0.0",
+      "template_language": "1.1.0",
+      "lm_capabilities": "0.1.0"
+    },
+    "template": [
+      {
+        "role": "system",
+        "content": "Respond using a [[ ## name ## ]] marker line before each output field, then end with [[ ## completed ## ]].\n{fragments('system')}\n{instruction}"
+      },
+      {
+        "role": "user",
+        "content": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n{fragments('user')}"
+      }
+    ],
+    "parser": {
+      "kind": "lens",
+      "of": "template"
+    },
+    "codecs": {
+      "input": "text_pythonish",
+      "output": "text_pythonish"
+    },
+    "strategies": {
+      "reasoning": "auto",
+      "citations": "auto",
+      "tools": {
+        "kind": "rule",
+        "predicate": {"capability": "native_function_calling"},
+        "hides": ["tools", "tool_calls"],
+        "fragments": [],
+        "engine_controls": {
+          "request_patch": {
+            "tools": {"$from": "field:tools"},
+            "tool_choice": "auto"
+          }
+        },
+        "routings": [
+          {"channel": "tool_calls", "field": "tool_calls", "coerce": "ToolCalls"}
+        ]
+      },
+      "media": "auto",
+      "history": "directive_turns"
+    },
+    "config": {},
+    "requires": {
+      "lm_capabilities": ["native_function_calling"]
+    }
+  },
+  {
+    "name": "chat_tools_cli_text",
+    "adapter_ir_version": "0.3.0-draft",
+    "versions": {
+      "roles": "1.0.0",
+      "strategies": "1.1.0-draft",
+      "codecs": "1.0.0",
+      "template_language": "1.1.0",
+      "lm_capabilities": "0.1.0",
+      "parse_combinators": "0.1.0"
+    },
+    "template": [
+      {
+        "role": "system",
+        "content": "Respond using a [[ ## name ## ]] marker line before each output field, then end with [[ ## completed ## ]].\n{fragments('system')}\n{instruction}"
+      },
+      {
+        "role": "user",
+        "content": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n{fragments('user')}"
+      }
+    ],
+    "parser": {
+      "kind": "lens",
+      "of": "template"
+    },
+    "codecs": {
+      "input": "text_pythonish",
+      "output": "text_pythonish"
+    },
+    "strategies": {
+      "reasoning": "auto",
+      "citations": "auto",
+      "tools": {
+        "kind": "rule",
+        "predicate": {"capability": "instruct"},
+        "hides": ["tool_calls"],
+        "fragments": [
+          {
+            "target": "user",
+            "content": "To call a tool, write a line: !call <tool_name> <json arguments>. Available tools:\n{field('tools')}"
+          }
+        ],
+        "engine_controls": {},
+        "routings": [
+          {
+            "text": {
+              "kind": "pipeline",
+              "steps": [
+                {
+                  "op": "regex",
+                  "dialect": "re2",
+                  "pattern": "(?m)^!call (?P<name>[a-zA-Z0-9_]+) (?P<args>\\{.*\\})$",
+                  "mode": "findall"
+                },
+                {
+                  "op": "tool_calls",
+                  "name_group": "name",
+                  "args_group": "args",
+                  "args": "json"
+                }
+              ]
+            },
+            "field": "tool_calls",
+            "consume": true
+          }
+        ]
+      },
+      "media": "auto",
+      "history": "directive_turns"
+    },
+    "config": {},
+    "requires": {
+      "lm_capabilities": ["instruct"]
+    }
+  },
+  {
+    "name": "chat_tools_xml_blocks",
+    "adapter_ir_version": "0.3.0-draft",
+    "versions": {
+      "roles": "1.0.0",
+      "strategies": "1.1.0-draft",
+      "codecs": "1.0.0",
+      "template_language": "1.1.0",
+      "lm_capabilities": "0.1.0",
+      "parse_combinators": "0.1.0"
+    },
+    "template": [
+      {
+        "role": "system",
+        "content": "Respond using a [[ ## name ## ]] marker line before each output field, then end with [[ ## completed ## ]].\n{fragments('system')}\n{instruction}"
+      },
+      {
+        "role": "user",
+        "content": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n{fragments('user')}"
+      }
+    ],
+    "parser": {
+      "kind": "lens",
+      "of": "template"
+    },
+    "codecs": {
+      "input": "text_pythonish",
+      "output": "text_pythonish"
+    },
+    "strategies": {
+      "reasoning": "auto",
+      "citations": "auto",
+      "tools": {
+        "kind": "rule",
+        "predicate": {"capability": "instruct"},
+        "hides": ["tool_calls"],
+        "fragments": [
+          {
+            "target": "user",
+            "content": "To call a tool, emit <tool_call name=\"NAME\">{\"arg\": ...}</tool_call>. Available tools:\n{field('tools')}"
+          }
+        ],
+        "engine_controls": {},
+        "routings": [
+          {
+            "text": {
+              "kind": "pipeline",
+              "steps": [
+                {
+                  "op": "regex",
+                  "dialect": "re2",
+                  "pattern": "<tool_call name=\"(?P<name>[a-zA-Z0-9_]+)\">(?P<args>[^<]*)</tool_call>",
+                  "mode": "findall"
+                },
+                {
+                  "op": "tool_calls",
+                  "name_group": "name",
+                  "args_group": "args",
+                  "args": "json"
+                }
+              ]
+            },
+            "field": "tool_calls",
+            "consume": true
+          }
+        ]
+      },
+      "media": "auto",
+      "history": "directive_turns"
+    },
+    "config": {},
+    "requires": {
+      "lm_capabilities": ["instruct"]
+    }
+  }
+]

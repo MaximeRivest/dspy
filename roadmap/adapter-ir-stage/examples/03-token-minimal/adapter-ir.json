@@ -1,0 +1,41 @@
+{
+  "name": "tiny_qa",
+  "adapter_ir_version": "0.3.0-draft",
+  "versions": {
+    "roles": "1.0.0",
+    "strategies": "1.0.0",
+    "codecs": "1.0.0",
+    "template_language": "1.1.0"
+  },
+  "template": [
+    {
+      "role": "system",
+      "content": "{instruction}"
+    },
+    {
+      "role": "demos",
+      "user": "{% for f in inputs separator='\\n' %}{f.name}: {f.value}{% endfor %}",
+      "assistant": "{% for f in outputs separator='\\n' strip %}{f.name}: {f.value}{% endfor %}"
+    },
+    {
+      "role": "user",
+      "content": "{% for f in inputs separator='\\n' %}{f.name}: {f.value}{% endfor %}\n{fragments('user')}"
+    }
+  ],
+  "parser": {
+    "kind": "lens",
+    "of": "template"
+  },
+  "codecs": {
+    "input": "text_pythonish",
+    "output": "text_pythonish"
+  },
+  "strategies": {
+    "reasoning": "auto",
+    "citations": "auto",
+    "tools": "auto",
+    "media": "auto",
+    "history": "directive_turns"
+  },
+  "config": {}
+}

@@ -1,0 +1,54 @@
+{
+  "name": "chat_media",
+  "adapter_ir_version": "0.3.0-draft",
+  "versions": {
+    "roles": "1.0.0",
+    "strategies": "1.0.0",
+    "codecs": "1.0.0",
+    "template_language": "1.1.0",
+    "shapes": "0.1.0",
+    "lm_capabilities": "0.1.0"
+  },
+  "template": [
+    {
+      "role": "system",
+      "content": "Respond using a [[ ## name ## ]] marker line before each output field, then end with [[ ## completed ## ]].\n{fragments('system')}\n{instruction}"
+    },
+    {
+      "role": "user",
+      "content": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n{fragments('user')}"
+    }
+  ],
+  "parser": {
+    "kind": "lens",
+    "of": "template"
+  },
+  "codecs": {
+    "input": "text_pythonish",
+    "output": "text_pythonish",
+    "per_field": {
+      "photo": {
+        "kind": "shape",
+        "shape": "image",
+        "wire": {
+          "encoding": "base64",
+          "media_type": "image/png"
+        },
+        "frontend_bindings": {
+          "python": "PIL.Image.Image"
+        }
+      }
+    }
+  },
+  "strategies": {
+    "reasoning": "auto",
+    "citations": "auto",
+    "tools": "auto",
+    "media": "native_parts",
+    "history": "directive_turns"
+  },
+  "config": {},
+  "requires": {
+    "lm_capabilities": ["image_input"]
+  }
+}

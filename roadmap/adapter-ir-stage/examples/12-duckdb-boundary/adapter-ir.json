@@ -1,0 +1,65 @@
+{
+  "name": "chat_duckdb",
+  "adapter_ir_version": "0.3.0-draft",
+  "versions": {
+    "roles": "1.0.0",
+    "strategies": "1.0.0",
+    "codecs": "1.1.0-draft",
+    "template_language": "1.1.0"
+  },
+  "template": [
+    {
+      "role": "system",
+      "content": "Respond using a [[ ## name ## ]] marker line before each output field, then end with [[ ## completed ## ]].\n{fragments('system')}\n{instruction}"
+    },
+    {
+      "role": "user",
+      "content": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n{fragments('user')}"
+    }
+  ],
+  "parser": {
+    "kind": "lens",
+    "of": "template"
+  },
+  "codecs": {
+    "input": "text_pythonish",
+    "output": "text_pythonish",
+    "per_field": {
+      "db": {
+        "kind": "leaf",
+        "leaf": "render_duckdb",
+        "direction": "input",
+        "emits": {"shape": "text"},
+        "language": {
+          "name": "python",
+          "requires": ">=3.11",
+          "packages": ["duckdb>=1.0"]
+        },
+        "effects": ["read:db"],
+        "placement": "unbound",
+        "frontend_bindings": {
+          "python": "duckdb.DuckDBPyConnection"
+        }
+      }
+    }
+  },
+  "strategies": {
+    "reasoning": "auto",
+    "citations": "auto",
+    "tools": "auto",
+    "media": "auto",
+    "history": "directive_turns"
+  },
+  "config": {},
+  "requires": {
+    "languages": [
+      {
+        "name": "python",
+        "requires": ">=3.11",
+        "packages": ["duckdb>=1.0"],
+        "for": "4_adapter/chat_duckdb/codecs/db",
+        "binding": "sidecar"
+      }
+    ]
+  }
+}

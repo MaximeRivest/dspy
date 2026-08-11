@@ -1,0 +1,70 @@
+{
+  "name": "json_tolerant",
+  "adapter_ir_version": "0.3.0-draft",
+  "versions": {
+    "roles": "1.0.0",
+    "strategies": "1.0.0",
+    "codecs": "1.0.0",
+    "template_language": "1.1.0",
+    "parse_combinators": "0.1.0"
+  },
+  "template": [
+    {
+      "role": "system",
+      "content": "Your input fields are:\n{% for f in inputs strip %}\n{f.i}. `{f.name}` ({f.type}):{f.desc_suffix}\n{% endfor %}\nYour output fields are:\n{% for f in outputs strip %}\n{f.i}. `{f.name}` ({f.type}):{f.desc_suffix}\n{% endfor %}\nRespond with a single JSON object matching this schema:\n\n{outputs(style='schema')}\n{fragments('system')}\nIn adhering to this structure, your objective is: {instruction(style='indented')}"
+    },
+    {
+      "role": "demos",
+      "user": "{% for f in inputs separator='\\n\\n' %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}",
+      "assistant": "{outputs(style='json_object')}"
+    },
+    {
+      "role": "history",
+      "user": "{% for f in inputs separator='\\n\\n' %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}",
+      "assistant": "{outputs(style='json_object')}"
+    },
+    {
+      "role": "user",
+      "content": "{% for f in inputs separator='\\n\\n' %}\n[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}\n\n{fragments('user')}\nRespond with a single JSON object containing the output fields."
+    }
+  ],
+  "parser": {
+    "kind": "pipeline",
+    "steps": [
+      {
+        "op": "fenced_block",
+        "language": "json",
+        "policy": "prefer"
+      },
+      {
+        "op": "alternatives",
+        "try": [
+          {
+            "op": "json_object",
+            "repair": "none"
+          },
+          {
+            "op": "json_object",
+            "repair": "json_repair"
+          }
+        ]
+      },
+      {
+        "op": "fields_from_object",
+        "unknown_keys": "exhaust"
+      }
+    ]
+  },
+  "codecs": {
+    "input": "text_pythonish",
+    "output": "json"
+  },
+  "strategies": {
+    "reasoning": "auto",
+    "citations": "auto",
+    "tools": "auto",
+    "media": "auto",
+    "history": "directive_turns"
+  },
+  "config": {}
+}

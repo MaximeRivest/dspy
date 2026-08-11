@@ -1,0 +1,53 @@
+{
+  "name": "ledger_recovery",
+  "adapter_ir_version": "0.3.0-draft",
+  "versions": {
+    "roles": "1.0.0",
+    "strategies": "1.0.0",
+    "codecs": "1.0.0",
+    "template_language": "1.1.0"
+  },
+  "template": [
+    {
+      "role": "system",
+      "content": "{instruction}"
+    },
+    {
+      "role": "user",
+      "content": "{% for f in inputs separator='\\n\\n' %}{f.name}:\n{f.value}{% endfor %}\n\nEmit the ledger records, one per line."
+    }
+  ],
+  "parser": {
+    "kind": "authored",
+    "origin": "authored",
+    "language": {"name": "python", "requires": ">=3.12"},
+    "entrypoint": "parse_ledger",
+    "source": "def parse_ledger(text: str, fields: dict) -> dict:\n    # bespoke stateful recovery: record grammar, truncation repair,\n    # running-balance validation (uses 3.12 match/type-param syntax)\n    ...\n",
+    "identity": "sha256:2f7c1a9d8e4b6053c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4",
+    "authored_by": "maxime",
+    "isolation": "sandboxed"
+  },
+  "codecs": {
+    "input": "text_pythonish",
+    "output": "text_pythonish"
+  },
+  "strategies": {
+    "reasoning": "auto",
+    "citations": "auto",
+    "tools": "auto",
+    "media": "auto",
+    "history": "directive_turns"
+  },
+  "config": {},
+  "requires": {
+    "languages": [
+      {
+        "name": "python",
+        "requires": ">=3.12",
+        "for": "4_adapter/ledger_recovery/parser",
+        "binding": "sidecar",
+        "isolation_floor": "sandboxed"
+      }
+    ]
+  }
+}

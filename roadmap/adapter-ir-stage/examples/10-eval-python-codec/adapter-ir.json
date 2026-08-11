@@ -1,0 +1,92 @@
+{
+  "name": "chat_eval_python",
+  "adapter_ir_version": "0.3.0-draft",
+  "versions": {
+    "roles": "1.0.0",
+    "strategies": "1.1.0-draft",
+    "codecs": "1.1.0-draft",
+    "template_language": "1.1.0",
+    "lm_capabilities": "0.1.0",
+    "parse_combinators": "0.1.0"
+  },
+  "template": [
+    {
+      "role": "system",
+      "content": "Respond using a [[ ## name ## ]] marker line before each output field, then end with [[ ## completed ## ]].\n{fragments('system')}\n{instruction}"
+    },
+    {
+      "role": "user",
+      "content": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n{fragments('user')}"
+    }
+  ],
+  "parser": {
+    "kind": "lens",
+    "of": "template"
+  },
+  "codecs": {
+    "input": "text_pythonish",
+    "output": "text_pythonish",
+    "per_field": {
+      "report": {
+        "kind": "family",
+        "family": "python_literal",
+        "options": {}
+      }
+    }
+  },
+  "strategies": {
+    "reasoning": "auto",
+    "citations": "auto",
+    "tools": "auto",
+    "media": "auto",
+    "history": "directive_turns",
+    "code": {
+      "kind": "rule",
+      "predicate": {"capability": "instruct"},
+      "hides": [],
+      "fragments": [
+        {
+          "target": "user",
+          "content": "For the `report` field, emit a fenced ```python block containing a single expression that constructs the value (keyword arguments, literals only)."
+        }
+      ],
+      "engine_controls": {},
+      "routings": [
+        {
+          "text": {
+            "kind": "pipeline",
+            "steps": [
+              {
+                "op": "fenced_block",
+                "language": "python",
+                "policy": "require"
+              }
+            ]
+          },
+          "field": "report",
+          "consume": true,
+          "materialize": {
+            "interpreter": {
+              "leaf": "python_literal_eval",
+              "language": {"name": "python", "requires": ">=3.10"},
+              "isolation": "sandboxed",
+              "effects": [],
+              "network": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  "config": {},
+  "requires": {
+    "lm_capabilities": ["instruct"],
+    "leaves": [
+      {
+        "name": "python_literal_eval",
+        "language": {"name": "python", "requires": ">=3.10"},
+        "isolation": "sandboxed"
+      }
+    ]
+  }
+}

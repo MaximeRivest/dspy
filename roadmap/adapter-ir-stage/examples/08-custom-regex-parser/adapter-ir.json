@@ -1,0 +1,47 @@
+{
+  "name": "grader_lines",
+  "adapter_ir_version": "0.3.0-draft",
+  "versions": {
+    "roles": "1.0.0",
+    "strategies": "1.0.0",
+    "codecs": "1.0.0",
+    "template_language": "1.1.0",
+    "parse_combinators": "0.1.0"
+  },
+  "template": [
+    {
+      "role": "system",
+      "content": "{instruction}"
+    },
+    {
+      "role": "user",
+      "content": "{% for f in inputs separator='\\n\\n' %}{f.name}:\n{f.value}{% endfor %}\n\nReply with exactly two lines:\nSCORE: <n>/10\nVERDICT: <pass|fail>"
+    }
+  ],
+  "parser": {
+    "kind": "pipeline",
+    "steps": [
+      {
+        "op": "regex",
+        "dialect": "re2",
+        "pattern": "(?m)^SCORE: (?P<score>[0-9]+)/10$\\n^VERDICT: (?P<verdict>pass|fail)$",
+        "mode": "search"
+      },
+      {
+        "op": "fields_from_groups"
+      }
+    ]
+  },
+  "codecs": {
+    "input": "text_pythonish",
+    "output": "text_pythonish"
+  },
+  "strategies": {
+    "reasoning": "auto",
+    "citations": "auto",
+    "tools": "auto",
+    "media": "auto",
+    "history": "directive_turns"
+  },
+  "config": {}
+}

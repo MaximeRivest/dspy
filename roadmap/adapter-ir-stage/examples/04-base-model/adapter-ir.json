@@ -1,0 +1,41 @@
+{
+  "name": "base_fewshot",
+  "adapter_ir_version": "0.3.0-draft",
+  "versions": {
+    "roles": "1.0.0",
+    "strategies": "1.0.0",
+    "codecs": "1.0.0",
+    "template_language": "1.1.0",
+    "lm_capabilities": "0.1.0"
+  },
+  "template": [
+    {
+      "role": "user",
+      "content": "{instruction}\n\n{demos(style='yaml')}\n\n{% for f in inputs separator='\\n' %}{f.name}: {f.value}{% endfor %}\n{% for f in outputs separator='\\n' %}{f.name}:{% endfor %}"
+    }
+  ],
+  "parser": {
+    "kind": "lens",
+    "of": "template"
+  },
+  "codecs": {
+    "input": "text_pythonish",
+    "output": "text_pythonish"
+  },
+  "strategies": {
+    "reasoning": "auto",
+    "citations": "auto",
+    "tools": "auto",
+    "media": "auto",
+    "history": "inline"
+  },
+  "config": {
+    "engine_controls": {
+      "completion_mode": true,
+      "stop_sequences": ["\nquestion:", "\n\n"]
+    }
+  },
+  "requires": {
+    "lm_capabilities": ["completion"]
+  }
+}

@@ -1,0 +1,176 @@
+[
+  {
+    "name": "chat_reasoning_native",
+    "adapter_ir_version": "0.3.0-draft",
+    "versions": {
+      "roles": "1.0.0",
+      "strategies": "1.1.0-draft",
+      "codecs": "1.0.0",
+      "template_language": "1.1.0",
+      "lm_capabilities": "0.1.0"
+    },
+    "template": [
+      {
+        "role": "system",
+        "content": "Respond using a [[ ## name ## ]] marker line before each output field, then end with [[ ## completed ## ]].\n{fragments('system')}\n{instruction}"
+      },
+      {
+        "role": "user",
+        "content": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n{fragments('user')}"
+      }
+    ],
+    "parser": {
+      "kind": "lens",
+      "of": "template"
+    },
+    "codecs": {
+      "input": "text_pythonish",
+      "output": "text_pythonish"
+    },
+    "strategies": {
+      "reasoning": {
+        "kind": "rule",
+        "predicate": {"capability": "native_reasoning"},
+        "hides": ["reasoning"],
+        "fragments": [],
+        "engine_controls": {
+          "request_patch": {"reasoning": {"effort": "medium"}}
+        },
+        "routings": [
+          {"channel": "reasoning", "field": "reasoning", "coerce": "str"}
+        ]
+      },
+      "citations": "auto",
+      "tools": "auto",
+      "media": "auto",
+      "history": "directive_turns"
+    },
+    "config": {},
+    "requires": {
+      "lm_capabilities": ["native_reasoning"]
+    }
+  },
+  {
+    "name": "chat_reasoning_prefix_cot",
+    "adapter_ir_version": "0.3.0-draft",
+    "versions": {
+      "roles": "1.0.0",
+      "strategies": "1.1.0-draft",
+      "codecs": "1.0.0",
+      "template_language": "1.1.0",
+      "lm_capabilities": "0.1.0"
+    },
+    "template": [
+      {
+        "role": "system",
+        "content": "Respond using a [[ ## name ## ]] marker line before each output field, then end with [[ ## completed ## ]].\n{fragments('system')}\n{instruction}"
+      },
+      {
+        "role": "user",
+        "content": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n{fragments('user')}"
+      }
+    ],
+    "parser": {
+      "kind": "lens",
+      "of": "template"
+    },
+    "codecs": {
+      "input": "text_pythonish",
+      "output": "text_pythonish"
+    },
+    "strategies": {
+      "reasoning": {
+        "kind": "rule",
+        "predicate": {"capability": "instruct"},
+        "hides": [],
+        "fragments": [
+          {
+            "target": "user",
+            "content": "Reason step by step in the `reasoning` field before giving the final answer."
+          }
+        ],
+        "engine_controls": {},
+        "routings": []
+      },
+      "citations": "auto",
+      "tools": "auto",
+      "media": "auto",
+      "history": "directive_turns"
+    },
+    "config": {},
+    "requires": {
+      "lm_capabilities": ["instruct"]
+    }
+  },
+  {
+    "name": "chat_reasoning_interleaved",
+    "adapter_ir_version": "0.3.0-draft",
+    "versions": {
+      "roles": "1.0.0",
+      "strategies": "1.1.0-draft",
+      "codecs": "1.0.0",
+      "template_language": "1.1.0",
+      "lm_capabilities": "0.1.0",
+      "parse_combinators": "0.1.0"
+    },
+    "template": [
+      {
+        "role": "system",
+        "content": "Respond using a [[ ## name ## ]] marker line before each output field, then end with [[ ## completed ## ]].\n{fragments('system')}\n{instruction}"
+      },
+      {
+        "role": "user",
+        "content": "{% for f in inputs separator='\\n\\n' %}[[ ## {f.name} ## ]]\n{f.value}{% endfor %}\n\n{fragments('user')}"
+      }
+    ],
+    "parser": {
+      "kind": "lens",
+      "of": "template"
+    },
+    "codecs": {
+      "input": "text_pythonish",
+      "output": "text_pythonish"
+    },
+    "strategies": {
+      "reasoning": {
+        "kind": "rule",
+        "predicate": {"capability": "instruct"},
+        "hides": ["reasoning"],
+        "fragments": [
+          {
+            "target": "user",
+            "content": "After every sentence of your answer, add a brief thought inside <think>...</think> tags."
+          }
+        ],
+        "engine_controls": {},
+        "routings": [
+          {
+            "text": {
+              "kind": "pipeline",
+              "steps": [
+                {
+                  "op": "regex",
+                  "dialect": "re2",
+                  "pattern": "<think>(?P<t>[^<]*)</think>",
+                  "mode": "findall",
+                  "group": "t",
+                  "join": "\n"
+                }
+              ]
+            },
+            "field": "reasoning",
+            "consume": true
+          }
+        ]
+      },
+      "citations": "auto",
+      "tools": "auto",
+      "media": "auto",
+      "history": "directive_turns"
+    },
+    "config": {},
+    "requires": {
+      "lm_capabilities": ["instruct"]
+    }
+  }
+]
