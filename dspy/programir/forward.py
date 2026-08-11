@@ -1187,14 +1187,33 @@ class _Compiler:
             or call.func.id not in _ERROR_TYPES
             or len(call.args) != 1
             or call.keywords
-            or not isinstance(call.args[0], ast.Constant)
+            or not isinstance(call.args[0], (ast.Constant, ast.UnaryOp))
         ):
             self.refuse(
                 node,
                 "Raise must be SomeTypedError(<JSON scalar>) with a name from the typed error table "
                 f"({', '.join(sorted(_ERROR_TYPES))}) (SEM-3)",
             )
-        value = call.args[0].value
+        argument = call.args[0]
+        if isinstance(argument, ast.UnaryOp):
+            # A negative numeric message: `-3` parses as USub(Constant(3)).
+            # Fold it exactly as unaryop() does, so the printed spelling of
+            # an admitted negative message reparses (the round-trip law).
+            if not (
+                isinstance(argument.op, ast.USub)
+                and isinstance(argument.operand, ast.Constant)
+                and _is_number(argument.operand.value)
+            ):
+                self.refuse(
+                    node,
+                    "Raise must be SomeTypedError(<JSON scalar>) with a name from the typed error table "
+                    f"({', '.join(sorted(_ERROR_TYPES))}) (SEM-3)",
+                )
+            value = -argument.operand.value
+            if isinstance(value, float) and value == 0.0:
+                value = 0.0  # negative zero is kept out of the value model
+        else:
+            value = argument.value
         if not _is_scalar(value):
             self.refuse(node, "Raise message must be a JSON scalar")
         return {"node": "Raise", "exc": call.func.id, "message": value}

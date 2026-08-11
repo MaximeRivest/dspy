@@ -208,6 +208,8 @@ def _scalar(value: Any, role: str) -> Any:
                 {"role": role, "value": repr(value)},
                 f"{role} {value!r} is non-finite; the JSON value model carries finite numbers only",
             )
+        if value == 0.0:
+            return 0.0  # negative zero is kept out of the value model (the parser folds it too)
         return value
     _refuse(
         "PIR-E-NODE-001",

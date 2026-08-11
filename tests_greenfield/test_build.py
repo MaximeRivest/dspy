@@ -385,6 +385,21 @@ class TestRoundTripLaw:
                 checked += 1
         assert checked == len(programs)
 
+    def test_raise_with_negative_numeric_message(self):
+        # `raise LMError(-3)` prints from an admitted tree, and `-3` parses
+        # as USub(Constant(3)); the parser must fold it back or the law
+        # breaks on every admitted negative message.
+        from dspy.modules._generate import load_generated
+
+        b = build
+        for message in (-3, -3.5):
+            assert_roundtrip(b.Forward(["q"], [b.Raise("LMError", message)]))
+        # Negative zero stays out of the value model on BOTH frontends.
+        assert repr(b.Raise("ToolError", -0.0)["message"]) == "0.0"
+        source = "def forward(self, q):\n    raise ToolError(-0.0)\n"
+        parsed = compile_forward(load_generated(source, tag="negzero", name="forward"), {})
+        assert repr(parsed["body"][0]["message"]) == "0.0"
+
     def test_printed_source_is_the_native_twin(self):
         # The instance-bound forward IS the printer's rendering of the
         # built tree: one source, two arms.
