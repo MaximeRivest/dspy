@@ -253,6 +253,7 @@ class FlexIR(Optimizer):
             applied: list[dict[str, Any]] = []
             undo_structural: list[tuple[Module, str, Any]] = []
             snapshot = snapshot_state(program)
+            has_partial = False
             if not isinstance(proposals, list):
                 refusals.append(
                     f"refused reply: proposals must be a JSON array of edit objects, got {type(proposals).__name__}"
@@ -263,12 +264,13 @@ class FlexIR(Optimizer):
                     refusal = self._apply_one(program, proposal, undo_structural)
                     if refusal is None:
                         applied.append(proposal)
+                        if isinstance(proposal, dict) and proposal.get("op") == "replace_predict_with_code_partial":
+                            has_partial = True
                     else:
                         refusals.append(refusal)
                 result = evaluate(program, devset, self.metric) if applied else None
-                holdout_score = (
-                    evaluate(program, holdout, self.metric).score if (result is not None and holdout) else None
-                )
+                holdout_result = evaluate(program, holdout, self.metric) if (result is not None and holdout) else None
+                holdout_score = holdout_result.score if holdout_result is not None else None
             except Exception:
                 # Any crash between the first applied edit and the score
                 # comparison (inside apply or evaluate) would otherwise
@@ -294,7 +296,9 @@ class FlexIR(Optimizer):
             }
             record["rejection"] = None
             if result is not None:
-                verdict = self._accept(result, holdout_score, best_score, best_lm_calls, best_holdout)
+                verdict = self._accept(
+                    result, holdout_result, best_score, best_lm_calls, best_holdout, has_partial=has_partial
+                )
                 if verdict is None:
                     best_score = result.score
                     best_lm_calls = result.lm_calls
@@ -332,10 +336,12 @@ class FlexIR(Optimizer):
     def _accept(
         self,
         result: Any,
-        holdout_score: float | None,
+        holdout_result: Any,
         best_score: float,
         best_lm_calls: int,
         best_holdout: float | None,
+        *,
+        has_partial: bool = False,
     ) -> str | None:
         """Return None to accept, or the ledger refusal spelling the reason.
 
@@ -349,8 +355,15 @@ class FlexIR(Optimizer):
             overfit surface: a poisoning `add_demo` that wins the dev
             split while collapsing the truly-held-out split must be
             refused exactly like a memorizing code leaf.
+          - AND a `_partial` op whose fast path NEVER declined on the
+            holdout split (the LM was bypassed on every held-out input) is
+            refused: an always-true fast path is a full replacement wearing
+            partial clothing, and its "cheapness" hides whatever the fixed
+            split does not exercise. The honest op for a no-decline fast
+            path is `replace_predict_with_code`, gated identically.
         """
         eps = self.eps
+        holdout_score = holdout_result.score if holdout_result is not None else None
         score_rises = result.score > best_score + eps
         held_cheaper = result.score >= best_score - eps and result.lm_calls < best_lm_calls
         if not (score_rises or held_cheaper):
@@ -367,6 +380,14 @@ class FlexIR(Optimizer):
                     f"(holdout {holdout_score} vs best {best_holdout}) — the reward-hacking guard. The edit "
                     "overfits the dev examples; write an edit that GENERALIZES, or leave the step in place."
                 )
+        if has_partial and holdout_result is not None and holdout_result.lm_calls == 0:
+            return (
+                f"refused candidate: the _partial fast path NEVER declined to the LM on the holdout split "
+                f"({len(holdout_result.results)} example(s), 0 LM calls) — an always-true fast path is a FULL "
+                "replacement, not a partial one, and it permanently bypasses the LM on every input the fixed "
+                "split does not exercise (measured, not proven). Make the fast path return None on inputs it "
+                "cannot answer, or use `replace_predict_with_code` for an honest full swap."
+            )
         return None
 
     def _unwind(self, program: Module, undo_structural: list[tuple[Module, str, Any]], snapshot: Any) -> None:

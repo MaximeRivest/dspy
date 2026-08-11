@@ -558,6 +558,52 @@ class TestRewardHackingGuard:
         assert program.to_manifest()["components"]["6_tools"] == {}
         assert program(text="wolf").tag == "WOLF"
 
+    def test_always_true_partial_fast_path_is_refused(self):
+        # A _partial fast path that NEVER declines (returns a dict for every
+        # input) is a full replacement wearing partial clothing. Even when it
+        # is correct on dev AND the holdout, it permanently bypasses the LM
+        # on whatever the fixed split does not exercise — cheapness at an
+        # invisible quality cost. If it never declined on the holdout (0 LM
+        # calls there), refuse and teach the honest alternatives.
+        program = Solver()
+        capitals = {"France": "Paris", "Canada": "Ottawa", "Germany": "Berlin"}
+        devset = [dspy.Example(country=c, capital=capitals[c]).with_inputs("country") for c in ("France", "Canada")]
+        holdout = [dspy.Example(country="Germany", capital="Berlin").with_inputs("country")]
+        never_declines = (
+            "def solve_partial(country: str) -> dict | None:\n"
+            '    table = {"France": "Paris", "Canada": "Ottawa", "Germany": "Berlin"}\n'
+            '    return {"capital": table.get(country, "GUESS-" + country)}\n'  # always returns a dict
+        )
+        reflection = dspy.DummyLM(
+            [
+                reflection_reply(
+                    [
+                        {
+                            "op": "replace_predict_with_code_partial",
+                            "path": "solver",
+                            "tool_name": "solve_partial",
+                            "python_source": never_declines,
+                        }
+                    ]
+                )
+            ]
+        )
+        dspy.configure(lm=dspy.DummyLM(capital_task))
+        optimizer = optim.FlexIR(reflection, exact_capital, iterations=1, holdout=holdout)
+        optimizer.compile(program, trainset=devset)
+
+        entry = optimizer.trajectory[1]
+        # It aced dev (1.0), aced the holdout (1.0), and dropped LM calls...
+        assert entry["score"] == 1.0
+        assert entry["holdout_score"] == 1.0
+        assert entry["lm_calls"] == 0
+        # ...but the never-declining fast path is REJECTED as a disguised full swap.
+        assert entry["accepted"] is False
+        assert "NEVER declined" in entry["rejection"]
+        assert "replace_predict_with_code" in entry["rejection"]
+        # The final program keeps the predict; no tool shipped.
+        assert program.to_manifest()["components"]["6_tools"] == {}
+
     def test_overlapping_holdout_is_refused_at_compile(self):
         # A holdout that overlaps the trainset silently disables the guard
         # (a memorizer aces both). Refuse it loudly at compile time.
