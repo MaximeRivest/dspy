@@ -48,6 +48,26 @@ def lookup(country: str) -> str:
     return capitals.get(country.lower(), "unknown")
 
 
+def try_handler_types(value) -> list[str]:
+    """Every Try handler's caught type, in document order.
+
+    The oracle-integrity pin: both engine arms derive from ONE built
+    tree, so a handler-type drift (say AdapterParseError -> ToolError)
+    would pass every equivalence test; these manifests assert the types
+    explicitly, and the behavioral tests below drive each handler path.
+    """
+    found: list[str] = []
+    if isinstance(value, dict):
+        if value.get("node") == "Try":
+            found.extend(handler["type"] for handler in value["handlers"])
+        for sub in value.values():
+            found.extend(try_handler_types(sub))
+    elif isinstance(value, list):
+        for sub in value:
+            found.extend(try_handler_types(sub))
+    return found
+
+
 def react_step(thought: str, tool: str, args: dict) -> str:
     return chat_completion(
         next_thought=thought,
@@ -148,6 +168,10 @@ class TestReAct:
         assert set(manifest["components"]["6_tools"]) == {"lookup"}
         assert manifest["components"]["6_tools"]["lookup"]["language"] == "python"
         assert {"react", "extract"} <= set(manifest["components"]["2_signature"])
+        # Handler types are contract: a parse failure BREAKS the loop, a
+        # tool failure becomes an observation — a drifted type here would
+        # slip through the shared-tree equivalence tests.
+        assert try_handler_types(forward) == ["AdapterParseError", "ToolError"]
 
     def test_react_engine_run_tool_call_then_finish(self):
         lm = dspy.DummyLM(react_script("Paris"))
@@ -196,6 +220,34 @@ class TestReAct:
         assert_identical_calls(engine_lm, native_lm)
         assert engine_prediction.toDict() == native_prediction.toDict()
         assert engine_prediction.answer == "Paris"
+
+    def test_react_parse_failure_breaks_the_loop_gracefully(self):
+        # The AdapterParseError handler path, which no equivalence script
+        # drives: a malformed mid-loop completion must BREAK the loop
+        # (not crash) and extract must still run — on BOTH arms.
+        script = [
+            react_step("Look it up.", "lookup", {"country": "france"}),
+            "this completion has no parseable fields",
+            chat_completion(reasoning="The loop broke; use what was gathered.", answer="Paris"),
+        ]
+        react = dspy.ReAct("question -> answer", tools=[lookup], max_iters=5)
+
+        engine_lm = dspy.DummyLM(script)
+        dspy.configure(lm=engine_lm)
+        engine_prediction = react(question="What is the capital of France?")
+
+        native_lm = dspy.DummyLM(script)
+        dspy.configure(lm=native_lm)
+        native_prediction = react.forward_native(question="What is the capital of France?")
+
+        assert_identical_calls(engine_lm, native_lm)
+        assert engine_prediction.toDict() == native_prediction.toDict()
+        assert engine_prediction.answer == "Paris"
+        assert len(engine_lm.calls) == 3  # react, failed react, extract
+        # The break kept round 0's observation and never wrote a round 1.
+        extract_prompt = engine_lm.calls[2]["messages"][-1]["content"]
+        assert '"observation_0": "Paris"' in extract_prompt
+        assert "thought_1" not in extract_prompt
 
     def test_react_save_load_run(self, tmp_path):
         dspy.configure(lm=dspy.DummyLM(react_script("Paris")))
@@ -280,6 +332,10 @@ class TestReActV2:
 
         manifest = agent.to_manifest()
         assert set(manifest["components"]["6_tools"]) == {"lookup"}
+        # Handler types are contract (same pin as ReAct's): parse failure
+        # terminates with a reason, tool failure becomes a result value.
+        forward = manifest["components"]["5_forward"]["self"]
+        assert try_handler_types(forward) == ["AdapterParseError", "ToolError"]
 
         prediction = agent(question="What is the capital of France?")
         assert prediction.answer == "Paris"
@@ -295,6 +351,72 @@ class TestReActV2:
         assert prediction.termination_reason == "empty_tool_calls"
         assert prediction.answer == ""
         assert prediction.history == []
+
+    def test_v2_parse_error_terminates(self):
+        # The AdapterParseError handler: a malformed step completion sets
+        # termination_reason and breaks — the good first turn survives.
+        agent = dspy.ReActV2("question -> answer", tools=[lookup], max_iters=4)
+        script = [
+            v2_step("Look it up.", [{"name": "lookup", "args": {"country": "france"}}]),
+            "not a parseable completion",
+        ]
+
+        engine_lm = dspy.DummyLM(script)
+        dspy.configure(lm=engine_lm)
+        engine_prediction = agent(question="capital?")
+
+        native_lm = dspy.DummyLM(script)
+        dspy.configure(lm=native_lm)
+        native_record = agent.forward_native(question="capital?")
+
+        assert_identical_calls(engine_lm, native_lm)
+        assert engine_prediction.toDict() == native_record
+        assert engine_prediction.termination_reason == "parse_error"
+        assert engine_prediction.answer == ""  # the outputs never arrived
+        assert len(engine_prediction.history) == 1
+
+    def test_v2_tool_failure_is_a_typed_result(self):
+        # The ToolError handler: a failing call becomes a result value
+        # the next step can see, and the run still submits.
+        agent = dspy.ReActV2("question -> answer", tools=[lookup], max_iters=4)
+        script = [
+            v2_step("Bad args.", [{"name": "lookup", "args": {"nation": "france"}}]),
+            v2_step("Give up.", [{"name": "submit", "args": {"answer": "unknown"}}]),
+        ]
+
+        engine_lm = dspy.DummyLM(script)
+        dspy.configure(lm=engine_lm)
+        engine_prediction = agent(question="capital?")
+
+        native_lm = dspy.DummyLM(script)
+        dspy.configure(lm=native_lm)
+        native_record = agent.forward_native(question="capital?")
+
+        assert_identical_calls(engine_lm, native_lm)
+        assert engine_prediction.toDict() == native_record
+        failure = "The tool call failed. Use another tool, or submit."
+        assert engine_prediction.history[0]["results"] == [{"name": "lookup", "value": failure}]
+        assert failure in engine_lm.calls[1]["messages"][-1]["content"]
+        assert engine_prediction.termination_reason == "submit"
+
+    def test_v2_toolless_agent_answers_unknown_calls_in_forward(self):
+        # The toolless dispatch arm: no tools table exists, so a
+        # non-submit call is answered in-forward, not raised.
+        toolless = dspy.ReActV2("question -> answer", max_iters=3)
+        dspy.configure(
+            lm=dspy.DummyLM(
+                [
+                    v2_step("Try a tool anyway.", [{"name": "lookup", "args": {}}]),
+                    v2_step("Submit.", [{"name": "submit", "args": {"answer": "done"}}]),
+                ]
+            )
+        )
+
+        prediction = toolless(question="q")
+        assert prediction.history[0]["results"] == [
+            {"name": "lookup", "value": "Unknown tool. The only valid call is submit."}
+        ]
+        assert prediction.answer == "done"
 
     def test_v2_equivalence(self):
         agent = dspy.ReActV2("question -> answer", tools=[lookup], max_iters=4)
