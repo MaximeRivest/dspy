@@ -187,6 +187,10 @@ ban-relative-imports = "all"
     "RUF043",  # match= patterns quote the teaching errors verbatim
     "N806",    # local Signature classes and imported-module aliases are capitalized
 ]
+"dspy/programir/build.py" = [
+    "N802",  # constructors are named after the node kinds they emit (Assign, Var, ...)
+    "A001",  # List/Dict/Format shadow builtins on purpose: one name per node kind
+]
 "__init__.py" = ["F401"]  # Init files can be empty
 "dspy/__init__.py" = [
     "I001",  # Allow unsorted or unformatted imports (isort)
