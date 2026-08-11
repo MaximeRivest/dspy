@@ -121,7 +121,16 @@ def _check_self_contained(function: Callable[..., Any], source: str, *, subject:
     if node.args.kwarg:
         local.add(node.args.kwarg.arg)
     for item in ast.walk(node):
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if not isinstance(item, ast.Lambda):
+                local.add(item.name)
+            inner = item.args
+            local.update(argument.arg for argument in (*inner.posonlyargs, *inner.args, *inner.kwonlyargs))
+            if inner.vararg:
+                local.add(inner.vararg.arg)
+            if inner.kwarg:
+                local.add(inner.kwarg.arg)
+        elif isinstance(item, ast.ExceptHandler) and item.name:
             local.add(item.name)
         elif isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del)):
             local.add(item.id)

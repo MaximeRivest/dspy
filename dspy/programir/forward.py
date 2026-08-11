@@ -101,12 +101,22 @@ class LeafRef:
     ref: str | None = None
 
 
-def compile_forward(function: Any, leaves: Mapping[str, LeafRef]) -> dict[str, Any]:
+def compile_forward(
+    function: Any,
+    leaves: Mapping[str, LeafRef],
+    literals: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compile one Python method into a node-set v0.3 forward record.
 
     Args:
         function: The authored `forward` (or `aforward`) function.
         leaves: Immediate child names mapped to their typed leaf references.
+        literals: Declared-literal attributes (the module class's
+            `ir_literals` names, resolved to their instance values at
+            compile time). A `self.<name>` read of a declared literal
+            compiles to `Const` — the value is BAKED into the artifact,
+            so zero-reach-back holds at run time. `range(self.<name>)`
+            with a non-negative int literal is the literal loop cap.
 
     Returns:
         The canonical node-set JSON record.
@@ -127,15 +137,23 @@ def compile_forward(function: Any, leaves: Mapping[str, LeafRef]) -> dict[str, A
     if len(definitions) != 1:
         node = definitions[0] if definitions else tree
         _refuse_node(node, filename, start_line, "forward must be exactly one function definition")
-    compiler = _Compiler(leaves=leaves, filename=filename, start_line=start_line)
+    compiler = _Compiler(leaves=leaves, filename=filename, start_line=start_line, literals=literals)
     return compiler.function(definitions[0])
 
 
 class _Compiler:
-    def __init__(self, *, leaves: Mapping[str, LeafRef], filename: str, start_line: int):
+    def __init__(
+        self,
+        *,
+        leaves: Mapping[str, LeafRef],
+        filename: str,
+        start_line: int,
+        literals: Mapping[str, Any] | None = None,
+    ):
         self.leaves = leaves
         self.filename = filename
         self.start_line = start_line
+        self.literals = dict(literals or {})
         self._pending: list[list[dict[str, Any]]] = []
         self._hoist_blocked = 0
         self._temp = 0
@@ -453,10 +471,16 @@ class _Compiler:
             if not isinstance(node.value, ast.Name):
                 self.refuse(node, "Attr reads one variable.field; bind the intermediate value to a name first")
             if node.value.id == "self":
+                if node.attr in self.literals:
+                    # The declared-literal door: the instance value is baked
+                    # into the artifact as a constant at compile time.
+                    return {"node": "Const", "value": self.literals[node.attr]}
                 self.refuse(
                     node,
                     f"self.{node.attr} reads module state — the zero-reach-back rule; "
-                    "pass the value in as a forward argument or a leaf result",
+                    "pass the value in as a forward argument or a leaf result, or declare "
+                    "the attribute in the class's `ir_literals` to bake its JSON-scalar "
+                    "value into the compiled forward",
                 )
             return {"node": "Attr", "obj": node.value.id, "attr": node.attr}
         if isinstance(node, ast.Await):
@@ -997,23 +1021,42 @@ class _Compiler:
     # -- helpers ----------------------------------------------------------
 
     def _range_literal(self, node: ast.expr) -> int | None:
-        """Return the literal count for `range(<literal>)`, else None."""
+        """Return the literal count for `range(<literal>)`, else None.
+
+        A declared literal (`range(self.max_iters)` with `max_iters` in the
+        class's `ir_literals`) is a literal too: its instance value bakes
+        into the For node at compile time.
+        """
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "range"):
             return None
-        if (
-            len(node.args) != 1
-            or node.keywords
-            or not isinstance(node.args[0], ast.Constant)
-            or isinstance(node.args[0].value, bool)
-            or not isinstance(node.args[0].value, int)
-            or node.args[0].value < 0
-        ):
-            self.refuse(
-                node,
-                "For iterates range(<non-negative int literal>) or a list expression (SEM-2 as amended v0.2); "
-                "a computed bound needs the list form or a While",
-            )
-        return node.args[0].value
+        if len(node.args) == 1 and not node.keywords:
+            argument = node.args[0]
+            if (
+                isinstance(argument, ast.Attribute)
+                and isinstance(argument.value, ast.Name)
+                and argument.value.id == "self"
+                and argument.attr in self.literals
+            ):
+                value = self.literals[argument.attr]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    self.refuse(
+                        node,
+                        f"range(self.{argument.attr}) needs the declared literal to be a "
+                        f"non-negative int; its value is {value!r}",
+                    )
+                return value
+            if (
+                isinstance(argument, ast.Constant)
+                and not isinstance(argument.value, bool)
+                and isinstance(argument.value, int)
+                and argument.value >= 0
+            ):
+                return argument.value
+        self.refuse(
+            node,
+            "For iterates range(<non-negative int literal>) or a list expression (SEM-2 as amended v0.2); "
+            "a computed bound needs the list form, a While, or a declared literal (`ir_literals`)",
+        )
 
     def _hoist(self, node: ast.AST, statement: dict[str, Any]) -> None:
         if self._hoist_blocked or not self._pending:

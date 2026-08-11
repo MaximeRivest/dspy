@@ -145,7 +145,7 @@ class _DSPyCompiler:
         module_tools: list[str] = []
         uses_interpreter = False
         for child_name, child in module.__dict__.items():
-            if not _is_identifier(child_name):
+            if not _is_identifier(child_name) or child_name == "forward":
                 continue
             if isinstance(child, Module):
                 child_path = child_name if path == "self" else f"{path}.{child_name}"
@@ -177,7 +177,10 @@ class _DSPyCompiler:
                 leaves[child_name] = LeafRef("interpreter", interpreter_name)
                 uses_interpreter = True
 
-        self.forwards[path] = compile_forward(type(module).forward, leaves)
+        # A generated forward bound on the instance (signature-polymorphic
+        # modules like ReAct build theirs in __init__) wins over the class's.
+        forward_fn = module.__dict__.get("forward") or type(module).forward
+        self.forwards[path] = compile_forward(forward_fn, leaves, literals=_declared_literals(module))
         class_name = type(module).__name__
         node = {
             "kind": class_name,
@@ -388,6 +391,36 @@ def _pool_name(identity: str) -> str:
     if rendered[0].isdigit():
         rendered = f"lm-{rendered}"
     return rendered
+
+
+def _declared_literals(module: Module) -> dict[str, Any]:
+    """Resolve the class's `ir_literals` names to instance values.
+
+    `ir_literals` is a tuple of attribute names on the module class; each
+    named attribute must hold a JSON scalar at compile time. The compiler
+    bakes these values into the forward as `Const` nodes, which is how a
+    loop cap like `max_iters` stays configuration on the instance yet a
+    literal in the artifact (zero-reach-back holds at run time).
+    """
+    names = getattr(type(module), "ir_literals", ())
+    if isinstance(names, str) or not all(isinstance(name, str) for name in names):
+        raise ValueError(
+            f"{type(module).__name__}.ir_literals must be an iterable of attribute-name strings, got {names!r}"
+        )
+    literals: dict[str, Any] = {}
+    for name in names:
+        if not hasattr(module, name):
+            raise ValueError(
+                f"{type(module).__name__}.ir_literals names {name!r}, but the instance has no such attribute"
+            )
+        value = getattr(module, name)
+        if not (value is None or isinstance(value, (str, int, float, bool))):
+            raise ValueError(
+                f"{type(module).__name__}.{name} is declared in ir_literals and must be a JSON scalar "
+                f"to bake into the forward, got {type(value).__name__}"
+            )
+        literals[name] = value
+    return literals
 
 
 def _is_identifier(value: str) -> bool:

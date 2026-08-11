@@ -276,6 +276,11 @@ def _build_predictor(path: str, components: dict[str, Any], lm: LM, adapter: Ada
         keywords: dict[str, Any] = {}
         if record.get("desc") is not None:
             keywords["desc"] = record["desc"]
+        # The semantic role must survive the rebuild: the adapter's
+        # strategies predicate on roles (reasoning, tools, ...), so a
+        # role-blind rebuilt signature would render different messages.
+        if record.get("semantic_role") not in (None, "plain"):
+            keywords["role"] = record["semantic_role"]
         maker = InputField if record["direction"] == "input" else OutputField
         fields[record["name"]] = (annotation, maker(**keywords))
     signature = make_signature(fields, components["3a_instructions"].get(path))

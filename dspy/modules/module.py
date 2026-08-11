@@ -90,9 +90,10 @@ class Module:
         """A cheap identity of everything the compiled IR depends on.
 
         Covers each predictor's resolved bindings, demos, instructions,
-        and config. Structural edits after `__init__` (rebinding a child
-        attribute) are not fingerprinted — call `invalidate_ir()` after
-        those.
+        and config, plus every module's declared-literal values
+        (`ir_literals` — edits to a baked loop cap recompile). Structural
+        edits after `__init__` (rebinding a child attribute) are not
+        fingerprinted — call `invalidate_ir()` after those.
         """
         parts = []
         for path, predictor in self.named_predictors():
@@ -106,7 +107,27 @@ class Module:
                     repr(sorted(predictor.config.items(), key=repr)),
                 )
             )
+        for path, module in self._named_modules():
+            names = getattr(type(module), "ir_literals", ())
+            if names:
+                parts.append((path, tuple((name, getattr(module, name, None)) for name in names)))
         return tuple(parts)
+
+    def _named_modules(self) -> list[tuple[str, Module]]:
+        """Every module in the tree (self included) as `(path, module)`."""
+        found: list[tuple[str, Module]] = [("self", self)]
+
+        def walk(module: Module, prefix: str) -> None:
+            for name, child in module.__dict__.items():
+                if not (name.isidentifier() and name.isascii()):
+                    continue
+                if isinstance(child, Module):
+                    path = name if not prefix else f"{prefix}.{name}"
+                    found.append((path, child))
+                    walk(child, path)
+
+        walk(self, "")
+        return found
 
     def invalidate_ir(self) -> None:
         """Drop the cached compiled program; the next call recompiles."""
