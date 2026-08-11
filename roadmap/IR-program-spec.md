@@ -2359,6 +2359,40 @@ strictest gate set; the semantics-fixed tier above is the safe on-ramp.
 
 ---
 
+## (e3) The security axis — flow, trust, and postures over the same IR
+
+**Normative home: the contract repo** — `programir-contract/spec/flow.md`
+(secrecy: classified data must not reach egress-capable leaves) and
+`spec/trust.md` (the trust record, postures, the integrity dual). Both
+PROPOSED 2026-08-10, prototype `reference/flow.py` at 15/15 selfcheck
+vectors. This section records only what the *IR* carries and what that
+makes possible; do not restate rules here — the contract governs.
+
+What the IR carries (all data, all diffable):
+
+- **per-leaf authority**: `effects`, placement rung, `isolation`,
+  `credential_ref`, and (interpreters) a `grants` list — the sandbox
+  has only what somebody gave it;
+- **per-field labels** (pending ask: `secret < internal < public`),
+  dspy spelling `Annotated[T, secret]` via the D-011 marker system;
+- **per-component origin**: `builtin | packaged | authored`;
+- receiver-side inputs that never enter the artifact: postures
+  (`workbench`/`reviewed`/`hardened`), declassifier/sanitizer grants.
+
+What that yields, because the program is closed data: two grade-1 flow
+analyses (secrecy and its prompt-injection dual) with machine-readable
+violations; PoT/CodeAct/RLM representable as *safe* (sandboxed
+zero-grant interpreter is not an integrity sink; its output stays
+tainted); and — the optimization consequence — **security as a fourth
+scored axis** beside quality, cost, and latency (see the "security as
+an axis" section of `spec/trust.md`): `flow_check` is pure and
+LM-free, so it is an inner-loop objective; placement/isolation/grants
+mutations are binding changes that preserve baked identity (§e0-binding,
+PIR-010), so an optimizer explores most of the security frontier
+*without re-scoring quality*; identity-changing security moves
+(inserting a sanitizer leaf, swapping an endpoint LM for baked weights)
+detach scores and re-evaluate like any View-3 structural move.
+
 ## (f) How each known bug DISSOLVES (not patched)
 
 - **§1 adapter reverts silently.** The adapter is baked as a reified
@@ -2431,6 +2465,13 @@ strictest gate set; the semantics-fixed tier above is the safe on-ramp.
   by §e0-binding: bake the identity, bind the location, verify at load.
 - The program-level contract repo (extraction target; AUTHORITY, corpus,
   harness, three conformant grade-1 readers): `~/Projects/programir-contract`.
+- The security axis (§e3): `programir-contract/spec/flow.md` +
+  `spec/trust.md` (both PROPOSED); dspy-side companion note
+  `roadmap/flow-capabilities.md`.
+- Literature failure-mode flags (two-executor drift, IR-strict mode,
+  branch-merge pinning, ossification, leaf purity) and the headroom
+  ranking (lint/diff/cost first; shared dataflow pass; determinism as
+  a hard Epic-F invariant): `roadmap/staging-lessons.md`.
 - Authoring surfaces over this IR — seven exemplar dialects
   (`roadmap/exemplar-program*.{py,ts,go}`; graph dialect recommended,
   FunctAI-first) and their conventions: `roadmap/frontend-contract.md`

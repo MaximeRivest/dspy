@@ -1,5 +1,30 @@
 # Classified flow — the dspy side of the capability story
 
+> 2026-08-10 night: the trust arc gained its last two asks (spec/
+> trust.md 6–7): **trust profiles** — named requirement sets as data,
+> the artifact-level "loads cleanly under `hardened`" claim (D-023
+> pattern generalized; advisory export stamp, receiver re-checks) —
+> and the **`harden` op** — posture application as a deterministic
+> grade-1 transform (minimal re-placement/re-binding + full deviation
+> record; forward/signatures/learned-state/metric untouched; detached
+> scores re-warranted by the baked metric). dspy surface when
+> ratified: `program.export(trust_profile="hardened")` preflight and
+> `dspy.load(..., posture=...)` / `dspy.harden(program, profile)`.
+
+> 2026-08-10 evening: the story grew a second half — `spec/trust.md`
+> in the contract repo (PROPOSED): trust record {origin, authority,
+> exposure}, the pairing rule (trust deficit paid with isolation;
+> authored code never executes at link), receiver postures
+> (`workbench` = full-trust local data-science mode, zero ceremony,
+> non-transitive; `reviewed`; `hardened`), and the **integrity dual**
+> (prompt injection as the same taint walk with sources/sinks
+> reversed; sanitizers = dual of declassifiers). PoT/CodeAct/RLM are
+> representable as safe: a sandboxed (`isolation: "sandbox"`)
+> zero-`grants` interpreter is not an integrity sink; its output stays
+> tainted; granting a powerful tool re-arms it. Prototype: 15/15
+> selfcheck vectors green. Custom parsers/strategies/LMs become
+> supportable under the pairing rule instead of refused.
+
 **Status: design note (2026-08-10), companion to the PROPOSED contract
 section `programir-contract/spec/flow.md` (working prototype:
 `reference/flow.py` + `selfcheck_flow.py`, 7 vectors green).**
@@ -31,12 +56,25 @@ The dspy-side surface, when the contract section ratifies:
   receiver's act, never the artifact's. This is the part permissions
   can't do and capabilities can (Odersky's distinction), expressed as
   data.
-- **Honest limit:** explicit-flow taint + coarse control-flow flags —
-  a lint with teeth over the whole orchestration layer, not Scala's
+- **Honest limit:** explicit-flow taint + the enumerable branch-shaped
+  implicit channels (branch-assign laundering, the exception channel,
+  the break channel — all closed in the prototype, 9 selfcheck vectors
+  green as of 2026-08-10); sink-selection signaling stays a coarse
+  `control` flag; timing/covert channels are out of scope. A lint with
+  teeth over the whole orchestration layer, not Scala's
   capture-checked proofs; the leaf boundary stays declare-and-probe
   (`effects: pure`).
 
-Decision needed from Maxime before any of this ratifies: whether
-`classified` is one marker or a small lattice (e.g. `secret < internal
-< public`), and whether export-time enforcement defaults to warn or
-refuse.
+**Ratification asks (positions drafted 2026-08-10 in
+`programir-contract/spec/flow.md`, awaiting Maxime):**
+
+1. **Lattice, not a single marker:** `secret < internal < public`,
+   policy maps labels to refused sink classes; graded declassifier
+   grants. Single-bit is unfixable later without a breaking schema
+   change; the lattice costs one enum now. dspy spelling follows the
+   four-spellings rule: `Annotated[T, secret]` etc.
+2. **Export-time default: refuse.** Labeled field + violating flow =
+   export refusal naming source field → leaf → entry. Explicit
+   opt-down `export(..., flow="warn")` is stamped into provenance so
+   receivers can see it. Receiver-side `flow_check` always runs the
+   receiver's own policy regardless.

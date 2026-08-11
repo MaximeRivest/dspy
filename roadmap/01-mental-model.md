@@ -2,6 +2,47 @@
 
 The taxonomy you must hold to work on this codebase. Read after `00-constitution.md`; deep rationale in `IR-program-spec.md`.
 
+## The thesis — a superset orchestrator (Maxime, 2026-08-10)
+
+DSPy's product is not a Python library. It is a **superset orchestrator
+of programming languages**: *I don't care what your language, types,
+control-flow syntax, or interpreter are — wherever you are, you will
+orchestrate AI components, and that orchestration alone is what I
+standardize.* Three IRs carry it, each defined by what it refuses to
+own:
+
+- **Program IR** owns orchestration; refuses to own your language
+  (idiomatic `forward`; only the closed skeleton is extracted).
+- **Adapter IR** owns the inference-time exchange; refuses to own your
+  types (host types bind per-frontend; neutral shapes cross the wire —
+  the two-layer rule, `adapter-north-star.md`).
+- **LM IR** owns the model contract; refuses to own the model: a
+  leaf's interface is a signature, the LLM is *today's
+  implementation*. Optimizers may replace an LLM call with a trained
+  classifier, feature-extraction+ML, or generated code — the program
+  never said "LLM"; it said "this signature, this metric" (the
+  unified-leaf section below is this thesis in miniature). AI writes
+  the tools and programs too; optimizers rewrite implementations; all
+  of it over the same three IRs. LLMs are the bootstrap, not the
+  commitment.
+
+Downstream consequences are bindings, not architecture: engine
+rewrite, new optimizers, many frontends in many languages, mixed
+interpreters/sandboxes/permissions, fully distributed or fully
+in-memory — all placement and binding choices over unchanged programs.
+
+**The boundary rule** (resolving idiomatic-types vs shippability):
+*idiomatic inside, neutral at the edges, and the cost of a non-neutral
+edge is local, priced, and stated.* Back-and-forth of host-language
+objects between the program and the AI world is a core power and is
+never restricted. A language-specific type at an artifact boundary
+costs a shim/codec on the receiver's side OR a sidecar call back into
+the origin language (the D-022 rung-walk) — per-boundary, never
+program-wide. The composition report states residues as facts
+("portable except field `db` requires Python at leaf `render_db`");
+the receiver decides. Graceful degradation, same shape as trust
+profiles.
+
 ## Intent vs mechanism
 
 Every piece of the system is one or the other, and the line between them is the design's load-bearing wall:
