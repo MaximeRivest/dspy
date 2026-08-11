@@ -104,7 +104,7 @@ class Image(Type):
         # Delegate the rest of initialization to pydantic's BaseModel.
         super().__init__(**data)
 
-    @lru_cache(maxsize=32)
+    @lru_cache(maxsize=32)  # noqa: B019 — kept legacy caching; a fix means restructuring the type
     def format(self) -> list[dict[str, Any]] | str:
         try:
             image_url = encode_image(self.url)

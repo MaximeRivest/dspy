@@ -94,7 +94,7 @@ IMPL_VERSION = "0.1"
 _REQUIRED_ORDER = ("ir_version", "node_set", "roles", "strategies",
                    "codecs", "adapter_ir", "lm15")
 
-class Refusal(Exception):
+class Refusal(Exception):  # noqa: N818 — "refusal" is the contract's own word for this act
     """An artifact refusal: carries the {code, component, detail} object."""
 
     def __init__(self, error: JsonObject):
@@ -355,7 +355,7 @@ def _diff_records(a: Any, b: Any, path: str) -> list[JsonObject]:
         return records
     if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
         records = []
-        for i, (item_a, item_b) in enumerate(zip(a, b)):
+        for i, (item_a, item_b) in enumerate(zip(a, b, strict=False)):
             records.extend(_diff_records(item_a, item_b, f"{path}/{i}"))
         return records
     if not validate.json_equal(a, b):

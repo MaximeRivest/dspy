@@ -707,9 +707,9 @@ def directive_pair(directive, parser: str | None = None) -> tuple:
     by ``parser`` — the preset's parser binding when rendering through a
     preset context, the chat marker pair otherwise — so every directive
     that parses can render, an example turn demonstrates the shape the
-    parser reads back, and zero demos/turns expand to nothing. (The D-γ
+    parser reads back, and zero demos/turns expand to nothing. (The D-gamma
     rule that a bare history directive inherits the demos directive's
-    patterns was retired in D-δ: one-directional pattern inheritance was an
+    patterns was retired in D-delta: one-directional pattern inheritance was an
     undocumented trap, and the builtin presets spell their history patterns
     explicitly as data.)
     """

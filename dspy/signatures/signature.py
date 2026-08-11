@@ -323,9 +323,9 @@ class Signature(BaseModel, metaclass=SignatureMeta):
     def append_instructions(cls, instructions: str) -> type["Signature"]:
         """Return a new Signature class with identical fields and `instructions` appended to the existing instructions.
 
-        This method does not mutate `cls`. It constructs a fresh Signature 
-        using the existing instructions from `cls.instructions` followed 
-        by `instructions`, joined by a blank line. 
+        This method does not mutate `cls`. It constructs a fresh Signature
+        using the existing instructions from `cls.instructions` followed
+        by `instructions`, joined by a blank line.
         Unlike `with_instructions`, the existing instructions are preserved rather than replaced.
 
         Args:
@@ -915,13 +915,14 @@ def _parse_type_node(node, names=None) -> Any:
         else:
             arg_types = (_parse_type_node(slice_node, names),)
 
-        # Special handling for Union, Optional
+        # Special handling for Union, Optional: this is RUNTIME construction
+        # of typing values from authored spellings, not annotation syntax.
         if base_type is typing.Union:
-            return typing.Union[arg_types]
+            return typing.Union[arg_types]  # noqa: UP007
         if base_type is typing.Optional:
             if len(arg_types) != 1:
                 raise ValueError("Optional must have exactly one type argument")
-            return typing.Optional[arg_types[0]]
+            return typing.Optional[arg_types[0]]  # noqa: UP045
 
         return base_type[arg_types]
 
@@ -930,12 +931,12 @@ def _parse_type_node(node, names=None) -> Any:
         left = _parse_type_node(node.left, names)
         right = _parse_type_node(node.right, names)
 
-        # Optional[X] is Union[X, NoneType]
+        # Optional[X] is Union[X, NoneType] — runtime construction again.
         if right is type(None):
-            return typing.Optional[left]
+            return typing.Optional[left]  # noqa: UP045
         if left is type(None):
-            return typing.Optional[right]
-        return typing.Union[left, right]
+            return typing.Optional[right]  # noqa: UP045
+        return typing.Union[left, right]  # noqa: UP007
 
     if isinstance(node, ast.Tuple):
         return tuple(_parse_type_node(elt, names) for elt in node.elts)

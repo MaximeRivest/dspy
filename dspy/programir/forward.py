@@ -515,7 +515,7 @@ class _Compiler:
             return {"node": "List", "items": [self.expression(element) for element in node.elts]}
         if isinstance(node, ast.Dict):
             entries = []
-            for key, value in zip(node.keys, node.values):
+            for key, value in zip(node.keys, node.values, strict=False):
                 if key is None:
                     self.refuse(node, "dict **splat is the splat convention; merge with `|` or update instead (D-037)")
                 entries.append({"key": self.expression(key), "value": self.expression(value)})
@@ -559,7 +559,7 @@ class _Compiler:
                     )
             pairs = [
                 self._compare_pair(op, left, right, node)
-                for op, left, right in zip(node.ops, operands[:-1], operands[1:])
+                for op, left, right in zip(node.ops, operands[:-1], operands[1:], strict=False)
             ]
             return {"node": "BoolOp", "op": "and", "values": pairs}
         return self._compare_pair(node.ops[0], node.left, node.comparators[0], node)
@@ -636,7 +636,7 @@ class _Compiler:
             if isinstance(node.operand, ast.Constant) and _is_number(node.operand.value):
                 value = -node.operand.value
                 if isinstance(value, float) and value == 0.0:
-                    value = 0.0  # −0.0 is kept out of the value model
+                    value = 0.0  # negative zero is kept out of the value model
                 return {"node": "Const", "value": value}
             return {"node": "UnaryOp", "op": "neg", "value": self.expression(node.operand)}
         self.refuse(node, f"unary operator {type(node.op).__name__} is outside not/neg (v0.2)")

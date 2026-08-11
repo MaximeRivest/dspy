@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-class ProgramIRRefusal(ValueError):
+class ProgramIRRefusal(ValueError):  # noqa: N818 — "refusal" is the contract's own word for this act
     """Refuse a malformed or unlinked ProgramIR value with a stable code."""
 
     def __init__(self, code: str, component: str, detail: dict[str, Any], message: str):

@@ -108,7 +108,6 @@ def _demo_summary(demo: Mapping[str, Any]) -> str:
 
 
 def _diff_predictors(a: Mapping[str, Any], b: Mapping[str, Any]) -> list[str]:
-    lines: list[str] = []
     bindings_a = {p: n.get("bindings") for p, n in predictor_nodes(a.get("1_module_tree", {})).items()}
     bindings_b = {p: n.get("bindings") for p, n in predictor_nodes(b.get("1_module_tree", {})).items()}
     signatures_a, signatures_b = a.get("2_signature", {}), b.get("2_signature", {})

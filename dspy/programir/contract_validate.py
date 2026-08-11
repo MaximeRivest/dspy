@@ -102,7 +102,7 @@ def json_equal(a: Any, b: Any) -> bool:
         return (
             isinstance(a, list) and isinstance(b, list)
             and len(a) == len(b)
-            and all(json_equal(x, y) for x, y in zip(a, b))
+            and all(json_equal(x, y) for x, y in zip(a, b, strict=False))
         )
     if isinstance(a, dict) or isinstance(b, dict):
         return (
@@ -420,7 +420,7 @@ def _check_branches(value: Any, branches: list, root: dict, ipath: tuple,
     if branches and all(isinstance(c, str) for c in consts):
         kind = value.get("node") if isinstance(value, dict) else None
         matching = [(branch, i) for i, (branch, const)
-                    in enumerate(zip(branches, consts)) if const == kind]
+                    in enumerate(zip(branches, consts, strict=False)) if const == kind]
         if len(matching) == 1:
             branch, i = matching[0]
             sub_spath = (branch["$ref"]
