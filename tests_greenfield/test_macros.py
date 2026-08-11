@@ -65,6 +65,11 @@ def capital_reward(outputs) -> float:
     return 1.0 if outputs["answer"] in ("Paris", "Ottawa") else 0.0
 
 
+def flat_reward(outputs) -> float:
+    """Score every attempt the same: the tie-semantics probe."""
+    return 0.5
+
+
 def digit_reward(outputs) -> float:
     """Score 1.0 for a digit answer."""
     return 1.0 if outputs["answer"].isdigit() else 0.0
@@ -208,6 +213,28 @@ class TestBestOfNBehavior:
         assert prediction.best_score == 0.9
         assert prediction.attempts == 3
         assert len(lm.calls) == 3
+
+    def test_tie_keeps_the_earliest_attempt(self):
+        # Equal rewards (0.5 / 0.5): strict `>` keeps attempt 1's outputs
+        # on BOTH arms — the docstring's tie promise. A `gt` -> `ge` slip
+        # flips both arms to t2, and every OTHER scripted reward in this
+        # battery is distinct, so only this test can see it.
+        best = dspy.BestOfN(dspy.Predict("question -> answer"), 2, flat_reward)
+        script = answers("t1", "t2")
+
+        engine_lm = dspy.DummyLM(script)
+        dspy.configure(lm=engine_lm)
+        engine_prediction = best(question="pick one")
+
+        native_lm = dspy.DummyLM(script)
+        dspy.configure(lm=native_lm)
+        native_record = best.forward_native(question="pick one")
+
+        assert_identical_calls(engine_lm, native_lm)
+        assert engine_prediction.toDict() == dict(native_record)
+        assert engine_prediction.answer == "t1"  # the EARLIEST tied attempt
+        assert engine_prediction.best_score == 0.5
+        assert engine_prediction.attempts == 2  # no early exit: both ran
 
     def test_exhausted_n_equivalence(self):
         best = dspy.BestOfN(dspy.Predict("question -> answer"), 3, table_reward)
