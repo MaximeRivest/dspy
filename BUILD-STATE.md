@@ -722,3 +722,144 @@ ToolError` behaves identically on both arms — also tested directly.
   re-CONSTRUCTING (`ReAct(sig, tools, max_iters)`) over deepcopy and
   carry demos/instructions across; it is the honest path and avoids
   aliasing the tools table.
+
+## 2026-08-10 — A5: optimizers as IR mutations (agent A5)
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 249
+passed (A1–A4's 231 + 18 new: `test_optim.py`).** `dspy/optim/` exists:
+LabeledFewShot, BootstrapFewShot, BootstrapFewShotWithRandomSearch, and
+the loop machinery they share — propose = mutate the program's data,
+score = engine replay over a devset, keep = the best state. checkpoint
+== save: every accepted candidate is an ordinary loadable artifact.
+
+### What exists now
+
+- `dspy/optim/base.py` — the loop shape:
+  - `ProgramState` + `snapshot_state`/`apply_state` — a candidate is
+    DATA: `{path: demos}` + `{path: instructions}`, the live mirror of
+    manifest components 3b/3a. Apply refuses on structural mismatch.
+  - `evaluate(program, devset, metric) -> EvaluationResult(score,
+    results, lm_calls)` — sequential; every program runs THROUGH THE
+    ENGINE (`run_engine`: a `Module` — leaf Predict included — goes
+    `_executable()`; an `ExecutableProgram` already is the engine).
+    Catchable failures score 0.0 with `prediction=None`; `lm_calls`
+    counts `predictor_calls` exhaust (failed runs contribute none —
+    documented).
+  - `Checkpointer` — `<dir>/candidate-NNN/` via `program.save` (the one
+    save path) + `scores.json` (candidate, score, label; the acceptance
+    trajectory in order). Loading a checkpoint is plain `dspy.load`.
+  - `check_trainset` — every entry must be a `dspy.Example` with
+    `.with_inputs(...)` called; refusal names the index.
+  - `Optimizer` — `compile(program, *, trainset, ...) -> program`.
+- `dspy/optim/labeled_fewshot.py` — `LabeledFewShot(k=16, seed=0)`: one
+  seeded rng samples k demos per predictor sequentially (`sample=False`
+  takes the first k). The trivial mutation; proves the plumbing.
+- `dspy/optim/bootstrap.py` — `BootstrapFewShot(metric,
+  metric_threshold=, max_bootstrapped_demos=4, max_labeled_demos=16,
+  seed=0)`: the teacher (default: the student ITSELF; or a provided
+  structurally identical program — paths + `signature.equals` checked,
+  shared predictor instances refused) gets labeled demos attached, runs
+  the trainset through the engine, and each metric-passing run's
+  per-predictor call records become `Example(augmented=True, **inputs,
+  **outputs)` demos. The current example is dropped from demos while it
+  runs (no self-teaching). Teacher/student state snapshot-restored in a
+  `finally`; the student then gets augmented demos + a seeded labeled
+  fill from the unbootstrapped remainder, both caps honored.
+- `dspy/optim/random_search.py` —
+  `BootstrapFewShotWithRandomSearch(metric, ..., num_candidate_programs
+  =16, stop_at_score=, seed=0)`: the classic schedule verbatim — seed
+  -3 zero-shot, -2 labeled-only, -1 unshuffled bootstrap, 0..N-1
+  bootstrap over `Random(seed)`-shuffled trainset with a
+  `Random(seed).randint(1, max)` demo budget. Each candidate: apply
+  baseline → propose → `evaluate` → snapshot → revert; STRICT
+  improvement accepts (ties keep the first best); `optimizer.
+  trajectory` records every candidate (seed, label, score, lm_calls,
+  accepted, checkpoint name). Best state applied on return.
+- `dspy/__init__.py` exports `optim` plus the three optimizer classes;
+  `evaluate` stays namespaced (`dspy.optim.evaluate`).
+
+### The mutation surface used (exact fields)
+
+- `predictor.demos = [...]` — a list of `dspy.Example` (each with
+  `_input_keys`); compiles into component 3b path-keyed.
+- `predictor.signature = predictor.signature.with_instructions(...)` —
+  component 3a (snapshot/apply carry it; none of the three shipped
+  optimizers proposes instruction edits yet — A6+ instruction
+  optimizers get the door for free).
+- NOTHING else: no config mutation, no structural edits, no
+  `invalidate_ir()` needed anywhere — A4's fingerprint (demo ids,
+  instructions, bindings, ir_literals) recompiles mutated programs
+  automatically, exactly as promised. Candidates on ONE live program
+  via snapshot/apply; no deepcopy, no reset_copy (re-construct for a
+  fresh original — noted in the Optimizer docstring).
+
+### What the engine records gave vs what was added
+
+- `_trajectory["predictor_calls"]` (path, inputs, outputs per leaf
+  call) is EXACTLY the bootstrap trace — no predictor2name id mapping,
+  no settings.trace context; path-keyed records match
+  `named_predictors()` paths on student and teacher by construction.
+  Nothing had to be added to the engine.
+- One gap worked around, not fixed: a LEAF program's default call is
+  native (`Predict.__call__`), which records no `predictor_calls` — so
+  `run_engine` routes Modules through `_executable()` (private access,
+  the one impurity; a public `Module.executable()` would be cleaner).
+- Failed runs leave no exhaust, so `evaluate.lm_calls` undercounts by
+  the calls a failing run made before raising. Honest fix would be an
+  engine-side call counter that survives refusal; documented instead.
+
+### Seeds / determinism
+
+- One explicit `seed=` per optimizer (default 0), driving: labeled
+  sampling, the teacher's labeled demos, the validation shuffle, and
+  the labeled fill. Random-search candidate seeds are the schedule
+  itself (-3..N-1), matching the old semantics.
+- Everything is sequential; DummyLM scripts in the battery are
+  CALLABLES (answer tables keyed off the rendered prompt), so
+  determinism holds regardless of call order — copy that pattern.
+- Same seed → byte-identical demo sets (tested); different seed →
+  different labeled samples (tested).
+
+### Old-semantics deviations (honest trims)
+
+- `max_rounds` dropped: the old retry loop rode `rollout_id`/
+  `temperature=1.0` cache-busting that has no greenfield counterpart —
+  one engine attempt per trainset example.
+- Multiple traces of one predictor in one run: the old 50/50
+  hash-rng sampling is now "the LAST call wins" (deterministic; for
+  ReAct that is the finish step — arguably the best demo anyway).
+- Old `_train`'s raw-demo RESAMPLING quirk (each predictor sampled
+  from the previous predictor's sample) dropped: every predictor
+  samples its labeled fill from the full validation remainder with the
+  one shared rng.
+- Errors during a bootstrap attempt: only the TYPED catchable channel
+  (`CatchableError`) counts as a failed attempt; anything else
+  propagates. No `max_errors` budget, no logging counters.
+- Random search: `restrict=`, `num_threads`, `labeled_sample=` gone;
+  `stop_at_score` kept. Candidate metadata lives on
+  `optimizer.trajectory`, not bolted onto the returned program.
+- LabeledFewShot on an empty trainset attaches empty demo lists (old
+  returned early keeping stale demos — mutating to the stated state is
+  truer).
+
+### Notes for A6 (integration / demo scripts)
+
+- **The showcase arc that writes itself**: one QA task, four beats —
+  (1) zero-shot ChainOfThought fails half the devset; (2)
+  `LabeledFewShot` lifts it (demos visible in `preview()` and in
+  `explain()`); (3) `BootstrapFewShot` produces augmented demos WITH
+  the reasoning the teacher actually traced (show one demo's
+  `reasoning` field); (4) `BootstrapFewShotWithRandomSearch(...,
+  checkpoint_dir=...)` — then `dspy.load(checkpoint_dir /
+  "candidate-001", bindings=...)` and run it, proving checkpoint ==
+  artifact. `optimizer.trajectory` prints as the search story;
+  `dspy.diff(zero_shot_manifest, optimized_manifest)` shows the demos
+  as the ONLY delta — the whole thesis in one diff.
+- The `copycat` DummyLM pattern in `test_optim.py` (answers correctly
+  only when a demo carries the answer) makes optimizer improvement
+  REAL under a scripted LM — reuse it for the demo.
+- ReAct optimization works end to end (bootstrap + equivalence
+  tested); its bootstrapped react-step demos carry `trajectory` dict
+  values — they render and round-trip fine.
+- `optim.evaluate` is the scoring door for the demo's before/after
+  numbers; `result.lm_calls` gives the cost line.
