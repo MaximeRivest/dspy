@@ -70,8 +70,7 @@ def _placement_line(placement: Any) -> str:
     ref = placement.get("endpoint_ref")
     if ref:
         default = placement.get("default_endpoint")
-        bits.append(f"endpoint_ref={ref}"
-                    + (f" (default {default})" if default else " (no default)"))
+        bits.append(f"endpoint_ref={ref}" + (f" (default {default})" if default else " (no default)"))
     isolation = placement.get("isolation")
     if isolation and isolation != "none":
         bits.append(f"isolation={isolation}")
@@ -81,6 +80,20 @@ def _placement_line(placement: Any) -> str:
 
 
 # ─── Forward rendering (SEM-8 v0 encoding) ───────────────────────────
+
+
+def _render_arg(argument: Any) -> str:
+    """One forward parameter: a plain name, or the v0.4 record bag `**name`.
+
+    The record envelope (D-041) is `{"name": <bag>, "record": "self"}`; it
+    renders as the `**<bag>` desugar the printer uses, so a splat-based
+    forward (ReAct/ReActV2/RLM) prints readably instead of crashing on a
+    dict where a string arg was expected.
+    """
+    if isinstance(argument, dict):
+        return f"**{argument.get('name', '?')}"
+    return str(argument)
+
 
 def _render_expr(v: Any) -> str:
     if not isinstance(v, dict):
@@ -93,9 +106,11 @@ def _render_expr(v: Any) -> str:
             target = f"tool[{_render_expr(v.get('name'))}]"
         else:
             target = f"{kind}[{leaf.get('ref', '?')}]"
-        args = ", ".join(f"{k}={_render_expr(x)}"
-                         for k, x in v.get("kwargs", {}).items())
-        return f"{target}({args})"
+        pieces = []
+        if "splat" in v:
+            pieces.append(f"**{v['splat']}")
+        pieces += [f"{k}={_render_expr(x)}" for k, x in v.get("kwargs", {}).items()]
+        return f"{target}({', '.join(pieces)})"
     if node == "Attr":
         return f"{v.get('obj')}.{v.get('attr')}"
     if node == "Var":
@@ -145,6 +160,7 @@ def _render_stmts(body: Any, indent: int) -> list[str]:
 
 # ─── Module tree ─────────────────────────────────────────────────────
 
+
 def _render_tree(node: dict, indent: int = 2, lines: list[str] | None = None) -> list[str]:
     if lines is None:
         lines = []
@@ -181,6 +197,7 @@ def _predictor_paths(tree: dict) -> list[str]:
 
 # ─── The view ────────────────────────────────────────────────────────
 
+
 def build_text(manifest: dict) -> str:
     """Render one schema-valid manifest as the View-1 static print.
 
@@ -201,8 +218,7 @@ def build_text(manifest: dict) -> str:
     # Versions first (spec/versions.md: the first thing explain prints).
     out.append(_rule("VERSIONS"))
     versions = manifest["versions"]
-    required_order = ["ir_version", "node_set", "roles", "strategies",
-                      "codecs", "adapter_ir", "lm15"]
+    required_order = ["ir_version", "node_set", "roles", "strategies", "codecs", "adapter_ir", "lm15"]
     for entry in required_order + sorted(set(versions) - set(required_order)):
         out.append(_kv(entry, versions[entry]))
 
@@ -211,8 +227,10 @@ def build_text(manifest: dict) -> str:
     tree = components["1_module_tree"]
     out += _render_tree(tree)
     predictors = _predictor_paths(tree)
-    out.append(f"  ({len(predictors)} predictor{'s' if len(predictors) != 1 else ''};"
-               " leaves bind {adapter, lm, delta} by name)")
+    out.append(
+        f"  ({len(predictors)} predictor{'s' if len(predictors) != 1 else ''};"
+        " leaves bind {adapter, lm, delta} by name)"
+    )
 
     # 2/3a/3b/3c per predictor (sorted paths).
     out.append(_rule("PREDICTORS (2, 3a, 3b, 3c)"))
@@ -230,15 +248,21 @@ def build_text(manifest: dict) -> str:
             fields = signature["fields"]
             ins = [f for f in fields if f.get("direction") == "input"]
             outs = [f for f in fields if f.get("direction") == "output"]
-            arrow = (", ".join(f"{f['name']}: {_shape_short(f.get('shape'))}" for f in ins)
-                     + " -> "
-                     + ", ".join(f"{f['name']}: {_shape_short(f.get('shape'))}" for f in outs))
+            arrow = (
+                ", ".join(f"{f['name']}: {_shape_short(f.get('shape'))}" for f in ins)
+                + " -> "
+                + ", ".join(f"{f['name']}: {_shape_short(f.get('shape'))}" for f in outs)
+            )
             out.append(_kv("signature", arrow, 4))
             for f in fields:
-                out.append(_kv(
-                    f"  .{f['name']}",
-                    f"{f.get('direction')}  role={f.get('semantic_role')}  "
-                    f"prefix={f.get('prefix')!r}  desc={f.get('desc')!r}", 4))
+                out.append(
+                    _kv(
+                        f"  .{f['name']}",
+                        f"{f.get('direction')}  role={f.get('semantic_role')}  "
+                        f"prefix={f.get('prefix')!r}  desc={f.get('desc')!r}",
+                        4,
+                    )
+                )
         instruction = instructions.get(path)
         if instruction is None or instruction == "":
             out.append(_kv("instructions (3a)", "(none)", 4))
@@ -250,23 +274,20 @@ def build_text(manifest: dict) -> str:
         for i, demo in enumerate(demos):
             input_keys = demo.get("input_keys", [])
             labels = sorted(set(demo) - set(input_keys) - {"input_keys"})
-            out.append(_kv(f"  demo[{i}]",
-                           f"inputs={input_keys} labels={labels}", 4))
+            out.append(_kv(f"  demo[{i}]", f"inputs={input_keys} labels={labels}", 4))
         config = config_map.get(path)
         if not config:
             out.append(_kv("config (3c)", "(none)", 4))
             absent.append(f"config (3c) [{path}]")
         else:
-            out.append(_kv("config (3c)",
-                           "  ".join(f"{k}={_dumps(v)}"
-                                     for k, v in sorted(config.items())), 4))
+            out.append(_kv("config (3c)", "  ".join(f"{k}={_dumps(v)}" for k, v in sorted(config.items())), 4))
 
     # 5 forward.
     out.append(_rule("FORWARD (5) — node-set v0"))
     forwards = components["5_forward"]
     for module in sorted(forwards):
         spec = forwards[module]
-        args = ", ".join(spec.get("args", []))
+        args = ", ".join(_render_arg(argument) for argument in spec.get("args", []))
         out.append(f"  def forward[{module}]({args}):        # {spec.get('language', '?')}")
         out += _render_stmts(spec.get("body"), 6)
 
@@ -279,12 +300,10 @@ def build_text(manifest: dict) -> str:
     for name in sorted(adapters):
         entry = adapters[name]
         if isinstance(entry, dict) and "preset" in entry:
-            out.append(_kv(name, f"builtin preset '{entry['preset']}'"
-                                 f"  versions={_dumps(entry.get('versions', {}))}"))
+            out.append(_kv(name, f"builtin preset '{entry['preset']}'  versions={_dumps(entry.get('versions', {}))}"))
         else:
             keys = ", ".join(sorted(entry)) if isinstance(entry, dict) else "?"
-            out.append(_kv(name, "full preset (internals owned by the "
-                                 f"adapter-ir contract; keys: {keys})"))
+            out.append(_kv(name, f"full preset (internals owned by the adapter-ir contract; keys: {keys})"))
 
     # 6 tools / 7 interpreter pools.
     out.append(_rule("TOOL POOL (6)"))
@@ -294,8 +313,7 @@ def build_text(manifest: dict) -> str:
         absent.append("tools (6)")
     for name in sorted(tools):
         entry = tools[name]
-        out.append(_kv(name, f"language={entry.get('language', '?')}  "
-                             f"source={entry.get('source', '?')}"))
+        out.append(_kv(name, f"language={entry.get('language', '?')}  source={entry.get('source', '?')}"))
         if entry.get("description"):
             out.append(_kv("  description", entry["description"], 4))
         if entry.get("parameters") is not None:
@@ -339,10 +357,15 @@ def build_text(manifest: dict) -> str:
             out.append(_kv("served aliases", ", ".join(aliases) or "(empty)", 4))
         cls = entry.get("class")
         if cls:
-            out.append(_kv("class",
-                           f"{cls.get('identity', '?')}  [{cls.get('origin', '?')}, "
-                           f"{cls.get('language', '?')}]  (advisory for declared "
-                           "entries, D-023)", 4))
+            out.append(
+                _kv(
+                    "class",
+                    f"{cls.get('identity', '?')}  [{cls.get('origin', '?')}, "
+                    f"{cls.get('language', '?')}]  (advisory for declared "
+                    "entries, D-023)",
+                    4,
+                )
+            )
         engine = entry.get("engine")
         if engine:
             out.append(_kv("engine", f"{engine}  (baked entry)", 4))
@@ -372,8 +395,7 @@ def build_text(manifest: dict) -> str:
         weights = entry.get("weights")
         if isinstance(weights, dict) and isinstance(weights.get("placement"), dict):
             placeable.append((f"lm:{name}.weights", weights["placement"]))
-    for pool_key, label in (("6_tools", "tool"), ("7_interpreter", "interpreter"),
-                            ("12_metric", "metric")):
+    for pool_key, label in (("6_tools", "tool"), ("7_interpreter", "interpreter"), ("12_metric", "metric")):
         pool = components.get(pool_key) or {}
         if pool_key == "12_metric":
             pool = pool.get("metrics", {})
@@ -389,8 +411,7 @@ def build_text(manifest: dict) -> str:
             out.append(_kv(label, _placement_line(placement)))
         rungs = sorted({p.get("rung") or "?" for _l, p in placeable})
         if rungs == ["in_process"]:
-            out.append("  => every placeable component is rung 0 (in-process);"
-                       " fully self-contained")
+            out.append("  => every placeable component is rung 0 (in-process); fully self-contained")
         else:
             out.append(f"  => rungs present: {rungs}")
 
@@ -402,16 +423,22 @@ def build_text(manifest: dict) -> str:
         absent.append("environment (9)")
     for language in sorted(environment):
         block = environment[language]
-        rendered = ("  ".join(f"{k}={_dumps(v)}" for k, v in sorted(block.items()))
-                    if isinstance(block, dict) and block else "(empty block)")
+        rendered = (
+            "  ".join(f"{k}={_dumps(v)}" for k, v in sorted(block.items()))
+            if isinstance(block, dict) and block
+            else "(empty block)"
+        )
         out.append(_kv(f"language '{language}'", rendered))
     credentials = components["10_credentials"]
     if not credentials:
         out.append(_kv("credentials", "(none — no secrets baked, none required)"))
     for cred in credentials:
-        out.append(_kv("credential",
-                       f"{cred.get('name', '?')}  scope={cred.get('scope', '?')}  "
-                       "(name only; value byte-absent, PIR-005)"))
+        out.append(
+            _kv(
+                "credential",
+                f"{cred.get('name', '?')}  scope={cred.get('scope', '?')}  (name only; value byte-absent, PIR-005)",
+            )
+        )
 
     # 11 ambient policy.
     out.append(_rule("AMBIENT POLICY (11)"))
@@ -420,8 +447,7 @@ def build_text(manifest: dict) -> str:
         out.append("  (empty)")
         absent.append("ambient policy (11)")
     else:
-        out.append("  " + "  ".join(f"{k}={_dumps(v)}"
-                                    for k, v in sorted(policy.items())))
+        out.append("  " + "  ".join(f"{k}={_dumps(v)}" for k, v in sorted(policy.items())))
 
     # 12 metric pool (the droppable component).
     out.append(_rule("METRIC POOL (12)"))
@@ -435,8 +461,7 @@ def build_text(manifest: dict) -> str:
             out.append("  metrics                (empty pool)")
         for name in sorted(metrics):
             entry = metrics[name]
-            out.append(_kv(name, f"language={entry.get('language', '?')}  "
-                                 f"source={entry.get('source', '?')}"))
+            out.append(_kv(name, f"language={entry.get('language', '?')}  source={entry.get('source', '?')}"))
             out.append(_kv("  placement", _placement_line(entry.get("placement")), 4))
         out.append(_kv("devset", f"{len(evaluation['devset'])} ordered examples"))
 
@@ -444,9 +469,14 @@ def build_text(manifest: dict) -> str:
     out.append(_rule("SUMMARY"))
     out.append(_kv("ir_version", versions["ir_version"]))
     out.append(_kv("predictors", f"{len(predictors)} ({', '.join(sorted(predictors))})"))
-    out.append(_kv("pools", f"adapters {len(adapters)} · tools {len(tools)} · "
-                            f"interpreters {len(interpreters)} · lms {len(lms)} · "
-                            f"metrics {len(metrics or {})}"))
+    out.append(
+        _kv(
+            "pools",
+            f"adapters {len(adapters)} · tools {len(tools)} · "
+            f"interpreters {len(interpreters)} · lms {len(lms)} · "
+            f"metrics {len(metrics or {})}",
+        )
+    )
     out.append(_kv("credentials", str(len(credentials))))
     out.append(_kv("empty/absent", ", ".join(absent) if absent else "(all present)"))
     out.append("=" * WIDTH)
