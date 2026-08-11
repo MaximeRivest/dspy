@@ -23,7 +23,18 @@ resumes the campaign from here plus the state map.
   every push; every public-surface change (flagged per-report); every
   spec change that touches a D-numbered decision; upstream syncs.
 
-## Wave 0 — launch (now)
+> **HISTORICAL (marked 2026-08-10).** This orchestration plan governed
+> Epic D, which is complete (all waves landed; as-built in
+> `epic-D-adapter-serializer.md` v5). Epic I ran outside this protocol
+> (Maxime + one assistant), which is the operating mode from I onward —
+> the gates that survive live in `04-process.md` (corpus L8, dspy-ci
+> matrix, no push/PR without Maxime). Correction to the D-γ bullet
+> below, per epic-I scope conflict #1: server examples 01–04
+> regenerated their **`4_adapter` components** via `dump_entry()` only;
+> whole-manifest regeneration through a real exporter is Epic I's
+> (delivered there; 04 refused by design).
+
+## Wave 0 — launch — DONE
 
 Push the pre-implementation stack (contract, examples, cookbook, E2E
 xfails, Epic D v2). Then D-α launches.
@@ -131,8 +142,8 @@ does the final truth pass (nothing "Arriving" remains).
 - Agent blocked on a design hole: it reports the hole + a proposal;
   coordinator either resolves within ratified decisions or escalates to
   Maxime; spec updated before the agent resumes.
-- Matrix flake: rerun before investigating (known flakes listed in
-  `03-campaign.md`).
+- Matrix flake: the known flake was retired (`d4aa6011e`); treat
+  matrix failures as real.
 - Corpus regeneration "needed" by a feature agent: automatic stop — the
   change altered behavior; rethink (L8).
 

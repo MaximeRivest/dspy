@@ -5,7 +5,7 @@ Flat rules. Deviations need Maxime's word, not good intentions.
 ## Testing
 - **`dspy-ci` is the only test authority.** Never local pytest as the verdict. It snapshots the working tree (staged + unstaged) and accepts pytest args for focused runs; no args = full matrix (py3.10–3.14 + live-LM smoke on the 48-core server).
 - **Stage new files before running it** — the snapshot excludes untracked files (`git stash create` semantics). This has burned two agents.
-- Full matrix green before an epic is called done. The pre-push hook runs the matrix again; a one-off flake → rerun before investigating (known: `test_dspy_configure_allowance_async` py3.14).
+- Full matrix green before an epic is called done. The pre-push hook runs the matrix again. (The old known flake `test_dspy_configure_allowance_async` was retired at `d4aa6011e` — failures there are real now; no rerun-and-ignore.)
 
 ## The corpus (L8, operational form)
 - Fixtures regenerate only via `tests/adapters/golden/generate_fixtures.py` in a dedicated commit with zero `dspy/` source changes.
