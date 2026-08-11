@@ -324,7 +324,23 @@ class FlexIR(Optimizer):
                     f"inputs {sorted(predictor.signature.input_fields)} and outputs "
                     f"{sorted(predictor.signature.output_fields)}"
                 )
-            predictor.demos = [*predictor.demos, Example(**inputs, **labels).with_inputs(*inputs)]
+            candidate = Example(**inputs, **labels).with_inputs(*inputs)
+            # Field NAMES are checked above; VALUES are checked by a
+            # dry-run render. A demo the adapter cannot format (a list
+            # holding null, say) would otherwise apply cleanly and then
+            # crash the very next evaluate deep inside prompt rendering
+            # — a raw TypeError instead of a refusal.
+            demos = [demo.toDict() if hasattr(demo, "toDict") else dict(demo) for demo in predictor.demos]
+            try:
+                predictor.resolve_adapter().format(
+                    predictor.signature, inputs=dict(inputs), demos=[*demos, candidate.toDict()]
+                )
+            except Exception as error:
+                return (
+                    f"refused {tag}: add_demo values do not render — the adapter could not format the "
+                    f"demo ({type(error).__name__}: {error}); use values the declared fields can carry"
+                )
+            predictor.demos = [*predictor.demos, candidate]
             return None
 
         # remove_demo

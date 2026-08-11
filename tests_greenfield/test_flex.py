@@ -250,6 +250,41 @@ class TestRefusalFeedbackLoop:
         assert program.solver.signature.instructions == MAGIC
 
 
+class TestDemoValueValidation:
+    def test_unrenderable_demo_values_refuse_and_the_loop_survives(self):
+        # Well-formed shape, poison VALUES (a list holding null): the
+        # dry-run render converts what used to be a raw TypeError deep
+        # in the adapter — killing compile and stranding the demo — into
+        # a recorded refusal; the valid sibling still applies, scores,
+        # and reverts cleanly (0.0 is not strictly better).
+        program = Solo()
+        poison = {
+            "op": "add_demo",
+            "path": "solver",
+            "inputs": {"question": {"nested": ["deep", {"x": 1}]}},
+            "labels": {"answer": ["Paris", None, 3.5]},
+        }
+        valid = {
+            "op": "add_demo",
+            "path": "solver",
+            "inputs": {"question": "What is the capital of France?"},
+            "labels": {"answer": "Paris"},
+        }
+        reflection = dspy.DummyLM([reflection_reply([poison, valid])])
+        optimizer = optim.FlexIR(reflection, exact_answer, iterations=1)
+        dspy.configure(lm=dspy.DummyLM(task_pilot))
+
+        optimizer.compile(program, trainset=devset_of("France"))
+
+        entry = optimizer.trajectory[1]
+        assert len(entry["refusals"]) == 1
+        assert "add_demo values do not render" in entry["refusals"][0]
+        assert entry["applied"] == [valid]
+        assert entry["score"] == 0.0  # the candidate really evaluated — no crash
+        assert entry["accepted"] is False
+        assert program.solver.demos == []  # nothing stranded: poison refused, valid reverted
+
+
 class TestExceptionSafeUnwind:
     def test_evaluate_crash_reverts_applied_edits(self):
         # A metric that explodes on the CANDIDATE evaluation (call 2;
