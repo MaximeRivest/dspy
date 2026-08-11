@@ -252,7 +252,14 @@ class SignatureMeta(type(BaseModel)):
         return f"{input_fields} -> {output_fields}"
 
     def _get_fields_with_type(cls, field_type) -> dict[str, FieldInfo]:
-        return {k: v for k, v in cls.model_fields.items() if v.json_schema_extra["__dspy_field_type"] == field_type}
+        # `json_schema_extra` may be None for a plain pydantic.Field; the
+        # loud refusal for those lives in `_validate_fields`, which must be
+        # reachable without crashing here first.
+        return {
+            k: v
+            for k, v in cls.model_fields.items()
+            if (v.json_schema_extra or {}).get("__dspy_field_type") == field_type
+        }
 
     def __repr__(cls):
         """Output a representation of the signature.
