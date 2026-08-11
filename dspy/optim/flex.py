@@ -61,17 +61,22 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import subprocess
+import tempfile
 import types
+from pathlib import Path
 from typing import Any, Callable
 
 from dspy.core.errors import AdapterParseError
 from dspy.core.example import Example
+from dspy.core.prediction import Prediction
 from dspy.lm.lm import LM
 from dspy.modules.best_of_n import BestOfN
 from dspy.modules.module import Module
 from dspy.modules.predict import Predict
 from dspy.optim.base import (
     Checkpointer,
+    EvaluationResult,
     Optimizer,
     apply_state,
     check_trainset,
@@ -225,6 +230,42 @@ class FlexIR(Optimizer):
             import name — beautifulsoup4 imports as bs4, and the import
             allowlist stays governed by `extra_imports` alone, so grant
             the IMPORT name there as well.
+        auto_install: When True (default False — a deliberate door,
+            default closed), a dep-carrying leaf that passes admission
+            has its missing granted packages installed BEFORE the
+            candidate is evaluated, via `uv pip install` into the
+            CURRENT interpreter's environment. Know what that means:
+            installing a package executes third-party build code; a
+            REJECTED candidate's installs are NOT unwound (the env
+            drifts from the lock until the next export re-locks); and it
+            needs network (or a warm uv cache). An install failure is a
+            teaching refusal into the ledger — the proposal's fault, not
+            an infra abort. Only meaningful alongside `allowed_deps`.
+        eval_mode: WHERE candidates are scored — never what is accepted
+            (acceptance, holdout gate, ledger, and unwind are identical
+            in both modes). `"in_process"` (default) scores through the
+            live engine as always. `"artifact"` exports every candidate
+            (baseline included) to a temp artifact and scores it in a
+            SUBPROCESS under that artifact's own environment — scoring
+            semantics == deployment semantics, environment included.
+            Environments are cached by lockfile hash (under
+            `<checkpoint_dir>/.envs`, else `~/.cache/dspy-flexir`), so
+            only candidates that change deps pay a resolve. Artifact
+            mode requires a SELF-CONTAINED metric function (its source
+            travels to the child; refused at compile otherwise) and
+            serializes scripted DummyLM state to the child; real-LM
+            child binding is not implemented yet — use in_process for
+            live providers.
+        eval_env_overrides: Artifact-mode only: distribution names
+            mapped to local paths installed EDITABLE into the child env
+            in place of the locked release. Defaults to `{"dspy":
+            <this repo>}` — the manifest pins `dspy==<greenfield
+            version>`, which is not the PyPI dspy, so the child must get
+            the running tree.
+        _eval_same_env: TEST-ONLY escape hatch: artifact-mode children
+            run under the current interpreter instead of a freshly built
+            uv environment, so the export/harness/protocol/caching logic
+            is testable offline. Never set this outside tests.
 
     Attributes:
         trajectory: After `compile`, one record per round (plus the
@@ -253,6 +294,10 @@ class FlexIR(Optimizer):
         code_trust: str = "isolated",
         extra_imports: frozenset[str] | None = None,
         allowed_deps: frozenset[str] | None = None,
+        auto_install: bool = False,
+        eval_mode: str = "in_process",
+        eval_env_overrides: dict[str, Any] | None = None,
+        _eval_same_env: bool = False,
     ):
         if isinstance(iterations, bool) or not isinstance(iterations, int) or iterations < 1:
             raise ValueError(f"FlexIR iterations must be an int >= 1, got {iterations!r}")
@@ -266,6 +311,10 @@ class FlexIR(Optimizer):
             isinstance(allowed_deps, str) or not all(isinstance(name, str) for name in allowed_deps)
         ):
             raise ValueError(f"FlexIR allowed_deps must be an iterable of package-name strings, got {allowed_deps!r}")
+        if not isinstance(auto_install, bool):
+            raise ValueError(f"FlexIR auto_install must be a bool, got {auto_install!r}")
+        if eval_mode not in ("in_process", "artifact"):
+            raise ValueError(f"FlexIR eval_mode must be 'in_process' or 'artifact', got {eval_mode!r}")
         self.metric = metric
         self.iterations = iterations
         self.reward = reward
@@ -274,6 +323,13 @@ class FlexIR(Optimizer):
         self.code_trust = code_trust
         self.extra_imports = frozenset(extra_imports) if extra_imports is not None else None
         self.allowed_deps = frozenset(allowed_deps) if allowed_deps is not None else None
+        self.auto_install = auto_install
+        self.eval_mode = eval_mode
+        self.eval_env_overrides = eval_env_overrides
+        self._eval_same_env = _eval_same_env
+        self._env_cache: Any = None
+        self._metric_source: str | None = None
+        self._script_lms: dict[str, Any] = {}
         self.reflect = Predict(_reflection_signature(self.extra_imports, self.allowed_deps), lm=reflection_lm)
         self.trajectory: list[dict[str, Any]] = []
 
@@ -295,12 +351,14 @@ class FlexIR(Optimizer):
             _refuse_overlapping_holdout(devset, holdout)
         checkpointer = Checkpointer(checkpoint_dir) if checkpoint_dir is not None else None
         self.trajectory = []
+        if self.eval_mode == "artifact":
+            self._prepare_artifact_mode(checkpoint_dir)
 
-        baseline = evaluate(program, devset, self.metric)
+        baseline = self._evaluate(program, devset)
         best_score = baseline.score
         best_lm_calls = baseline.lm_calls
         best_results = baseline.results
-        best_holdout = evaluate(program, holdout, self.metric).score if holdout else None
+        best_holdout = self._evaluate(program, holdout).score if holdout else None
         self.trajectory.append(
             {
                 "iteration": -1,
@@ -355,8 +413,8 @@ class FlexIR(Optimizer):
                             has_partial = True
                     else:
                         refusals.append(refusal)
-                result = evaluate(program, devset, self.metric) if applied else None
-                holdout_result = evaluate(program, holdout, self.metric) if (result is not None and holdout) else None
+                result = self._evaluate(program, devset) if applied else None
+                holdout_result = self._evaluate(program, holdout) if (result is not None and holdout) else None
                 holdout_score = holdout_result.score if holdout_result is not None else None
             except Exception:
                 # Any crash between the first applied edit and the score
@@ -496,6 +554,150 @@ class FlexIR(Optimizer):
         apply_state(program, snapshot)
         if undo_structural:
             program.invalidate_ir()
+
+    def _ensure_leaf_deps(self, admitted: Any, tag: str) -> str | None:
+        """Rung 2: install an admitted leaf's granted deps, or refuse.
+
+        Runs only under `auto_install=True` and only for a leaf that
+        actually carries deps; the default is exactly the prior
+        behavior (nothing checked, nothing installed). Refusal happens
+        BEFORE any structural change, so the proposal stays atomic —
+        refused whole, never half-applied. The installs themselves are
+        NOT unwound on a later rejection (see the auto_install docs).
+        """
+        deps = admitted.leaf.entry.get("deps") or []
+        if not deps or not self.auto_install:
+            return None
+        from dspy.optim import env_prepare
+
+        problem = env_prepare.ensure_deps(deps)
+        if problem is not None:
+            return f"refused {tag}: {problem}"
+        return None
+
+    # ------------------------------------------------------------------
+    # Score: in-process, or as an exported artifact in its own env
+    # ------------------------------------------------------------------
+
+    def _evaluate(self, program: Module, dataset: Any):
+        """Score one candidate: WHERE depends on eval_mode, never WHAT."""
+        if self.eval_mode == "in_process":
+            return evaluate(program, dataset, self.metric)
+        return self._evaluate_as_artifact(program, dataset)
+
+    def _prepare_artifact_mode(self, checkpoint_dir: Any) -> None:
+        """Set up artifact scoring: the metric source and the env cache.
+
+        The metric's source travels to the scoring child, so it must be
+        a named, self-contained function (the same law authored leaves
+        obey) — refused HERE, at compile time, with a teaching error,
+        not deep inside the first child run.
+        """
+        from dspy.optim.env_prepare import REPO_ROOT, EnvCache
+        from dspy.programir.leaves import _check_self_contained, _source
+
+        subject = "FlexIR artifact-mode metric"
+        try:
+            source = _source(self.metric, subject=subject)
+            _check_self_contained(self.metric, source, subject=subject)
+        except ValueError as error:
+            raise ValueError(
+                f"FlexIR eval_mode='artifact' sends the metric's SOURCE to the scoring child, so the metric "
+                f"must be a named, self-contained function — {error}"
+            ) from error
+        self._metric_source = source
+        cache_root = (
+            Path(checkpoint_dir) / ".envs" if checkpoint_dir is not None else Path.home() / ".cache/dspy-flexir"
+        )
+        self._env_cache = EnvCache(
+            cache_root,
+            overrides=self.eval_env_overrides or {"dspy": REPO_ROOT},
+            same_env=self._eval_same_env,
+        )
+
+    def _evaluate_as_artifact(self, program: Module, dataset: Any):
+        """Export the candidate; score it in a child under its own env.
+
+        The child runs the SAME `evaluate` this class runs in-process,
+        so the sacred distinction survives the boundary: catchable
+        program errors score 0.0 per example inside the child; anything
+        that escapes (an unloadable artifact, an engine guard) exits the
+        child non-zero and raises HERE — infrastructure is never blamed
+        on the candidate.
+        """
+        with tempfile.TemporaryDirectory(prefix="flexir-artifact-") as tmp:
+            artifact = Path(tmp) / "artifact"
+            program.save(artifact)
+            interpreter = self._env_cache.interpreter_for(artifact)
+            job = {
+                "artifact": str(artifact),
+                "examples": [
+                    {"values": example.toDict(), "input_keys": list(example.inputs().keys())} for example in dataset
+                ],
+                "metric_source": self._metric_source,
+                "lm": self._serialize_lms(program),
+            }
+            job_path = Path(tmp) / "job.json"
+            job_path.write_text(json.dumps(job, default=str))
+            child = subprocess.run(
+                [interpreter, "-m", "dspy.optim._score_harness", str(job_path)],
+                capture_output=True,
+                text=True,
+            )
+        if child.returncode != 0:
+            tail = "\n".join((child.stderr or "").strip().splitlines()[-6:])
+            raise RuntimeError(
+                f"FlexIR artifact-mode scoring failed in the child process (infrastructure, never scored "
+                f"against the candidate): exit {child.returncode}\n{tail}"
+            )
+        payload = json.loads(child.stdout.strip().splitlines()[-1])
+        self._advance_scripts(payload.get("consumed", {}))
+        results = []
+        for example, record in zip(dataset, payload["results"], strict=True):
+            prediction = None if record["prediction"] is None else Prediction(**record["prediction"])
+            results.append((example, prediction, record["value"]))
+        return EvaluationResult(score=payload["score"], results=results, lm_calls=payload["lm_calls"])
+
+    def _serialize_lms(self, program: Module) -> dict[str, Any]:
+        """Serialize the program's LM pool for the child, or refuse.
+
+        Scripted DummyLMs cross the boundary as data: a reply list is
+        sent from its cursor onward (the parent's cursor advances by the
+        child's consumption afterward, so successive child runs read the
+        script exactly as one in-process run would); a function-scripted
+        DummyLM sends its self-contained source. Real provider LMs are
+        not yet re-bindable in the child — a teaching refusal, not a
+        silent misscore.
+        """
+        from dspy.lm.dummy import DummyLM
+        from dspy.programir._dspy import compile_with_live
+        from dspy.programir.leaves import _check_self_contained, _source
+
+        _, live = compile_with_live(program)
+        specs: dict[str, Any] = {}
+        self._script_lms = {}
+        for name, lm in live["lm"].items():
+            if not isinstance(lm, DummyLM):
+                raise ValueError(
+                    f"FlexIR eval_mode='artifact' can serialize only DummyLM state into the scoring child; "
+                    f"LM pool entry {name!r} is a {type(lm).__name__}. Use eval_mode='in_process' for live "
+                    "provider LMs (child-side provider binding is not implemented yet)."
+                )
+            if lm._script is not None:
+                specs[name] = {"script": lm._script[lm._cursor :]}
+                self._script_lms[name] = lm
+            else:
+                subject = f"FlexIR artifact-mode DummyLM {name!r}"
+                source = _source(lm._fn, subject=subject)
+                _check_self_contained(lm._fn, source, subject=subject)
+                specs[name] = {"function_source": source}
+        return specs
+
+    def _advance_scripts(self, consumed: dict[str, int]) -> None:
+        for name, count in consumed.items():
+            lm = self._script_lms.get(name)
+            if lm is not None:
+                lm._cursor += count
 
     # ------------------------------------------------------------------
     # Render: what the reflection LM sees (five slots, section 4)
@@ -690,6 +892,9 @@ class FlexIR(Optimizer):
             )
         except ValueError as error:
             return f"refused {tag}: python_source rejected by admission — {error}"
+        install_refusal = self._ensure_leaf_deps(admitted, tag)
+        if install_refusal is not None:
+            return install_refusal
 
         new_tree = copy.deepcopy(tree)
         counter = _counter_start(new_tree)
@@ -871,6 +1076,9 @@ class FlexIR(Optimizer):
             )
         except ValueError as error:
             return f"refused {tag}: python_source rejected by admission — {error}"
+        install_refusal = self._ensure_leaf_deps(admitted, tag)
+        if install_refusal is not None:
+            return install_refusal
         setattr(owner, name, admitted.function)
         program.invalidate_ir()
         undo_structural.append((owner, name, _ABSENT))

@@ -24,6 +24,8 @@ optimizer = dspy.optim.FlexIR(
     code_trust="isolated",    # "isolated" | "in_process"
     extra_imports=None,       # widen the stdlib import allowlist
     allowed_deps=None,        # permit named pip packages in # deps:
+    auto_install=False,       # uv pip install granted deps into THIS env
+    eval_mode="in_process",   # "in_process" | "artifact" (score as artifact)
 )
 compiled = optimizer.compile(program, trainset=trainset, checkpoint_dir="runs/flex")
 ```
@@ -81,6 +83,45 @@ Pairing rule: **a dep's import name must also be in `extra_imports`.**
 `allowed_deps` speaks package names (`beautifulsoup4`); the import
 allowlist speaks module names (`bs4`). They are not auto-unioned, on
 purpose — each list is one explicit door.
+
+### The environment knobs
+
+| Knob | Default | What it does |
+|---|---|---|
+| `auto_install` | False | When a dep-carrying leaf passes admission, install its missing granted packages via `uv pip install` into the **current** interpreter's environment, before the candidate is scored. Install failure is a teaching refusal into the ledger (a bad package name is the proposal's fault), never an infra abort. Know the costs: installing a package executes third-party build code; a rejected candidate's installs are **not** unwound (your env drifts from the lock until the next export re-locks); it needs network or a warm uv cache. Only meaningful with `allowed_deps`. |
+| `eval_mode` | "in_process" | Where candidates are scored — never what is accepted. `"artifact"` exports every candidate (baseline included) and scores it in a subprocess under the artifact's own environment: scoring semantics == deployment semantics, environment included. Requires a self-contained metric (its source travels to the child; refused at compile otherwise). Child environments are cached by lockfile hash under `<checkpoint_dir>/.envs` (or `~/.cache/dspy-flexir`), so only candidates that change deps pay a resolve. |
+| `eval_env_overrides` | `{"dspy": <this repo>}` | Artifact mode: distributions installed **editable** from a local path instead of the locked release. The default exists because the manifest pins `dspy==<greenfield version>`, which is not the PyPI dspy — the child must run the local tree. |
+
+## Who prepares the environment
+
+Three rungs, from hands-off to engine-owned:
+
+**Rung 1 — user-managed (the default).** Deps admitted through
+`allowed_deps` are declarations only: they flow into the artifact's PEP
+723 block and lockfile, and the *receiver's* materialization installs
+them. Your own loop needs the packages already present, or the leaf
+fails at run time like any missing import.
+
+**Rung 2 — install-on-admit (`auto_install=True`).** The optimizer
+installs missing granted packages into your current environment the
+moment an admitted leaf declares them. Frictionless for your own loop;
+read the caveats in the table above — this rung deliberately trades env
+hygiene for velocity, and it says so instead of pretending otherwise.
+
+**Rung 3 — artifact-mode scoring (`eval_mode="artifact"`).** Every
+candidate is scored **as the artifact it would ship as**, in a child
+process under an environment built from its own lockfile. What you
+accept is what deploys, environment included. The child re-runs the same
+`evaluate` the in-process path runs, so the sacred error split survives
+the process boundary: catchable program errors score 0.0 per example;
+anything that escapes (an unloadable artifact, an engine guard) aborts
+the step as infrastructure, never scored against the candidate.
+
+Current limits, stated plainly: artifact mode serializes scripted
+`DummyLM` state to the child (replayable tests); binding a live provider
+LM inside the child is not implemented yet — use `in_process` for live
+providers. The `dspy` pin in the lock is overridden with the local tree
+via `eval_env_overrides`.
 
 ## Three postures
 
