@@ -31,12 +31,14 @@ class LMCapabilities:
         native_reasoning: The API surfaces a native reasoning channel.
         native_fc: The API supports native function calling.
         native_citations: The API surfaces native citations.
+        image_input: The API accepts image content parts.
     """
 
     instruct: bool = True
     native_reasoning: bool = False
     native_fc: bool = False
     native_citations: bool = False
+    image_input: bool = False
 
     def to_dict(self) -> dict[str, bool]:
         """Return the facts as a plain dict (serialization-friendly)."""
@@ -52,6 +54,7 @@ class LM:
         native_reasoning: Capability fact — native reasoning channel.
         native_fc: Capability fact — native function calling.
         native_citations: Capability fact — native citations.
+        image_input: Capability fact — image content parts accepted.
         temperature: Default sampling temperature for every request.
         max_tokens: Default completion-token cap for every request.
         **kwargs: Extra default request kwargs forwarded to litellm on
@@ -73,6 +76,7 @@ class LM:
         native_reasoning: bool = False,
         native_fc: bool = False,
         native_citations: bool = False,
+        image_input: bool = False,
         temperature: float = 0.0,
         max_tokens: int = 4000,
         **kwargs: Any,
@@ -83,6 +87,7 @@ class LM:
             native_reasoning=native_reasoning,
             native_fc=native_fc,
             native_citations=native_citations,
+            image_input=image_input,
         )
         self.kwargs: dict[str, Any] = {"temperature": temperature, "max_tokens": max_tokens, **kwargs}
         self.history: list[dict[str, Any]] = []
@@ -122,9 +127,7 @@ class LM:
         )
         return outputs
 
-    def _coerce_messages(
-        self, messages: list[dict[str, Any]] | None, prompt: str | None
-    ) -> list[dict[str, Any]]:
+    def _coerce_messages(self, messages: list[dict[str, Any]] | None, prompt: str | None) -> list[dict[str, Any]]:
         if (messages is None) == (prompt is None):
             raise ValueError("Pass exactly one of `messages` or `prompt`.")
         if prompt is not None:

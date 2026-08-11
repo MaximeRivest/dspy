@@ -40,6 +40,7 @@ class TestCapabilities:
             "native_reasoning": True,
             "native_fc": True,
             "native_citations": True,
+            "image_input": False,
         }
 
     def test_facts_are_frozen(self):

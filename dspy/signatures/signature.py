@@ -23,7 +23,7 @@ import typing
 from copy import deepcopy
 from typing import Any, Iterator
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic.fields import FieldInfo
 
 from dspy.signatures.field import IS_TYPE_UNDEFINED, InputField, OutputField
@@ -283,6 +283,12 @@ class Signature(BaseModel, metaclass=SignatureMeta):
 
     # Note: Don't put a docstring here, as it will become the default instructions
     # for any signature that doesn't define its own instructions.
+
+    # Host types in signatures are a core power (adapter-ir-stage example
+    # 09): `photo: PIL.Image.Image` is legal, and the two-layer rule lowers
+    # it to a neutral shape at the wire. Pydantic must not refuse the
+    # annotation at class construction.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @classmethod
     def with_instructions(cls, instructions: str) -> type["Signature"]:

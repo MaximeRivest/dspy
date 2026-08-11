@@ -220,8 +220,7 @@ def _lex_tag_options(text: str, i: int, tag: str) -> tuple[list[tuple[str, str |
         match = _IDENT.match(text, i)
         if not match:
             raise TemplateError(
-                f"malformed '{{% {tag} %}}' tag near {text[i : i + 30]!r} — "
-                f"options are bare flags or key='value' pairs"
+                f"malformed '{{% {tag} %}}' tag near {text[i : i + 30]!r} — options are bare flags or key='value' pairs"
             )
         key = match.group(0)
         i = match.end()
@@ -267,9 +266,7 @@ def parse_content(
 
     i = 0
     n = len(text)
-    triple_pattern = (
-        re.compile(r"\{\{\{" + re.escape(loop_var) + r"\.(\w+)\}\}\}") if loop_var is not None else None
-    )
+    triple_pattern = re.compile(r"\{\{\{" + re.escape(loop_var) + r"\.(\w+)\}\}\}") if loop_var is not None else None
 
     while i < n:
         if text.startswith("{%", i):
@@ -315,8 +312,7 @@ def _parse_slot(text: str, i: int, loop_var, allow_fragments: bool, fragment_tar
     match = _SLOT_OPEN.match(text, i)
     if not match:
         raise TemplateError(
-            f"'{{' at position {i} does not open a slot — write '{{{{' for a literal brace "
-            f"(near {text[i : i + 20]!r})"
+            f"'{{' at position {i} does not open a slot — write '{{{{' for a literal brace (near {text[i : i + 20]!r})"
         )
     name = match.group(1)
     j = match.end()
@@ -573,9 +569,7 @@ def _parse_loop_options(options: list[tuple[str, str | None]]) -> tuple[str, boo
         if key not in valid:
             raise TemplateError(f"unknown loop option {key!r} — valid options: {spell_out(valid)}")
         if key in seen:
-            raise TemplateError(
-                f"duplicate loop option {key!r} — each option appears once per '{{% for %}}' tag"
-            )
+            raise TemplateError(f"duplicate loop option {key!r} — each option appears once per '{{% for %}}' tag")
         seen.add(key)
         if valid[key]["takes_value"] and value is None:
             raise TemplateError(f"loop option {key!r} requires a quoted value: {key}='...'")

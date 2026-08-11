@@ -342,7 +342,9 @@ def _render_outputs_aggregate(style: str, wrap: str | None, ctx: RenderContext) 
         body = "\n".join(lines)
         return f"<{wrap}>\n{body}\n</{wrap}>" if wrap else body
     if style == "chat":
-        return "\n\n".join(f"[[ ## {name} ## ]]\n{translate_field_type(name, info)}" for name, info in output_fields.items())
+        return "\n\n".join(
+            f"[[ ## {name} ## ]]\n{translate_field_type(name, info)}" for name, info in output_fields.items()
+        )
     if style == "json_object":
         if ctx.mode == "assistant_values":
             values = ctx.values or {}

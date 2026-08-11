@@ -188,7 +188,7 @@ def preview(
     ``ParsedTemplate``. Codecs default to the shared text codec; ``parser``
     keys bare-directive default patterns when previewing a preset.
     """
-    from dspy.adapters._engine.codecs import TEXT_PYTHONISH
+    from dspy.adapters.codecs import TEXT_PYTHONISH
 
     parsed = template if isinstance(template, ParsedTemplate) else parse_message_template(template)
     return render_template_messages(

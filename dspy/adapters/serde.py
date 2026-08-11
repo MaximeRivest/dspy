@@ -1,232 +1,329 @@
-"""Adapter ⇄ component-4 entry: the D-5 dump/load surface.
+"""Entry serde: the extended (0.3.0-draft) adapter entry, dumped and
+loaded exactly.
 
-``Adapter.dump_entry()`` (defined on the base class) serializes an
-engine-backed adapter's effective preset — template as data, parser
-binding, codec bindings, strategy bindings, config, versions — and
-``load_entry`` links it back into a :class:`PresetAdapter` that renders
-through the pure template walker and parses through the entry's parser
-binding, with zero ``dspy.settings`` reads anywhere on the path. Round
-trip is exact: the loaded adapter renders byte-identical messages and
-re-dumps the identical entry.
+An adapter dumps to one JSON-able entry — template as raw message data,
+parser as data (lens or pipeline), codec bindings, strategy bindings
+(names or rule objects), config, and the declared requirement set.
+Loading validates shape, versions, template, and every reference with
+zero ambient reads; a dangling reference is a link error refused loudly
+naming the reference, and unknown or missing versions refuse naming both
+sides. Serde is exact: absent is not null, unknown keys refuse instead of
+silently dropping, and `load_entry(dump_entry(x))` reproduces `x`.
+
+The versions block is conditional (the drawn shape of the adapter-ir-stage
+examples): `roles`, `strategies`, `codecs`, `template_language` always;
+`parse_combinators`, `lm_capabilities`, `shapes` exactly when the entry
+uses them — a used-but-missing vocabulary refuses, a stated-but-unknown
+vocabulary refuses.
 """
 
+import json
+import re
+from copy import deepcopy
 from typing import Any
 
-from dspy.adapters.base import Adapter
+from dspy.adapters._engine.template.vocabulary import TEMPLATE_LANGUAGE_VERSION
+from dspy.adapters.adapter import DERIVED, Adapter
+from dspy.adapters.codecs import CODECS_VERSION, SHAPES_VERSION
+from dspy.adapters.errors import AdapterError, EntryError
+from dspy.adapters.parse import PARSE_COMBINATORS_VERSION
+from dspy.adapters.strategies import (
+    LM_CAPABILITIES_VERSION,
+    LM_CAPABILITY_FACTS,
+    STRATEGIES_RULES_VERSION,
+    STRATEGIES_VERSION,
+    predicate_capabilities,
+)
+from dspy.signatures.field import SEMANTIC_ROLES_VERSION
+
+#: Version of the extended adapter IR entry shape.
+ADAPTER_IR_VERSION = "0.3.0-draft"
+
+#: Extended codecs-vocabulary version (per-field family codec objects).
+CODECS_EXTENDED_VERSION = "1.1.0-draft"
+
+#: The entry's key set, in canonical order. `requires` is the one
+#: optional key (absent = the zero-requirement floor).
+ENTRY_KEYS = (
+    "name",
+    "adapter_ir_version",
+    "versions",
+    "template",
+    "parser",
+    "codecs",
+    "strategies",
+    "config",
+    "requires",
+)
+REQUIRED_ENTRY_KEYS = ENTRY_KEYS[:-1]
+
+#: Vocabularies every entry names.
+REQUIRED_VOCABULARIES = ("roles", "strategies", "codecs", "template_language")
+
+#: The newest version of each vocabulary this engine speaks.
+SPOKEN_VERSIONS = {
+    "adapter_ir": ADAPTER_IR_VERSION,
+    "roles": SEMANTIC_ROLES_VERSION,
+    "strategies": STRATEGIES_RULES_VERSION,
+    "codecs": CODECS_EXTENDED_VERSION,
+    "template_language": TEMPLATE_LANGUAGE_VERSION,
+    "parse_combinators": PARSE_COMBINATORS_VERSION,
+    "lm_capabilities": LM_CAPABILITIES_VERSION,
+    "shapes": SHAPES_VERSION,
+}
+
+_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.]+)?$")
 
 
-def load_entry(entry: dict) -> "PresetAdapter":
-    """Link a component-4 preset entry back into a working adapter.
+def parse_version(version: Any, *, what: str) -> tuple[int, int, int]:
+    """Parse `major.minor.patch[-tag]`; refuse malformed naming `what`."""
+    if isinstance(version, str):
+        match = _VERSION_RE.match(version)
+        if match:
+            return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+    raise EntryError(f"malformed {what} version {version!r} — expected 'major.minor.patch[-tag]'")
 
-    Validation is eager and loud: malformed shape, missing or incompatible
-    versions, template errors, and dangling codec/strategy/parser
-    references all refuse naming the offender (ADP-005/L5). No ambient
-    state is consulted.
+
+def check_version_compatible(kind: str, theirs: Any, ours: str) -> None:
+    """Refuse loudly when `theirs` is not readable by `ours`.
+
+    Different majors refuse; while a vocabulary is 0.x, different minors
+    refuse too (the semver-0 convention); at 1.x+, an entry newer than the
+    engine refuses.
     """
-    from dspy.adapters._engine.serde import load_preset
-
-    return PresetAdapter(load_preset(entry))
-
-
-class PresetAdapter(Adapter):
-    """An adapter reconstructed from a component-4 preset entry.
-
-    Rendering walks the entry's template (``render_template_messages``)
-    with the entry's codec bindings and parser-keyed directive defaults;
-    parsing dispatches on the entry's parser binding, and the entry's
-    strategy bindings feed the same surface the constructor kwarg feeds —
-    the plan builder consults a loaded adapter and its source identically.
-    Everything the adapter does is stated by the entry — nothing resolves
-    ambiently.
-    """
-
-    #: The template lane runs the plan's strategy-contributed channel
-    #: parsers in postprocess (D-δ): a strategy-hidden field must never
-    #: silently come back None.
-    _runs_plan_channel_hooks = True
-
-    def __init__(self, preset, **kwargs):
-        if isinstance(preset, str):
-            # A name resolves through the preset pool — builtin or
-            # registered (dspy.adapters.register_preset); dangling refuses.
-            from dspy.adapters._engine.presets import get_preset
-
-            preset = get_preset(preset)
-        # Non-"auto" bindings from the entry ARE constructor bindings: a
-        # dumped `reasoning: textual_field` must stand the native channel
-        # down under a live call exactly as it did on the source adapter.
-        bindings = {role: name for role, name in preset.strategies.items() if name != "auto"}
-        if bindings.get("tools") == "native_fc":
-            # The binding is the declaration; the legacy kwarg must agree.
-            kwargs.setdefault("use_native_function_calling", True)
-        # Behavior-bearing constructor flags recorded in the entry's config
-        # are honored on load (D-δ): the entry states them, nothing ambient.
-        if "use_native_function_calling" in preset.config:
-            kwargs.setdefault("use_native_function_calling", preset.config["use_native_function_calling"])
-        super().__init__(strategies=bindings or None, **kwargs)
-        if "use_json_adapter_fallback" in preset.config:
-            self.use_json_adapter_fallback = preset.config["use_json_adapter_fallback"]
-        self.preset = preset
-        self._parser_impl = _parser_for(preset, error_name=f"{type(self).__name__}({preset.name!r})")
-
-    @property
-    def parse_mode(self) -> str:
-        """The parser binding, readable back (the constructor spelling).
-
-        The serialized entry carries the same value under the ``parser``
-        key — the IR vocabulary's name for the binding (deliberate split,
-        recorded in the epic doc).
-        """
-        return self.preset.parser
-
-    def format(self, signature, demos, inputs) -> list[dict[str, Any]]:
-        from dspy.adapters._engine.codecs import resolve_codec
-        from dspy.adapters._engine.render import active_plan_fragments
-        from dspy.adapters._engine.template import render_template_messages
-        from dspy.adapters.base import _expand_legacy_custom_type_markers_in_chat_message
-
-        if isinstance(signature, str):
-            # format() accepts string signatures wherever preview() does (D-δ).
-            from dspy.signatures.signature import ensure_signature
-
-            signature = ensure_signature(signature)
-        self._check_hosting(signature, demos, inputs)
-        messages = render_template_messages(
-            self.preset.template,
-            signature,
-            demos=list(demos),
-            inputs=dict(inputs),
-            input_codec=resolve_codec(self.preset.codecs["input"]),
-            output_codec=resolve_codec(self.preset.codecs["output"]),
-            fragments=active_plan_fragments(),
-            parser=self.preset.parser,
+    their_major, their_minor, _ = parse_version(theirs, what=kind)
+    our_major, our_minor, _ = parse_version(ours, what=kind)
+    incompatible = (
+        their_major != our_major
+        or (our_major == 0 and their_minor != our_minor)
+        or (our_major >= 1 and their_minor > our_minor)
+    )
+    if incompatible:
+        raise EntryError(
+            f"incompatible {kind} version: entry carries {theirs!r}, this engine speaks {ours!r} — "
+            "refusing to load rather than misread"
         )
-        return [_expand_legacy_custom_type_markers_in_chat_message(message) for message in messages]
-
-    def parse(self, signature, completion: str) -> dict[str, Any]:
-        return self._parser_impl.parse(signature, completion)
-
-    def _check_hosting(self, signature, demos, inputs) -> None:
-        """Refuse loudly when call data has nowhere to render (L5).
-
-        A template states everything it shows; demos with no demos hosting
-        (directive or ``{demos()}`` slot) or history turns with no history
-        hosting would silently vanish from the prompt — an optimizer's
-        examples dropping without a sound. The builtin presets host both,
-        so entries dumped from the class adapters never refuse here.
-        Statically-unservable signatures refuse here too: a second History
-        field (one history host exists) and a ``full_text`` binding whose
-        surplus output fields no strategy could ever hide.
-        """
-        from dspy.adapters._engine.template.preview import _history_field_name
-
-        capacity = self.preset.capacity
-        self._check_statically_serviceable(signature)
-        if demos and not capacity.hosts_demos:
-            raise ValueError(
-                f"adapter {self.preset.name!r} received {len(demos)} demo(s), but its template hosts "
-                'none — add a {"role": "demos"} directive (or a {demos()} slot); examples must never '
-                "vanish from the prompt silently"
-            )
-        history_field = _history_field_name(signature)
-        if history_field is not None:
-            value = inputs.get(history_field)
-            turns = list(getattr(value, "messages", value) or [])
-            if turns and not capacity.hosts_history:
-                raise ValueError(
-                    f"adapter {self.preset.name!r} received {len(turns)} history turn(s) in "
-                    f"{history_field!r}, but its template hosts none — add a "
-                    '{"role": "history"} directive (or a {history()} slot); conversation turns must '
-                    "never vanish from the prompt silently"
-                )
-
-    def _check_statically_serviceable(self, signature) -> None:
-        """Refusals that need no LM: statically decidable at format/preview
-        time (D-δ), so a doomed adapter/signature pair never costs a token."""
-        from dspy.adapters.types import Type
-        from dspy.adapters.types.history import History
-
-        history_fields = [name for name, info in signature.input_fields.items() if info.annotation == History]
-        if len(history_fields) > 1:
-            raise ValueError(
-                f"signature declares {len(history_fields)} History fields ({', '.join(history_fields)}) but a "
-                f"template hosts exactly one conversation history — the turns of {', '.join(history_fields[1:])} "
-                "would silently vanish; merge the histories into one field"
-            )
-
-        if self.preset.parser == "full_text" and len(signature.output_fields) != 1:
-            from dspy.signatures.roles import resolve_semantic_role
-
-            def could_hide(name, info):
-                if isinstance(info.annotation, type) and info.annotation in self.native_response_types:
-                    return issubclass(info.annotation, Type)
-                return resolve_semantic_role(info, field_name=name) != "plain"
-
-            if not any(could_hide(name, info) for name, info in signature.output_fields.items()):
-                raise ValueError(
-                    f"the full_text parser requires exactly one output field; this signature declares "
-                    f"{sorted(signature.output_fields)} and none of them can leave the token stream — "
-                    "refusing before any LM call"
-                )
-
-    def dump_entry(self) -> dict:
-        from dspy.adapters._engine.serde import build_entry, dump_preset
-
-        entry = dump_preset(self.preset)
-        entry_config = self._entry_config(self.preset.config)
-        if entry_config != entry["config"]:
-            entry = build_entry(
-                name=entry["name"],
-                template_raw=self.preset.template.raw,
-                parser=entry["parser"],
-                codecs=entry["codecs"],
-                strategies=entry["strategies"],
-                config=entry_config,
-            )
-        return entry
-
-    def literal_table(self) -> dict:
-        from dspy.adapters._engine.serde import derive_literal_table
-
-        return derive_literal_table(self.preset.template, self.preset.parser)
 
 
-class _FullTextParser:
-    """The full_text parser binding: the whole completion into exactly one
-    output field (spec section 4)."""
-
-    def __init__(self, codec):
-        self._codec = codec
-
-    def parse(self, signature, completion: str) -> dict[str, Any]:
-        fields = signature.output_fields
-        if len(fields) != 1:
-            raise ValueError(
-                f"the full_text parser requires exactly one output field; this signature declares "
-                f"{sorted(fields) or '(none)'}"
-            )
-        name, info = next(iter(fields.items()))
-        return {name: self._codec.parse_value(completion, info.annotation)}
+# ---------------------------------------------------------------------------
+# Dump
+# ---------------------------------------------------------------------------
 
 
-def _parser_for(preset, error_name: str | None = None):
-    """The parse implementation for one entry's parser binding, bound to
-    the entry's output codec.
+def build_entry(adapter: Adapter, *, for_signature=None) -> dict[str, Any]:
+    """One adapter as its canonical entry dict.
 
-    ``error_name`` self-identifies the template-lane adapter in parse
-    errors (D-δ) — e.g. ``"TemplateAdapter('my_analyst')"`` — instead of
-    the borrowed parser's historical class name. Legacy class adapters
-    keep their pinned error identities untouched.
+    Args:
+        adapter: The adapter to dump.
+        for_signature: Lower this signature's media fields into per-field
+            shape codecs (per-field codecs only exist relative to a
+            signature).
     """
-    from dspy.adapters._engine.codecs import resolve_codec
-    from dspy.adapters._engine.formats.chat import ChatFormat
-    from dspy.adapters._engine.formats.json import JSONFormat
-    from dspy.adapters._engine.formats.xml import XMLFormat
+    per_field = deepcopy(adapter.per_field_codecs)
+    if for_signature is not None:
+        per_field = {**_derived_shape_codecs(for_signature), **per_field}
 
-    if preset.parser == "full_text":
-        return _FullTextParser(resolve_codec(preset.codecs["output"]))
-    fmt = {"chat": ChatFormat, "json": JSONFormat, "xml": XMLFormat}[preset.parser]()
-    fmt.codec_binding_overrides = dict(preset.codecs)
-    if error_name is not None:
-        fmt.parse_error_adapter_name = error_name
-    return fmt
+    rules = [value for value in adapter.strategies.values() if isinstance(value, dict)]
+    atoms: list[str] = []
+    for rule in rules:
+        for atom in predicate_capabilities(rule["predicate"]):
+            if atom not in atoms:
+                atoms.append(atom)
+
+    stated_requires = adapter.requires if isinstance(adapter.requires, dict) else None
+    uses_pipelines = adapter.parser_spec.get("kind") == "pipeline" or any(
+        "text" in routing for rule in rules for routing in rule["routings"]
+    )
+    uses_capabilities = bool(atoms) or bool((stated_requires or {}).get("lm_capabilities"))
+    uses_shapes = any(spec.get("kind") == "shape" for spec in per_field.values())
+    uses_families = any(spec.get("kind") in ("family", "leaf") for spec in per_field.values())
+
+    versions: dict[str, str] = {
+        "roles": SEMANTIC_ROLES_VERSION,
+        "strategies": STRATEGIES_RULES_VERSION if rules else STRATEGIES_VERSION,
+        "codecs": CODECS_EXTENDED_VERSION if uses_families else CODECS_VERSION,
+        "template_language": TEMPLATE_LANGUAGE_VERSION,
+    }
+    if uses_capabilities:
+        versions["lm_capabilities"] = LM_CAPABILITIES_VERSION
+    if uses_pipelines:
+        versions["parse_combinators"] = PARSE_COMBINATORS_VERSION
+    if uses_shapes:
+        versions["shapes"] = SHAPES_VERSION
+
+    codecs: dict[str, Any] = dict(adapter.codec_bindings)
+    if per_field:
+        codecs["per_field"] = per_field
+
+    entry: dict[str, Any] = {
+        "name": adapter.name,
+        "adapter_ir_version": ADAPTER_IR_VERSION,
+        "versions": versions,
+        "template": deepcopy(adapter.template_raw),
+        "parser": deepcopy(adapter.parser_spec),
+        "codecs": codecs,
+        "strategies": deepcopy(adapter.strategies),
+        "config": deepcopy(adapter.config),
+    }
+
+    if stated_requires is not None:
+        entry["requires"] = deepcopy(stated_requires)
+    elif adapter.requires is DERIVED and atoms:
+        entry["requires"] = {"lm_capabilities": atoms}
+    return entry
+
+
+def _derived_shape_codecs(signature) -> dict[str, dict]:
+    """Media-role input fields lower to image shape codecs at dump."""
+    from dspy.adapters.codecs import image_shape_codec_entry
+    from dspy.adapters.strategies import fields_with_role
+    from dspy.adapters.types.image import Image
+
+    derived: dict[str, dict] = {}
+    for name in fields_with_role(signature, "media"):
+        if name not in signature.input_fields:
+            continue
+        annotation = signature.input_fields[name].annotation
+        module = getattr(annotation, "__module__", "") or ""
+        if annotation is Image or module.startswith("PIL."):
+            frontend = f"{module}.{annotation.__qualname__}" if module else annotation.__name__
+            derived[name] = image_shape_codec_entry(frontend)
+    return derived
+
+
+def dumps_entry(entry: dict) -> str:
+    """The entry as canonical JSON: compact, unsorted (order is data)."""
+    return json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# Load
+# ---------------------------------------------------------------------------
+
+
+def load_entry(entry: dict) -> Adapter:
+    """Validate and link one entry back into an executable Adapter.
+
+    Zero ambient reads. Validation order: shape, versions (required plus
+    used-conditional), then the adapter constructor's own eager checks
+    (template, parser, codec refs, strategy bindings).
+    """
+    if not isinstance(entry, dict):
+        raise EntryError(f"an adapter entry is a dict, got {type(entry).__name__}")
+    unknown = set(entry) - set(ENTRY_KEYS)
+    if unknown:
+        raise EntryError(
+            f"unknown entry keys {sorted(unknown)} — exact serde refuses keys it would drop; "
+            f"valid keys: {', '.join(ENTRY_KEYS)}"
+        )
+    missing = [key for key in REQUIRED_ENTRY_KEYS if key not in entry]
+    if missing:
+        raise EntryError(
+            f"adapter entry is missing {missing} — every entry carries all of: "
+            f"{', '.join(REQUIRED_ENTRY_KEYS)} (a missing versions block is malformed, never grandfathered)"
+        )
+
+    name = entry["name"]
+    if not isinstance(name, str) or not name:
+        raise EntryError(f"adapter entry 'name' must be a non-empty string, got {name!r}")
+
+    check_version_compatible("adapter_ir", entry["adapter_ir_version"], ADAPTER_IR_VERSION)
+    _check_versions_block(entry, name)
+    _check_requires_shape(entry.get("requires"), name)
+
+    template = entry["template"]
+    if not isinstance(template, list):
+        raise EntryError(f"adapter entry {name!r}: 'template' is a list of message dicts")
+    for key in ("codecs", "strategies", "config"):
+        if not isinstance(entry[key], dict):
+            raise EntryError(f"adapter entry {name!r}: {key!r} is a dict, got {type(entry[key]).__name__}")
+
+    try:
+        return Adapter(
+            name=name,
+            template=deepcopy(template),
+            parser=deepcopy(entry["parser"]),
+            codecs=deepcopy(entry["codecs"]),
+            strategies=deepcopy(entry["strategies"]),
+            config=deepcopy(entry["config"]),
+            requires=deepcopy(entry["requires"]) if "requires" in entry else None,
+        )
+    except EntryError as error:
+        raise EntryError(f"adapter entry {name!r}: {error}") from None
+    except (AdapterError, ValueError) as error:
+        raise EntryError(f"adapter entry {name!r}: {error}") from None
+
+
+def _check_versions_block(entry: dict, name: str) -> None:
+    versions = entry["versions"] if "versions" in entry else None
+    if not isinstance(versions, dict):
+        raise EntryError(f"adapter entry {name!r}: 'versions' is a dict, got {type(versions).__name__}")
+
+    for kind in REQUIRED_VOCABULARIES:
+        if kind not in versions:
+            raise EntryError(
+                f"adapter entry {name!r}: versions block is missing {kind!r} — every entry names the "
+                f"version of each core vocabulary ({', '.join(REQUIRED_VOCABULARIES)})"
+            )
+    unknown = set(versions) - set(SPOKEN_VERSIONS)
+    if unknown:
+        raise EntryError(
+            f"adapter entry {name!r}: versions block names unknown vocabularies {sorted(unknown)} — "
+            f"this engine knows: {', '.join(k for k in SPOKEN_VERSIONS if k != 'adapter_ir')}"
+        )
+    for kind, theirs in versions.items():
+        check_version_compatible(kind, theirs, SPOKEN_VERSIONS[kind])
+
+    for kind, used, why in _used_vocabularies(entry):
+        if used and kind not in versions:
+            raise EntryError(
+                f"adapter entry {name!r}: versions block is missing {kind!r} — the entry uses {why}, "
+                "and a used vocabulary is always version-pinned"
+            )
+
+
+def _used_vocabularies(entry: dict):
+    parser = entry.get("parser")
+    rules = [value for value in entry.get("strategies", {}).values() if isinstance(value, dict)]
+    uses_pipeline = isinstance(parser, dict) and parser.get("kind") == "pipeline"
+    uses_routing_pipeline = any(
+        isinstance(routing, dict) and "text" in routing
+        for rule in rules
+        for routing in (rule.get("routings") or [])
+        if isinstance(rule.get("routings"), list)
+    )
+    requires = entry.get("requires") or {}
+    per_field = entry.get("codecs", {}).get("per_field") or {}
+    uses_shapes = any(isinstance(spec, dict) and spec.get("kind") == "shape" for spec in per_field.values())
+    yield "parse_combinators", uses_pipeline or uses_routing_pipeline, "a combinator pipeline"
+    yield (
+        "lm_capabilities",
+        bool(rules) or bool(requires.get("lm_capabilities") if isinstance(requires, dict) else False),
+        "capability predicates or requirements",
+    )
+    yield "shapes", uses_shapes, "a shape codec"
+
+
+def _check_requires_shape(requires: Any, name: str) -> None:
+    if requires is None:
+        return
+    if not isinstance(requires, dict):
+        raise EntryError(f"adapter entry {name!r}: 'requires' is a dict, got {type(requires).__name__}")
+    unknown = set(requires) - {"lm_capabilities", "languages", "leaves"}
+    if unknown:
+        raise EntryError(
+            f"adapter entry {name!r}: unknown requires keys {sorted(unknown)} — valid keys: "
+            "lm_capabilities, languages, leaves"
+        )
+    capabilities = requires.get("lm_capabilities", [])
+    if not isinstance(capabilities, list):
+        raise EntryError(f"adapter entry {name!r}: requires.lm_capabilities is a list of capability names")
+    for capability in capabilities:
+        if capability not in LM_CAPABILITY_FACTS:
+            raise EntryError(
+                f"adapter entry {name!r}: unknown required capability {capability!r} — capability "
+                f"vocabulary: {', '.join(LM_CAPABILITY_FACTS)}"
+            )
+    for key in ("languages", "leaves"):
+        if key in requires and not isinstance(requires[key], list):
+            raise EntryError(f"adapter entry {name!r}: requires.{key} is a list")
