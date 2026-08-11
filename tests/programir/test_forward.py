@@ -100,6 +100,10 @@ def splat_forward(self, kwargs):
     return self.predict(**kwargs)
 
 
+def lm_decided_splat_forward(self, prediction):
+    return self.tools[prediction.tool_name](**prediction.tool_args)
+
+
 def test_compile_forward_matches_nested_module_fixture_shape():
     compiled = compile_forward(
         answerer_forward,
@@ -167,9 +171,7 @@ def test_compile_forward_covers_v01_control_flow():
     assert [statement["node"] for statement in compiled["body"]] == ["Assign", "For", "While", "Return"]
     assert compiled["body"][1]["range"] == 3
     assert compiled["body"][1]["body"][0]["node"] == "Try"
-    assert compiled["body"][2]["body"] == [
-        {"node": "Raise", "exc": "InterpreterError", "message": "empty"}
-    ]
+    assert compiled["body"][2]["body"] == [{"node": "Raise", "exc": "InterpreterError", "message": "empty"}]
     _assert_valid(compiled)
 
 
@@ -199,9 +201,14 @@ def test_compile_forward_refuses_unresolved_call_by_name():
     assert caught.value.detail["leaf"] == "self.helper"
 
 
-def test_compile_forward_refuses_kwargs_splat():
-    with pytest.raises(ProgramIRRefusal, match="keyword splats"):
+def test_compile_forward_refuses_kwargs_splat_without_signature():
+    # No declared signature: a `**splat` names no record, so it is the
+    # LM-decided-dict form — the line that stays (D-041, PIR-E-NODE-002).
+    with pytest.raises(ProgramIRRefusal) as caught:
         compile_forward(splat_forward, {"predict": LeafRef("predict", "predict")})
+    assert caught.value.code == "PIR-E-NODE-002"
+    assert caught.value.detail["target"] == "kwargs"
+    assert caught.value.detail["reason"] == "splat"
 
 
 # --- v0.2 nodes -------------------------------------------------------------
@@ -483,7 +490,7 @@ def test_compile_refuses_builtin_keywords():
 
 
 def unknown_builtin_forward(self, items):
-    return {"out": zip(items, items)}
+    return {"out": zip(items, items, strict=False)}
 
 
 def test_compile_refuses_unknown_builtin_as_undeclared_leaf():
@@ -884,9 +891,9 @@ def test_compile_forward_refuses_named_constructs(function, node, fragment):
 # --- version stamp ----------------------------------------------------------
 
 
-def test_node_set_version_stamp_is_v03():
-    assert IMPLEMENTED_VERSIONS["node_set"] == "0.3"
-    assert supported_versions("node_set") == ("0.1", "0.2", "0.3")
+def test_node_set_version_stamp_is_v04():
+    assert IMPLEMENTED_VERSIONS["node_set"] == "0.4"
+    assert supported_versions("node_set") == ("0.1", "0.2", "0.3", "0.4")
     assert supported_versions("ir_version") == ("0.1",)
 
 

@@ -72,7 +72,9 @@ class _DSPyCompiler:
                 "devset": [_devset_record(example) for example in (self.devset or [])],
             }
 
-        authored_lms = [entry["class"] for entry in self.lms.values() if entry.get("class", {}).get("origin") == "authored"]
+        authored_lms = [
+            entry["class"] for entry in self.lms.values() if entry.get("class", {}).get("origin") == "authored"
+        ]
         authored_python = [*self.tools.values(), *metrics.values(), *authored_lms]
         dependencies = [dependency for entry in authored_python for dependency in entry.get("deps", [])]
         python_block, entry_source = python_environment(dependencies)
@@ -110,7 +112,9 @@ class _DSPyCompiler:
     def module_node(self, module: Module, *, path: str, name: str) -> dict[str, Any]:
         previous = self._module_owners.get(id(module))
         if previous is not None and previous != path:
-            raise ValueError(f"DSPy module instance is shared by {previous!r} and {path!r}; shared modules are not ratified")
+            raise ValueError(
+                f"DSPy module instance is shared by {previous!r} and {path!r}; shared modules are not ratified"
+            )
         self._module_owners[id(module)] = path
 
         children: list[dict[str, Any]] = []
@@ -132,11 +136,15 @@ class _DSPyCompiler:
                 tool_name = self.register_tool(child, name=child_name)
                 leaves[child_name] = LeafRef("tool", tool_name)
                 module_tools.append(tool_name)
-            elif isinstance(child, dict) and child and all(
-                isinstance(key, str)
-                and _is_identifier(key)
-                and (isinstance(value, Tool) or inspect.isfunction(value))
-                for key, value in child.items()
+            elif (
+                isinstance(child, dict)
+                and child
+                and all(
+                    isinstance(key, str)
+                    and _is_identifier(key)
+                    and (isinstance(value, Tool) or inspect.isfunction(value))
+                    for key, value in child.items()
+                )
             ):
                 for tool_name, tool in child.items():
                     module_tools.append(self.register_tool(tool, name=tool_name))
@@ -146,7 +154,7 @@ class _DSPyCompiler:
                 leaves[child_name] = LeafRef("interpreter", interpreter_name)
                 uses_interpreter = True
 
-        self.forwards[path] = compile_forward(type(module).forward, leaves)
+        self.forwards[path] = compile_forward(type(module).forward, leaves, signature=_module_input_signature(module))
         class_name = type(module).__name__
         node = {
             "kind": class_name,
@@ -261,6 +269,24 @@ class _DSPyCompiler:
         self.lms[name] = _lm_entry(lm, endpoint_ref=endpoint_ref, credential_ref=credential_ref)
         self.credentials.append({"name": credential_ref, "scope": f"LM {name}"})
         return name
+
+
+def _module_input_signature(module: Module) -> list[str] | None:
+    """The module's declared input field names, or None (D-036 component 2).
+
+    The v0.4 record envelope (D-041) binds the module's OWN input record;
+    this returns that record's static key set — the declared input fields
+    in order — so `compile_forward` can recognize a signature-polymorphic
+    forward (`def forward(self, **kwargs)` / `def forward(self, inputs)`).
+    A module exposing its external signature (`module.signature`, the dspy
+    convention) supplies it directly; a module without one has no record
+    envelope available and its `**kwargs` refuses (byte-identical v0.3).
+    """
+    signature = getattr(module, "signature", None)
+    input_fields = getattr(signature, "input_fields", None)
+    if isinstance(input_fields, dict):
+        return list(input_fields)
+    return None
 
 
 def _field_record(name: str, field: Any) -> dict[str, Any]:

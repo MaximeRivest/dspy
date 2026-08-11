@@ -1,10 +1,18 @@
-"""Compile Python forward methods into the ProgramIR node set v0.3.
+"""Compile Python forward methods into the ProgramIR node set v0.4.
 
-The frontend contract (D-034/D-035/D-037, spec/node-set.md): admit
+The frontend contract (D-034/D-035/D-037/D-041, spec/node-set.md): admit
 semantics, desugar syntax, refuse the rest loudly by name. This compiler
 lowers a restricted Python `forward` (or its `aforward` twin — the
 aforward rule compiles both to the IDENTICAL graph) into the ratified
-node-set 0.3 JSON encoding.
+node-set 0.4 JSON encoding.
+
+The v0.4 inputs-bag admission (D-041) adds a second lawful envelope — the
+RECORD ENVELOPE — and one lawful `**splat`. A signature-polymorphic
+forward takes the module's OWN input record as one parameter and threads
+it into an inner leaf. Two authoring doors compile to that envelope; both
+require the module's declared input signature (component 2, D-036), which
+the caller supplies as `signature` (the declared input field names in
+order). Without a signature the compiler stays byte-identical to v0.3.
 """
 
 from __future__ import annotations
@@ -23,34 +31,75 @@ _ERROR_TYPES = {"ToolError", "InterpreterError", "AdapterParseError", "LMError"}
 #: v0.3 closed builtin table (D-037). `json_dumps`/`json_parse` arrive via
 #: the `json.dumps`/`json.loads` surface spelling, mapped below.
 _BUILTINS = {
-    "len", "str", "int", "float", "max", "min", "sum", "sorted", "any", "all",
+    "len",
+    "str",
+    "int",
+    "float",
+    "max",
+    "min",
+    "sum",
+    "sorted",
+    "any",
+    "all",
 }
 _JSON_BUILTINS = {"dumps": "json_dumps", "loads": "json_parse"}
 
 #: v0.3 closed value-method table (D-037): str, list, and dict families.
 _METHODS = {
     # str — fresh values, code-point semantics
-    "strip", "lstrip", "rstrip", "lower", "upper", "split", "join",
-    "replace", "startswith", "endswith",
+    "strip",
+    "lstrip",
+    "rstrip",
+    "lower",
+    "upper",
+    "split",
+    "join",
+    "replace",
+    "startswith",
+    "endswith",
     # list — mutators under the v0.2 aliasing ruling
-    "append", "extend", "pop",
+    "append",
+    "extend",
+    "pop",
     # dict — ordered per the v0.2 Dict ruling
-    "get", "keys", "values", "items", "update",
+    "get",
+    "keys",
+    "values",
+    "items",
+    "update",
 }
 
 _BINOPS = {ast.Add: "add", ast.Sub: "sub", ast.Mult: "mult", ast.Div: "div"}
 _CMPOPS = {
-    ast.Eq: "eq", ast.NotEq: "ne",
-    ast.Lt: "lt", ast.LtE: "le", ast.Gt: "gt", ast.GtE: "ge",
-    ast.In: "in", ast.NotIn: "not_in",
+    ast.Eq: "eq",
+    ast.NotEq: "ne",
+    ast.Lt: "lt",
+    ast.LtE: "le",
+    ast.Gt: "gt",
+    ast.GtE: "ge",
+    ast.In: "in",
+    ast.NotIn: "not_in",
 }
 
 #: Explicit concurrency refuses by name (D-037): scheduling is engine
 #: policy, never forward semantics.
 _CONCURRENCY_NAMES = {
-    "gather", "create_task", "ensure_future", "wait", "wait_for",
-    "as_completed", "run", "sleep", "TaskGroup", "Lock", "Semaphore",
-    "Event", "Condition", "Queue", "to_thread", "shield",
+    "gather",
+    "create_task",
+    "ensure_future",
+    "wait",
+    "wait_for",
+    "as_completed",
+    "run",
+    "sleep",
+    "TaskGroup",
+    "Lock",
+    "Semaphore",
+    "Event",
+    "Condition",
+    "Queue",
+    "to_thread",
+    "shield",
 }
 
 #: Named statement refusals: construct -> (reason, supported alternative).
@@ -101,12 +150,23 @@ class LeafRef:
     ref: str | None = None
 
 
-def compile_forward(function: Any, leaves: Mapping[str, LeafRef]) -> dict[str, Any]:
-    """Compile one Python method into a node-set v0.3 forward record.
+def compile_forward(
+    function: Any,
+    leaves: Mapping[str, LeafRef],
+    signature: list[str] | None = None,
+) -> dict[str, Any]:
+    """Compile one Python method into a node-set v0.4 forward record.
 
     Args:
         function: The authored `forward` (or `aforward`) function.
         leaves: Immediate child names mapped to their typed leaf references.
+        signature: The module's declared input field names, in declared
+            order (component 2, D-036), or None when the module has no
+            declared signature. Supplying it enables the v0.4 record
+            envelope: a single non-self parameter used as a record, or a
+            `**kwargs` desugar, lowers to `args: [{name, record: "self"}]`.
+            When None, the compiler is byte-identical to v0.3 — plain input
+            names only, and `**kwargs`/`*args` refuse.
 
     Returns:
         The canonical node-set JSON record.
@@ -127,15 +187,29 @@ def compile_forward(function: Any, leaves: Mapping[str, LeafRef]) -> dict[str, A
     if len(definitions) != 1:
         node = definitions[0] if definitions else tree
         _refuse_node(node, filename, start_line, "forward must be exactly one function definition")
-    compiler = _Compiler(leaves=leaves, filename=filename, start_line=start_line)
+    compiler = _Compiler(leaves=leaves, filename=filename, start_line=start_line, signature=signature)
     return compiler.function(definitions[0])
 
 
 class _Compiler:
-    def __init__(self, *, leaves: Mapping[str, LeafRef], filename: str, start_line: int):
+    def __init__(
+        self,
+        *,
+        leaves: Mapping[str, LeafRef],
+        filename: str,
+        start_line: int,
+        signature: list[str] | None = None,
+    ):
         self.leaves = leaves
         self.filename = filename
         self.start_line = start_line
+        #: The module's declared input field set (D-036 component 2), or
+        #: None. When present, the record envelope (D-041) is available.
+        self.signature = list(signature) if signature is not None else None
+        #: The record parameter's name when this forward is the record
+        #: envelope, else None. Set by `function` before the body compiles;
+        #: read by the splat/read-only-record checks (D-041).
+        self._record: str | None = None
         self._pending: list[list[dict[str, Any]]] = []
         self._hoist_blocked = 0
         self._temp = 0
@@ -146,15 +220,32 @@ class _Compiler:
         # The aforward rule (D-037): `async def aforward` compiles to the
         # IDENTICAL graph as the sync twin — async-ness is stripped here.
         args = node.args
-        if args.posonlyargs or args.kwonlyargs or args.vararg or args.kwarg or args.defaults or args.kw_defaults:
+        if args.posonlyargs or args.kwonlyargs or args.defaults or args.kw_defaults:
             self.refuse(
                 node,
                 "forward parameters must be required named arguments; "
-                "defaults and variadics (*args/**kwargs) are not in the forward envelope",
+                "positional-only, keyword-only, and default parameters are not in the forward envelope",
             )
         names = [argument.arg for argument in args.args]
         if names and names[0] == "self":
             names = names[1:]
+
+        record_arg = self._record_envelope(node, names)
+        if record_arg is not None:
+            # The v0.4 record envelope (D-041): args carry exactly one
+            # record binding, bound to the module's OWN input signature.
+            self._record = record_arg
+            emitted_args: list[Any] = [{"name": record_arg, "record": "self"}]
+        else:
+            if args.vararg or args.kwarg:
+                self.refuse(
+                    node,
+                    "forward parameters must be required named arguments; "
+                    "variadics (*args/**kwargs) are the v0.4 record envelope, which needs a declared "
+                    "module signature (D-041) — this module declares none",
+                )
+            emitted_args = names
+
         if not node.body:
             self.refuse(node, "forward body cannot be empty")
         body = self._body(node.body, allow_docstring=True)
@@ -162,9 +253,61 @@ class _Compiler:
             self.refuse(node, "forward body cannot be empty")
         return {
             "language": "restricted-python-ast",
-            "args": names,
+            "args": emitted_args,
             "body": body,
         }
+
+    def _record_envelope(self, node: ast.FunctionDef | ast.AsyncFunctionDef, names: list[str]) -> str | None:
+        """Return the record parameter's name, or None for the plain form.
+
+        The v0.4 inputs-bag admission (D-041) has TWO authoring doors,
+        both requiring a declared module signature (component 2, D-036 —
+        `self.signature`). The record binds under the parameter's own name.
+
+        Door (a) — explicit `def forward(self, inputs)`: exactly one
+        non-self positional parameter whose name is NOT a declared input
+        field (a bag name like `inputs`, never a plain field) AND which the
+        body USES as a record — it appears as a `**<name>` splat on a leaf
+        call. A single parameter that names a declared field stays the
+        plain v0.1 form (byte-identical); a bag-named parameter never
+        splatted is not a record envelope and refuses downstream as an
+        unbound read.
+
+        Door (b) — THE DESUGAR `def forward(self, **kwargs)`: a bare
+        `**kwargs` parameter (no positional inputs, no `*args`). The classic
+        signature-polymorphic dspy authoring (ReAct, ChainOfThought) lowers
+        clean here; the record binds under the `**kwargs` name.
+
+        Without a declared signature both doors are unavailable: `**kwargs`
+        refuses (v0.3 behavior) and a lone bag parameter is a plain input.
+        """
+        args = node.args
+        if self.signature is None:
+            return None
+        # Door (b): the `**kwargs` desugar. A bare double-star, nothing else.
+        if args.kwarg is not None and args.vararg is None and not names:
+            return args.kwarg.arg
+        # Door (a): a single explicit bag parameter used as a record.
+        if args.kwarg is None and args.vararg is None and len(names) == 1:
+            candidate = names[0]
+            if candidate not in self.signature and self._is_splatted(node, candidate):
+                return candidate
+        return None
+
+    def _is_splatted(self, node: ast.AST, name: str) -> bool:
+        """True when `**name` appears as a call keyword-splat in the body.
+
+        The record's one observable use is the `**splat` (D-041). Reading a
+        bag parameter's fields with `Attr`/`Index` is possible too, but the
+        splat is the unambiguous record signal; a bag parameter never
+        splatted is not the record envelope.
+        """
+        for item in ast.walk(node):
+            if isinstance(item, ast.Call):
+                for keyword in item.keywords:
+                    if keyword.arg is None and isinstance(keyword.value, ast.Name) and keyword.value.id == name:
+                        return True
+        return False
 
     # -- statements -------------------------------------------------------
 
@@ -219,12 +362,14 @@ class _Compiler:
             if not node.body:
                 self.refuse(node, "If body cannot be empty")
             test = self.expression(node.test)
-            return [{
-                "node": "If",
-                "test": test,
-                "body": self._block(node.body),
-                "orelse": self._block(node.orelse) if node.orelse else [],
-            }]
+            return [
+                {
+                    "node": "If",
+                    "test": test,
+                    "body": self._block(node.body),
+                    "orelse": self._block(node.orelse) if node.orelse else [],
+                }
+            ]
         if isinstance(node, ast.For):
             return self.for_statement(node)
         if isinstance(node, ast.While):
@@ -235,11 +380,13 @@ class _Compiler:
                 test = self.expression(node.test)
             finally:
                 self._hoist_blocked -= 1
-            return [{
-                "node": "While",
-                "test": test,
-                "body": self._block(node.body),
-            }]
+            return [
+                {
+                    "node": "While",
+                    "test": test,
+                    "body": self._block(node.body),
+                }
+            ]
         if isinstance(node, ast.Break):
             return [{"node": "Break"}]
         if isinstance(node, ast.Continue):
@@ -247,11 +394,13 @@ class _Compiler:
         if isinstance(node, ast.Try):
             if node.orelse or node.finalbody or not node.handlers:
                 self.refuse(node, "Try requires handlers and permits no else or finally")
-            return [{
-                "node": "Try",
-                "body": self._block(node.body),
-                "handlers": [self.handler(handler) for handler in node.handlers],
-            }]
+            return [
+                {
+                    "node": "Try",
+                    "body": self._block(node.body),
+                    "handlers": [self.handler(handler) for handler in node.handlers],
+                }
+            ]
         if isinstance(node, ast.Raise):
             return [self.raise_statement(node)]
         self.refuse(node)
@@ -260,11 +409,23 @@ class _Compiler:
         body = self._body(statements)
         return body or [{"node": "Pass"}]
 
+    def _guard_record_write(self, name: str, node: ast.AST) -> None:
+        """Refuse a write to the read-only input record (D-041, PIR-E-NODE-004).
+
+        The record parameter cannot be an Assign / AssignTuple / For /
+        SetIndex target (SEM-5 as amended v0.4). This is the standalone,
+        compile-visible half; an alias write (`x = inputs; x[k] = v`) is
+        undecidable here and is the interpreter's runtime InterpreterTypeError.
+        """
+        if self._record is not None and name == self._record:
+            self._refuse_record_write(node, name)
+
     def assign(self, node: ast.Assign) -> list[dict[str, Any]]:
         if len(node.targets) != 1:
             self.refuse(node, "chained assignment (a = b = ...) is not in the node set; assign each name")
         target = node.targets[0]
         if isinstance(target, ast.Name):
+            self._guard_record_write(target.id, node)
             return [{"node": "Assign", "target": target.id, "value": self.expression(node.value)}]
         if isinstance(target, ast.Tuple):
             # D-035 desugar: tuple destructuring -> AssignTuple.
@@ -276,12 +437,15 @@ class _Compiler:
                 self.refuse(node, "slice assignment is not admitted (v0.3 Slice is read-only)")
             if not isinstance(target.value, ast.Name):
                 self.refuse(node, "SetIndex target must be a variable name; bind the container first")
-            return [{
-                "node": "SetIndex",
-                "target": target.value.id,
-                "key": self.expression(target.slice),
-                "value": self.expression(node.value),
-            }]
+            self._guard_record_write(target.value.id, node)
+            return [
+                {
+                    "node": "SetIndex",
+                    "target": target.value.id,
+                    "key": self.expression(target.slice),
+                    "value": self.expression(node.value),
+                }
+            ]
         if isinstance(target, ast.Attribute):
             self.refuse(node, "attribute assignment mutates module state; forwards thread values through names (SEM-5)")
         self.refuse(node, "Assign target must be a simple name, a tuple of names, or one subscript")
@@ -290,9 +454,12 @@ class _Compiler:
         names: list[str] = []
         for element in target.elts:
             if isinstance(element, ast.Starred):
-                self.refuse(element, "starred unpacking is the splat convention; AssignTuple binds a fixed shape (D-037)")
+                self.refuse(
+                    element, "starred unpacking is the splat convention; AssignTuple binds a fixed shape (D-037)"
+                )
             if not isinstance(element, ast.Name):
                 self.refuse(element, "tuple destructuring binds simple names only (SEM-5)")
+            self._guard_record_write(element.id, element)
             names.append(element.id)
         if len(names) < 2:
             self.refuse(target, "one-target destructuring is a plain Assign; write it as one")
@@ -307,12 +474,15 @@ class _Compiler:
             self.refuse(node, f"augmented operator {type(node.op).__name__} is outside add/sub/mult/div (SEM-4)")
         value = self.expression(node.value)
         if isinstance(node.target, ast.Name):
+            self._guard_record_write(node.target.id, node)
             read: dict[str, Any] = {"node": "Var", "name": node.target.id}
-            return [{
-                "node": "Assign",
-                "target": node.target.id,
-                "value": {"node": "BinOp", "op": op, "left": read, "right": value},
-            }]
+            return [
+                {
+                    "node": "Assign",
+                    "target": node.target.id,
+                    "value": {"node": "BinOp", "op": op, "left": read, "right": value},
+                }
+            ]
         if isinstance(node.target, ast.Subscript) and isinstance(node.target.value, ast.Name):
             if not isinstance(node.target.slice, (ast.Name, ast.Constant)):
                 self.refuse(
@@ -322,17 +492,20 @@ class _Compiler:
                 )
             key = self.expression(node.target.slice)
             container = node.target.value.id
-            return [{
-                "node": "SetIndex",
-                "target": container,
-                "key": key,
-                "value": {
-                    "node": "BinOp",
-                    "op": op,
-                    "left": {"node": "Index", "obj": {"node": "Var", "name": container}, "key": key},
-                    "right": value,
-                },
-            }]
+            self._guard_record_write(container, node)
+            return [
+                {
+                    "node": "SetIndex",
+                    "target": container,
+                    "key": key,
+                    "value": {
+                        "node": "BinOp",
+                        "op": op,
+                        "left": {"node": "Index", "obj": {"node": "Var", "name": container}, "key": key},
+                        "right": value,
+                    },
+                }
+            ]
         self.refuse(node, "augmented assignment binds one simple name or one subscript on a named container")
 
     def expr_statement(self, node: ast.Expr) -> list[dict[str, Any]]:
@@ -358,12 +531,14 @@ class _Compiler:
             if not isinstance(node.msg, ast.Constant) or not _is_scalar(node.msg.value):
                 self.refuse(node, "assert message must be a constant JSON scalar (Raise carries constants only)")
             message = node.msg.value
-        return [{
-            "node": "If",
-            "test": {"node": "UnaryOp", "op": "not", "value": self.expression(node.test)},
-            "body": [{"node": "Raise", "exc": "InterpreterError", "message": message}],
-            "orelse": [],
-        }]
+        return [
+            {
+                "node": "If",
+                "test": {"node": "UnaryOp", "op": "not", "value": self.expression(node.test)},
+                "body": [{"node": "Raise", "exc": "InterpreterError", "message": message}],
+                "orelse": [],
+            }
+        ]
 
     def log_statement(self, call: ast.Call) -> dict[str, Any]:
         if call.keywords:
@@ -389,14 +564,17 @@ class _Compiler:
             return self.enumerate_for(node)
         head: list[dict[str, Any]] = []
         if isinstance(node.target, ast.Name):
+            self._guard_record_write(node.target.id, node)
             target = node.target.id
         elif isinstance(node.target, ast.Tuple):
             target = self._gensym()
-            head = [{
-                "node": "AssignTuple",
-                "targets": self._tuple_target_names(node.target),
-                "value": {"node": "Var", "name": target},
-            }]
+            head = [
+                {
+                    "node": "AssignTuple",
+                    "targets": self._tuple_target_names(node.target),
+                    "value": {"node": "Var", "name": target},
+                }
+            ]
         else:
             self.refuse(node, "For target must be a simple name or a tuple of names")
         count = self._range_literal(node.iter)
@@ -418,6 +596,8 @@ class _Compiler:
         index_target, element_target = node.target.elts
         if not isinstance(index_target, ast.Name) or not isinstance(element_target, ast.Name):
             self.refuse(node, "enumerate-For binds simple names only")
+        self._guard_record_write(index_target.id, node)
+        self._guard_record_write(element_target.id, node)
         iterated = self.expression(call.args[0])
         index_name = index_target.id
         increment: dict[str, Any] = {
@@ -491,13 +671,16 @@ class _Compiler:
             return {"node": "List", "items": [self.expression(element) for element in node.elts]}
         if isinstance(node, ast.Dict):
             entries = []
-            for key, value in zip(node.keys, node.values):
+            for key, value in zip(node.keys, node.values, strict=False):
                 if key is None:
                     self.refuse(node, "dict **splat is the splat convention; merge with `|` or update instead (D-037)")
                 entries.append({"key": self.expression(key), "value": self.expression(value)})
             return {"node": "Dict", "entries": entries}
         if isinstance(node, ast.Set):
-            self.refuse(node, "no set value exists in the value model; use a list (a faithful set admission is impossible, D-037)")
+            self.refuse(
+                node,
+                "no set value exists in the value model; use a list (a faithful set admission is impossible, D-037)",
+            )
         if isinstance(node, ast.Subscript):
             return self.subscript(node)
         if isinstance(node, (ast.ListComp, ast.GeneratorExp)):
@@ -507,7 +690,9 @@ class _Compiler:
         if isinstance(node, ast.SetComp):
             self.refuse(node, "no set value exists in the value model; use a list comprehension (D-037)")
         if isinstance(node, ast.Lambda):
-            self.refuse(node, "lambda reopens hidden state via closures; use the no-key builtin forms or a tool leaf (D-037)")
+            self.refuse(
+                node, "lambda reopens hidden state via closures; use the no-key builtin forms or a tool leaf (D-037)"
+            )
         if isinstance(node, ast.Starred):
             self.refuse(node, "starred expressions are the splat convention, outside the kwargs-only call form (D-037)")
         self.refuse(node)
@@ -517,6 +702,7 @@ class _Compiler:
         # enclosing statement evaluates the expression exactly once.
         if not isinstance(node.target, ast.Name):
             self.refuse(node, "walrus target must be a simple name")
+        self._guard_record_write(node.target.id, node)
         self._hoist(node, {"node": "Assign", "target": node.target.id, "value": self.expression(node.value)})
         return {"node": "Var", "name": node.target.id}
 
@@ -535,7 +721,7 @@ class _Compiler:
                     )
             pairs = [
                 self._compare_pair(op, left, right, node)
-                for op, left, right in zip(node.ops, operands[:-1], operands[1:])
+                for op, left, right in zip(node.ops, operands[:-1], operands[1:], strict=False)
             ]
             return {"node": "BoolOp", "op": "and", "values": pairs}
         return self._compare_pair(node.ops[0], node.left, node.comparators[0], node)
@@ -548,7 +734,9 @@ class _Compiler:
             elif isinstance(left, ast.Constant) and left.value is None:
                 other = right
             else:
-                self.refuse(origin, "`is` compares identity; only `is None` / `is not None` lower (to eq/ne null, D-035)")
+                self.refuse(
+                    origin, "`is` compares identity; only `is None` / `is not None` lower (to eq/ne null, D-035)"
+                )
             return {
                 "node": "Compare",
                 "op": "eq" if isinstance(op, ast.Is) else "ne",
@@ -593,16 +781,19 @@ class _Compiler:
         temp = self._gensym()
         self._hoist(node, {"node": "Assign", "target": temp, "value": {"node": "Dict", "entries": []}})
         for operand in (node.left, node.right):
-            self._hoist(node, {
-                "node": "Assign",
-                "target": "_",
-                "value": {
-                    "node": "Call",
-                    "method": "update",
-                    "obj": {"node": "Var", "name": temp},
-                    "args": [self.expression(operand)],
+            self._hoist(
+                node,
+                {
+                    "node": "Assign",
+                    "target": "_",
+                    "value": {
+                        "node": "Call",
+                        "method": "update",
+                        "obj": {"node": "Var", "name": temp},
+                        "args": [self.expression(operand)],
+                    },
                 },
-            })
+            )
         return {"node": "Var", "name": temp}
 
     def unaryop(self, node: ast.UnaryOp) -> dict[str, Any]:
@@ -678,9 +869,7 @@ class _Compiler:
         if isinstance(node.slice, ast.Slice):
             if node.slice.step is not None:
                 step = node.slice.step
-                is_literal = (
-                    isinstance(step, ast.Constant) and step.value in (1, -1)
-                ) or (
+                is_literal = (isinstance(step, ast.Constant) and step.value in (1, -1)) or (
                     isinstance(step, ast.UnaryOp)
                     and isinstance(step.op, ast.USub)
                     and isinstance(step.operand, ast.Constant)
@@ -709,7 +898,9 @@ class _Compiler:
 
     # -- comprehensions (D-035 desugar: For-accumulation) -----------------
 
-    def _comprehension_frame(self, node: ast.ListComp | ast.GeneratorExp | ast.DictComp) -> tuple[str, ast.comprehension, list[dict[str, Any]]]:
+    def _comprehension_frame(
+        self, node: ast.ListComp | ast.GeneratorExp | ast.DictComp
+    ) -> tuple[str, ast.comprehension, list[dict[str, Any]]]:
         if len(node.generators) != 1:
             self.refuse(node, "nested comprehension generators are not in the desugar table; write nested loops")
         generator = node.generators[0]
@@ -720,11 +911,13 @@ class _Compiler:
             loop_target = generator.target.id
         elif isinstance(generator.target, ast.Tuple):
             loop_target = self._gensym()
-            head = [{
-                "node": "AssignTuple",
-                "targets": self._tuple_target_names(generator.target),
-                "value": {"node": "Var", "name": loop_target},
-            }]
+            head = [
+                {
+                    "node": "AssignTuple",
+                    "targets": self._tuple_target_names(generator.target),
+                    "value": {"node": "Var", "name": loop_target},
+                }
+            ]
         else:
             self.refuse(node, "comprehension target must be a simple name or a tuple of names")
         return loop_target, generator, head
@@ -734,16 +927,18 @@ class _Compiler:
         accumulator = self._gensym()
         self._hoist(node, {"node": "Assign", "target": accumulator, "value": {"node": "List", "items": []}})
         inner, element = self._capture(node.elt)
-        accumulate: list[dict[str, Any]] = inner + [{
-            "node": "Assign",
-            "target": accumulator,
-            "value": {
-                "node": "BinOp",
-                "op": "add",
-                "left": {"node": "Var", "name": accumulator},
-                "right": {"node": "List", "items": [element]},
-            },
-        }]
+        accumulate: list[dict[str, Any]] = inner + [
+            {
+                "node": "Assign",
+                "target": accumulator,
+                "value": {
+                    "node": "BinOp",
+                    "op": "add",
+                    "left": {"node": "Var", "name": accumulator},
+                    "right": {"node": "List", "items": [element]},
+                },
+            }
+        ]
         self._hoist(node, self._comprehension_loop(generator, loop_target, head, accumulate))
         return {"node": "Var", "name": accumulator}
 
@@ -753,12 +948,18 @@ class _Compiler:
         self._hoist(node, {"node": "Assign", "target": accumulator, "value": {"node": "Dict", "entries": []}})
         key_inner, key = self._capture(node.key)
         value_inner, value = self._capture(node.value)
-        accumulate = key_inner + value_inner + [{
-            "node": "SetIndex",
-            "target": accumulator,
-            "key": key,
-            "value": value,
-        }]
+        accumulate = (
+            key_inner
+            + value_inner
+            + [
+                {
+                    "node": "SetIndex",
+                    "target": accumulator,
+                    "key": key,
+                    "value": value,
+                }
+            ]
+        )
         self._hoist(node, self._comprehension_loop(generator, loop_target, head, accumulate))
         return {"node": "Var", "name": accumulator}
 
@@ -813,9 +1014,14 @@ class _Compiler:
             ast.copy_location(node, func)
         # Explicit concurrency refuses by name (D-037).
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "asyncio":
-            self.refuse(node, f"asyncio.{func.attr} is explicit concurrency; scheduling is the engine's, never the artifact's (D-037)")
+            self.refuse(
+                node,
+                f"asyncio.{func.attr} is explicit concurrency; scheduling is the engine's, never the artifact's (D-037)",
+            )
         if isinstance(func, ast.Name) and func.id in _CONCURRENCY_NAMES:
-            self.refuse(node, f"{func.id} is explicit concurrency; scheduling is the engine's, never the artifact's (D-037)")
+            self.refuse(
+                node, f"{func.id} is explicit concurrency; scheduling is the engine's, never the artifact's (D-037)"
+            )
         # Leaf calls: self.<name>(...) and self.<tools>[<expr>](...).
         if self._is_leaf_callee(func):
             return self.leaf_call(node, func)
@@ -855,12 +1061,21 @@ class _Compiler:
             leaf = self.leaves.get(target)
             if leaf is None:
                 self._refuse_call(node, target=f"self.{target}")
+        # The v0.4 record-splat (D-041): a `**<name>` splat is lawful ONLY
+        # when it names the forward's declared record parameter; anything
+        # else is the LM-decided-dict form — the line that stays.
+        splat = self._leaf_splat(node)
         kwargs: dict[str, Any] = {}
         for keyword in node.keywords:
             if keyword.arg is None:
-                self.refuse(keyword.value, "keyword splats break the kwargs-only call convention (D-037); name each argument")
+                continue  # the record splat, handled above
             if keyword.arg in kwargs:
                 self.refuse(keyword.value, f"duplicate keyword {keyword.arg!r}")
+            # Splat/explicit-kwarg collision: the splat expands the whole
+            # declared signature, so an explicit kwarg naming a declared
+            # input field collides — never last-writer-wins (PIR-E-NODE-003).
+            if splat is not None and self.signature is not None and keyword.arg in self.signature:
+                self._refuse_splat_collision(keyword.value, keyword.arg)
             kwargs[keyword.arg] = self.expression(keyword.value)
         leaf_record = {"kind": leaf.kind}
         if leaf.ref is not None:
@@ -868,7 +1083,76 @@ class _Compiler:
         call = {"node": "Call", "leaf": leaf_record, "kwargs": kwargs}
         if dynamic_name is not None:
             call["name"] = dynamic_name
+        if splat is not None:
+            call["splat"] = splat
         return call
+
+    def _leaf_splat(self, node: ast.Call) -> str | None:
+        """Resolve a leaf call's `**splat`, or None when it has no splat.
+
+        The v0.4 record-splat convention (D-041): a `**<expr>` on a leaf
+        call is lawful ONLY when `<expr>` is a bare `Name` naming the
+        forward's declared record parameter (`self._record`). Every other
+        `**` — a splat of a plain variable, an LM-decided dict
+        (`**pred.next_tool_args`), or any expression — refuses
+        PIR-E-NODE-002 naming the target: splat what the signature
+        declares, never what the model decides. At most one splat per call
+        (Python allows several `**`; the record envelope creates one
+        record, so a second splat cannot resolve).
+        """
+        splat: str | None = None
+        for keyword in node.keywords:
+            if keyword.arg is not None:
+                continue
+            target = self._splat_target_name(keyword.value)
+            if self._record is None or target != self._record:
+                self._refuse_splat(keyword.value, target)
+            if splat is not None:
+                self._refuse_splat(keyword.value, target)
+            splat = target
+        return splat
+
+    def _splat_target_name(self, value: ast.expr) -> str:
+        """A readable name for a `**<value>` splat target (for the refusal)."""
+        if isinstance(value, ast.Name):
+            return value.id
+        try:
+            return ast.unparse(value)
+        except Exception:  # pragma: no cover - unparse is total on valid AST
+            return type(value).__name__
+
+    def _refuse_splat(self, node: ast.AST, target: str) -> None:
+        line = self.absolute_line(node)
+        raise ProgramIRRefusal(
+            "PIR-E-NODE-002",
+            "5_forward",
+            {"target": target, "line": line, "reason": "splat"},
+            f"forward `**{target}` splat at {self.location(node)} resolves to no declared input "
+            "record — splat what the signature declares, never what the model decides (D-041; "
+            "the LM-decided-dict form stays refused). Only `**<record>` on the module's own "
+            "signature record is lawful.",
+        )
+
+    def _refuse_splat_collision(self, node: ast.AST, key: str) -> None:
+        line = self.absolute_line(node)
+        raise ProgramIRRefusal(
+            "PIR-E-NODE-003",
+            "5_forward",
+            {"key": key, "line": line, "reason": "collision"},
+            f"forward record-splat and explicit kwarg both name {key!r} at {self.location(node)} "
+            "(D-041) — never last-writer-wins; drop one.",
+        )
+
+    def _refuse_record_write(self, node: ast.AST, record: str) -> None:
+        line = self.absolute_line(node)
+        raise ProgramIRRefusal(
+            "PIR-E-NODE-004",
+            "5_forward",
+            {"record": record, "line": line},
+            f"forward writes to the read-only input record {record!r} at {self.location(node)} "
+            "(D-041; SEM-5 as amended v0.4) — the record parameter cannot be an Assign / "
+            "AssignTuple / For / SetIndex target.",
+        )
 
     def builtin_call(self, node: ast.Call, name: str) -> dict[str, Any]:
         if name == "print":
@@ -876,7 +1160,9 @@ class _Compiler:
         if name in ("range", "enumerate"):
             self.refuse(node, f"{name} exists only in For position (SEM-2 / the enumerate desugar, D-037)")
         if name in ("isinstance", "type", "getattr", "hasattr", "setattr", "issubclass"):
-            self.refuse(node, f"{name} is host introspection; typed values make runtime type-dispatch unnecessary (D-037)")
+            self.refuse(
+                node, f"{name} is host introspection; typed values make runtime type-dispatch unnecessary (D-037)"
+            )
         if name == "set":
             self.refuse(node, "no set value exists in the value model (D-037); use a list")
         if name in ("open", "input", "eval", "exec"):
@@ -886,7 +1172,9 @@ class _Compiler:
         if name not in _BUILTINS:
             self._refuse_call(node, target=name)
         if node.keywords:
-            self.refuse(node, f"builtin {name} takes positional arguments only (lambda keys are the refused construct, D-037)")
+            self.refuse(
+                node, f"builtin {name} takes positional arguments only (lambda keys are the refused construct, D-037)"
+            )
         if not node.args:
             self.refuse(node, f"builtin {name} needs at least one argument")
         return {
