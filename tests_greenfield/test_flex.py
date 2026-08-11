@@ -213,6 +213,81 @@ class TestRefusalFeedbackLoop:
         assert "a proposal is a JSON object" in refusals[4]
         assert optimizer.trajectory[1]["applied"] == []
 
+    def test_non_string_paths_refuse_and_valid_siblings_apply(self):
+        # A JSON array/object/number where the path string belongs is a
+        # REFUSAL, never a TypeError out of compile — and the valid
+        # sibling in the same batch still applies and scores.
+        program = Solo()
+        reflection = dspy.DummyLM(
+            [
+                reflection_reply(
+                    [
+                        {"op": "set_instructions", "path": "solver", "text": MAGIC},
+                        {"op": "set_instructions", "path": ["solver"], "text": "x"},
+                        {
+                            "op": "add_demo",
+                            "path": {"p": "solver"},
+                            "inputs": {"question": "q"},
+                            "labels": {"answer": "a"},
+                        },
+                        {"op": "remove_demo", "path": 3, "index": 0},
+                    ]
+                )
+            ]
+        )
+        optimizer = optim.FlexIR(reflection, exact_answer, iterations=1)
+        dspy.configure(lm=dspy.DummyLM(task_pilot))
+
+        optimizer.compile(program, trainset=devset_of("France"))
+
+        entry = optimizer.trajectory[1]
+        assert len(entry["refusals"]) == 3
+        for refusal, got in zip(entry["refusals"], ["list", "dict", "int"], strict=True):
+            assert "path must be a STRING predictor path" in refusal
+            assert got in refusal
+        assert entry["applied"] == [{"op": "set_instructions", "path": "solver", "text": MAGIC}]
+        assert entry["score"] == 1.0
+        assert program.solver.signature.instructions == MAGIC
+
+
+class TestExceptionSafeUnwind:
+    def test_evaluate_crash_reverts_applied_edits(self):
+        # A metric that explodes on the CANDIDATE evaluation (call 2;
+        # the baseline is call 1) kills compile loudly — but the applied
+        # instruction edit AND the structural wrap must both be unwound:
+        # an exception path may not strand unscored candidate state.
+        program = Solo()
+        before = program.solver.signature.instructions
+        original_solver = program.solver
+        calls = {"count": 0}
+
+        def exploding_metric(example, prediction):
+            calls["count"] += 1
+            if calls["count"] > 1:
+                raise RuntimeError("metric exploded")
+            return example.answer == prediction.answer
+
+        reflection = dspy.DummyLM(
+            [
+                reflection_reply(
+                    [
+                        {"op": "set_instructions", "path": "solver", "text": "POISONED UNSCORED STATE"},
+                        {"op": "wrap_best_of_n", "path": "solver", "N": 2},
+                    ]
+                )
+            ]
+        )
+        optimizer = optim.FlexIR(reflection, exploding_metric, iterations=1, reward=capital_reward)
+        dspy.configure(lm=dspy.DummyLM(task_pilot))
+
+        with pytest.raises(RuntimeError, match="metric exploded"):
+            optimizer.compile(program, trainset=devset_of("France"))
+
+        assert program.solver is original_solver  # the wrap is unwound
+        assert program.solver.signature.instructions == before  # no poisoned text
+        tree = program.to_manifest()["components"]["1_module_tree"]
+        assert [child["kind"] for child in tree["children"]] == ["Predict"]
+
 
 # ---------------------------------------------------------------------------
 # (iii) A valid but regressing edit: applied to the candidate, then rejected

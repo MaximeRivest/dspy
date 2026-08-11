@@ -179,12 +179,22 @@ class FlexIR(Optimizer):
                     f"refused reply: proposals must be a JSON array of edit objects, got {type(proposals).__name__}"
                 )
                 proposals = []
-            for proposal in proposals:
-                refusal = self._apply_one(program, proposal, undo_structural)
-                if refusal is None:
-                    applied.append(proposal)
-                else:
-                    refusals.append(refusal)
+            try:
+                for proposal in proposals:
+                    refusal = self._apply_one(program, proposal, undo_structural)
+                    if refusal is None:
+                        applied.append(proposal)
+                    else:
+                        refusals.append(refusal)
+                result = evaluate(program, devset, self.metric) if applied else None
+            except Exception:
+                # An exception between the first applied edit and the
+                # score comparison (a crash inside apply or evaluate)
+                # would otherwise strand unscored, unreverted candidate
+                # state on the live program. Unwind first, then let the
+                # error propagate loudly.
+                self._unwind(program, undo_structural, snapshot)
+                raise
 
             record: dict[str, Any] = {
                 "iteration": iteration,
@@ -192,15 +202,13 @@ class FlexIR(Optimizer):
                 "proposals": list(proposals),
                 "refusals": refusals,
                 "applied": applied,
-                "score": None,
+                "score": None if result is None else result.score,
                 "best_score": best_score,
                 "accepted": False,
                 "checkpoint": None,
                 "manifest": None,
             }
-            if applied:
-                result = evaluate(program, devset, self.metric)
-                record["score"] = result.score
+            if result is not None:
                 if result.score > best_score:  # keep iff STRICTLY better
                     best_score = result.score
                     best_results = result.results
@@ -211,15 +219,24 @@ class FlexIR(Optimizer):
                             program, score=result.score, label=f"iteration-{iteration}"
                         )
                 else:
-                    for parent, name, child in reversed(undo_structural):
-                        setattr(parent, name, child)
-                    apply_state(program, snapshot)
-                    if undo_structural:
-                        program.invalidate_ir()
+                    self._unwind(program, undo_structural, snapshot)
             record["best_score"] = best_score
             self.trajectory.append(record)
             pending_refusals = refusals
         return program
+
+    def _unwind(self, program: Module, undo_structural: list[tuple[Module, str, Module]], snapshot: Any) -> None:
+        """Rewind one candidate fully: structure in reverse, then state.
+
+        Every path that abandons a candidate — a rejected score AND any
+        exception raised while applying or evaluating it — runs this, so
+        the live program never carries unscored residue.
+        """
+        for parent, name, child in reversed(undo_structural):
+            setattr(parent, name, child)
+        apply_state(program, snapshot)
+        if undo_structural:
+            program.invalidate_ir()
 
     # ------------------------------------------------------------------
     # Render: what the reflection LM sees
@@ -278,6 +295,11 @@ class FlexIR(Optimizer):
             return self._apply_wrap(program, proposal, tag, undo_structural)
 
         path = proposal["path"]
+        if not isinstance(path, str):
+            return (
+                f"refused {tag}: path must be a STRING predictor path (a dotted attribute path like "
+                f"'solver'), got {type(path).__name__}"
+            )
         predictors = dict(program.named_predictors())
         if path not in predictors:
             return f"refused {tag}: no predictor at path {path!r} (predictor paths: {sorted(predictors)})"
