@@ -26,9 +26,10 @@ The loop, per iteration:
 4. SCORE the candidate by engine replay. Acceptance is TWO-CHANNEL: a
    candidate is kept only if the dev metric holds (or rises) AND
    `lm_calls` strictly drops (cheapness), OR the score strictly rises;
-   and — for any code-bearing candidate — the holdout split the
-   reflection LM never sees must not regress (the reward-hacking guard).
-   Every accepted candidate is checkpointed as a loadable artifact.
+   and — for EVERY candidate, not only code-bearing ones — the holdout
+   split the reflection LM never sees must not regress (the reward-hacking
+   guard; demos and instructions overfit exactly like a memorizing code
+   leaf). Every accepted candidate is checkpointed as a loadable artifact.
 
 Generated code is DATA to the applier: the dispatch is a closed op
 table, no string templating exists anywhere, and the one code field runs
@@ -144,12 +145,14 @@ class FlexIR(Optimizer):
             for `wrap_best_of_n` edits (the macro requires a declared
             reward leaf). Without it, wrap proposals are refused.
         holdout: Optional `dspy.Example` values, disjoint from the
-            trainset, that the reflection LM NEVER sees. A code-bearing
-            candidate is accepted only if it also holds on this split —
-            the reward-hacking guard (a candidate that memorizes the
-            trainset but regresses here is refused). Without a holdout,
-            code candidates carry no held-quality guarantee and the
-            trajectory records that.
+            trainset, that the reflection LM NEVER sees. EVERY candidate
+            (code, demo, or instruction) is accepted only if it also holds
+            on this split — the reward-hacking guard (a candidate that
+            overfits the trainset but regresses here is refused). The
+            holdout MUST be disjoint from the trainset: an overlapping
+            holdout is refused at compile time, since it would silently
+            disable the guard. Without a holdout, candidates carry no
+            held-quality guarantee and the trajectory records that.
         eps: Score tolerance for the two-channel acceptance rule.
 
     Attributes:
@@ -201,6 +204,8 @@ class FlexIR(Optimizer):
         """
         devset = check_trainset(trainset)
         holdout = check_trainset(self.holdout, name="holdout") if self.holdout is not None else None
+        if holdout:
+            _refuse_overlapping_holdout(devset, holdout)
         checkpointer = Checkpointer(checkpoint_dir) if checkpoint_dir is not None else None
         self.trajectory = []
 
@@ -248,7 +253,6 @@ class FlexIR(Optimizer):
             applied: list[dict[str, Any]] = []
             undo_structural: list[tuple[Module, str, Any]] = []
             snapshot = snapshot_state(program)
-            has_code = False
             if not isinstance(proposals, list):
                 refusals.append(
                     f"refused reply: proposals must be a JSON array of edit objects, got {type(proposals).__name__}"
@@ -259,8 +263,6 @@ class FlexIR(Optimizer):
                     refusal = self._apply_one(program, proposal, undo_structural)
                     if refusal is None:
                         applied.append(proposal)
-                        if isinstance(proposal, dict) and proposal.get("op") in _CODE_OPS:
-                            has_code = True
                     else:
                         refusals.append(refusal)
                 result = evaluate(program, devset, self.metric) if applied else None
@@ -292,13 +294,19 @@ class FlexIR(Optimizer):
             }
             record["rejection"] = None
             if result is not None:
-                verdict = self._accept(result, holdout_score, best_score, best_lm_calls, best_holdout, has_code)
+                verdict = self._accept(result, holdout_score, best_score, best_lm_calls, best_holdout)
                 if verdict is None:
                     best_score = result.score
                     best_lm_calls = result.lm_calls
                     best_results = result.results
+                    # The champion holdout baseline is a MONOTONIC CEILING:
+                    # every accept passed the holdout gate above, so it
+                    # never sinks below the prior champion. Raising it (max)
+                    # keeps a later candidate from chaining through a
+                    # lowered baseline (an accepted data op must not neuter
+                    # the guard for a subsequent memorizing code leaf).
                     if holdout_score is not None:
-                        best_holdout = holdout_score
+                        best_holdout = holdout_score if best_holdout is None else max(best_holdout, holdout_score)
                     record["accepted"] = True
                     record["manifest"] = program.to_manifest()
                     if checkpointer:
@@ -328,7 +336,6 @@ class FlexIR(Optimizer):
         best_score: float,
         best_lm_calls: int,
         best_holdout: float | None,
-        has_code: bool,
     ) -> str | None:
         """Return None to accept, or the ledger refusal spelling the reason.
 
@@ -336,8 +343,12 @@ class FlexIR(Optimizer):
           - accept if the dev score strictly rises; OR
           - accept if the dev score holds (within eps) AND `lm_calls`
             strictly drops (cheapness with held quality);
-          - AND, for any code-bearing candidate, the holdout score must
-            not regress below the champion's (the reward-hacking guard).
+          - AND, for EVERY candidate (not only code-bearing ones), the
+            holdout score must not regress below the champion's (the
+            reward-hacking guard). Demos and instructions are the classic
+            overfit surface: a poisoning `add_demo` that wins the dev
+            split while collapsing the truly-held-out split must be
+            refused exactly like a memorizing code leaf.
         """
         eps = self.eps
         score_rises = result.score > best_score + eps
@@ -348,13 +359,13 @@ class FlexIR(Optimizer):
                 f"lm_calls {result.lm_calls} vs best {best_lm_calls}. Accept needs a strictly higher score, "
                 "or an equal score at strictly fewer LM calls."
             )
-        if has_code and best_holdout is not None:
+        if best_holdout is not None:
             if holdout_score is None or holdout_score < best_holdout - eps:
                 return (
                     f"refused candidate: it improved the dev split (score {result.score}, lm_calls "
                     f"{result.lm_calls}) but REGRESSED on the holdout split the reflection LM never sees "
                     f"(holdout {holdout_score} vs best {best_holdout}) — the reward-hacking guard. The edit "
-                    "memorizes the dev examples; write code that GENERALIZES, or leave the LM in place."
+                    "overfits the dev examples; write an edit that GENERALIZES, or leave the step in place."
                 )
         return None
 
@@ -674,6 +685,37 @@ class FlexIR(Optimizer):
         program.invalidate_ir()
         undo_structural.append((parent, name, target))
         return None
+
+
+# ---------------------------------------------------------------------------
+# Holdout integrity: the reward-hacking guard is only real if the holdout
+# is genuinely unseen
+# ---------------------------------------------------------------------------
+
+
+def _refuse_overlapping_holdout(devset: list[Example], holdout: list[Example]) -> None:
+    """Refuse when any holdout input also appears in the trainset.
+
+    The reward-hacking guard measures a candidate on a split the reflection
+    LM never sees. A holdout that overlaps (or equals) the trainset is not
+    held out at all: a pure memorizer then aces both and ships. A natural
+    caller mistake (passing the same list, or a random split that duplicates
+    rows) would SILENTLY disable the primary defense, so fail closed with a
+    teaching error rather than trust it.
+    """
+    train_inputs = {_input_key(example) for example in devset}
+    overlap = sorted({_input_key(example) for example in holdout} & train_inputs)
+    if overlap:
+        raise ValueError(
+            f"FlexIR holdout overlaps the trainset on {len(overlap)} input(s) (e.g. {overlap[:3]}); the "
+            "reward-hacking guard needs a holdout the reflection LM never sees. Pass a holdout DISJOINT "
+            "from trainset, or split one labeled set so disjointness is guaranteed."
+        )
+
+
+def _input_key(example: Example) -> str:
+    """A stable identity for an example's inputs (order-independent)."""
+    return json.dumps(example.inputs().toDict(), sort_keys=True, ensure_ascii=False, default=str)
 
 
 # ---------------------------------------------------------------------------

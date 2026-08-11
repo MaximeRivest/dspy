@@ -201,7 +201,7 @@ class TestReplacePredictWithCode:
 # ---------------------------------------------------------------------------
 
 
-CAPITALS = {"France": "Paris", "Canada": "Ottawa", "Japan": "Tokyo", "Peru": "Lima"}
+CAPITALS = {"France": "Paris", "Canada": "Ottawa", "Japan": "Tokyo", "Peru": "Lima", "Germany": "Berlin"}
 
 
 class Solver(dspy.Module):
@@ -239,7 +239,10 @@ class TestPartialReplace:
             dspy.Example(country=c, capital=CAPITALS[c]).with_inputs("country")
             for c in ("France", "Canada", "Japan", "Peru")
         ]
-        holdout = [dspy.Example(country="France", capital="Paris").with_inputs("country")]
+        # Holdout is DISJOINT from the trainset (Germany, not in the devset);
+        # it declines to the LM, which answers it correctly, so the candidate
+        # holds on the split it never saw.
+        holdout = [dspy.Example(country="Germany", capital="Berlin").with_inputs("country")]
         reflection = dspy.DummyLM(
             [
                 reflection_reply(
@@ -323,7 +326,7 @@ class TestPartialReplace:
             reflection,
             exact_capital,
             iterations=1,
-            holdout=[dspy.Example(country="France", capital="Paris").with_inputs("country")],
+            holdout=[dspy.Example(country="Germany", capital="Berlin").with_inputs("country")],
         )
         optimizer.compile(program, trainset=devset, checkpoint_dir=tmp_path / "run")
         # Load the candidate; bind an LM for the fallback arm.
@@ -389,6 +392,148 @@ class TestRewardHackingGuard:
         assert manifest["components"]["6_tools"] == {}
         # And the guard is IN the next reflection call had there been one.
         assert any("holdout" in refusal for refusal in optimizer.trajectory[1]["refusals"]) or entry["rejection"]
+
+    def test_poisoning_add_demo_is_gated_on_the_holdout(self):
+        # The guard must cover DATA ops, not only code ops: demos and
+        # instructions are the classic overfit surface. A demo that poisons
+        # the LM to win the rigged dev split while collapsing the truly-
+        # held-out split must be REJECTED exactly like a memorizing code
+        # leaf — the has_code condition on the gate was the blind spot.
+        program = Tagger()
+        # The dev split is rigged to want "POISON"; the holdout wants the
+        # true uppercase answer. The poison demo flips the LM to "POISON".
+        devset = [
+            dspy.Example(text="cat", tag="POISON").with_inputs("text"),
+            dspy.Example(text="dog", tag="POISON").with_inputs("text"),
+        ]
+        holdout = [dspy.Example(text="fox", tag="FOX").with_inputs("text")]
+
+        def poisonable_task(messages):
+            rendered = "\n".join(str(message["content"]) for message in messages)
+            text = _input_value(messages, "text")
+            return chat_completion(tag="POISON" if "POISON_DEMO" in rendered else text.upper())
+
+        reflection = dspy.DummyLM(
+            [
+                reflection_reply(
+                    [
+                        {
+                            "op": "add_demo",
+                            "path": "tagger",
+                            "inputs": {"text": "POISON_DEMO"},
+                            "labels": {"tag": "POISON"},
+                        }
+                    ]
+                )
+            ]
+        )
+        dspy.configure(lm=dspy.DummyLM(poisonable_task))
+        optimizer = optim.FlexIR(reflection, exact_tag, iterations=1, holdout=holdout)
+        optimizer.compile(program, trainset=devset)
+
+        entry = optimizer.trajectory[1]
+        # The demo really applied and won the dev split...
+        assert [proposal["op"] for proposal in entry["applied"]] == ["add_demo"]
+        assert entry["score"] == 1.0
+        # ...but the holdout regressed, so the (non-code) candidate is REJECTED.
+        assert entry["holdout_score"] == 0.0
+        assert entry["accepted"] is False
+        assert "reward-hacking guard" in entry["rejection"]
+        # The poison demo is not carried into the final program.
+        for _path, predictor in program.named_predictors():
+            assert predictor.demos == []
+
+    def test_a_rejected_data_op_never_lowers_the_holdout_ceiling(self):
+        # Chained defeat: iter0 poisons via add_demo (dev up, holdout down);
+        # iter1 ships a pure memorizer code op. If an un-gated accept had
+        # lowered best_holdout to 0.0, the memorizer would pass the gate
+        # trivially. With the gate on EVERY candidate and best_holdout a
+        # monotonic ceiling, iter0 is rejected (ceiling stays 1.0) and iter1
+        # is rejected too — neither ships.
+        program = Tagger()
+        devset = [
+            dspy.Example(text="cat", tag="POISON").with_inputs("text"),
+            dspy.Example(text="dog", tag="POISON").with_inputs("text"),
+        ]
+        holdout = [dspy.Example(text="fox", tag="FOX").with_inputs("text")]
+        memorizer = (
+            "def tag_code(text: str) -> dict:\n"
+            '    memo = {"cat": "POISON", "dog": "POISON"}\n'
+            '    return {"tag": memo.get(text, "")}\n'
+        )
+
+        def poisonable_task(messages):
+            rendered = "\n".join(str(message["content"]) for message in messages)
+            text = _input_value(messages, "text")
+            return chat_completion(tag="POISON" if "POISON_DEMO" in rendered else text.upper())
+
+        reflection = dspy.DummyLM(
+            [
+                reflection_reply(
+                    [
+                        {
+                            "op": "add_demo",
+                            "path": "tagger",
+                            "inputs": {"text": "POISON_DEMO"},
+                            "labels": {"tag": "POISON"},
+                        }
+                    ]
+                ),
+                reflection_reply(
+                    [
+                        {
+                            "op": "replace_predict_with_code",
+                            "path": "tagger",
+                            "tool_name": "tag_code",
+                            "python_source": memorizer,
+                        }
+                    ]
+                ),
+            ]
+        )
+        dspy.configure(lm=dspy.DummyLM(poisonable_task))
+        optimizer = optim.FlexIR(reflection, exact_tag, iterations=2, holdout=holdout)
+        optimizer.compile(program, trainset=devset)
+
+        _baseline, iter0, iter1 = optimizer.trajectory
+        # iter0 poison demo: dev up, holdout down -> rejected, ceiling held.
+        assert iter0["accepted"] is False
+        assert iter0["holdout_score"] == 0.0
+        # iter1 memorizer: holdout 0.0 is still gated against the 1.0 ceiling.
+        assert iter1["accepted"] is False
+        assert iter1["holdout_score"] == 0.0
+        # Nothing shipped: no tool, the predict stands, an unseen input still
+        # reaches the LM (which answers it correctly).
+        assert program.to_manifest()["components"]["6_tools"] == {}
+        assert program(text="wolf").tag == "WOLF"
+
+    def test_overlapping_holdout_is_refused_at_compile(self):
+        # A holdout that overlaps the trainset silently disables the guard
+        # (a memorizer aces both). Refuse it loudly at compile time.
+        program = Tagger()
+        memorizer = (
+            "def tag_code(text: str) -> dict:\n"
+            '    memo = {"cat": "CAT", "dog": "DOG"}\n'
+            '    return {"tag": memo.get(text, "")}\n'
+        )
+        reflection = dspy.DummyLM(
+            [
+                reflection_reply(
+                    [
+                        {
+                            "op": "replace_predict_with_code",
+                            "path": "tagger",
+                            "tool_name": "tag_code",
+                            "python_source": memorizer,
+                        }
+                    ]
+                )
+            ]
+        )
+        dspy.configure(lm=dspy.DummyLM(upper_task))
+        optimizer = optim.FlexIR(reflection, exact_tag, iterations=1, holdout=tag_devset("cat", "dog"))
+        with pytest.raises(ValueError, match="holdout overlaps the trainset"):
+            optimizer.compile(program, trainset=tag_devset("cat", "dog"))
 
 
 # ---------------------------------------------------------------------------
