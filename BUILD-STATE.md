@@ -1350,3 +1350,185 @@ program" still holds across DIFFERENT reward functions but now refuses
 at construction with a teaching error (and identical rewards dedupe
 across BestOfN/Refine faces); "an unparseable `proposals` FIELD
 propagates" no longer — it is a recorded refusal.
+
+## 2026-08-11 — A9: plain-forward modules on the v0.4 inputs-bag (D-041)
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 349
+passed (A8's 346 + 3: the v0.3 byte-identity pin, and RLM + ReActV2
+save→load→run). `ruff check` clean.**
+
+The three signature-polymorphic modules (ReAct, ReActV2, RLM) are
+ordinary authored forwards now. The generated-forward machinery that
+existed only to work around the missing inputs-bag is gone from them;
+the compiler reads the file's `forward` directly (node-set v0.4, the
+record envelope, D-041).
+
+### Before → after: open the file and read the loop
+
+BEFORE, ReAct built its forward as a node tree and derived a printed
+native twin:
+
+    def build_forward_ir(self):
+        tree = self._forward_tree()
+        bind_forward(self, tree, tag="react")   # linecache-registered twin
+        return tree
+
+    def _forward_tree(self):
+        inputs = list(self.signature.input_fields)
+        step_kwargs = {name: Var(name) for name in inputs}
+        loop_body = [
+            Try([Assign("pred", CallPredict("react", **step_kwargs, trajectory=Var("trajectory")))],
+                [Except("AdapterParseError", [Break()])]),
+            SetIndex("trajectory", journal("thought_"), Attr("pred", "next_thought")),
+            ... 40 more lines of build.py constructors ...
+        ]
+        return Forward(inputs, [Assign("trajectory", Dict()),
+                                For("idx", loop_body, range=self.max_iters), ...])
+
+AFTER — the whole forward, REAL authored Python the compiler lowers and
+the oracle runs:
+
+    def forward(self, **inputs):
+        trajectory = {}
+        for idx in range(self.max_iters):
+            try:
+                pred = self.react(**inputs, trajectory=trajectory)
+            except AdapterParseError:  # the engine's typed error table
+                break
+            trajectory["thought_" + str(idx)] = pred.next_thought
+            trajectory["tool_name_" + str(idx)] = pred.next_tool_name
+            trajectory["tool_args_" + str(idx)] = pred.next_tool_args
+            if pred.next_tool_name == "finish":
+                break
+            try:
+                observation = self.tools[pred.next_tool_name](args=pred.next_tool_args)
+            except ToolError:  # the engine's typed error table
+                observation = "The tool call failed. Use another tool, or finish."
+            trajectory["observation_" + str(idx)] = observation
+        final = self.extract(**inputs, trajectory=trajectory)
+        return final
+
+`**inputs` is the v0.4 record envelope: the forward's `args` compile to
+`[{"name": "inputs", "record": "self"}]`, and `self.react(**inputs, ...)`
+compiles to a leaf `Call` carrying `"splat": "inputs"` — the signature's
+input fields spread in, `trajectory=` rides after. The loop cap stays a
+baked literal (`range(self.max_iters)` → `For range: 5`), the tools stay
+declared leaves with the `(args: dict)` dispatch wrapper, the trajectory
+is a plain dict grown with subscript writes, and the two typed handlers
+are exactly the parse-break / tool-observation contract. ReActV2 and RLM
+follow the same shape (`while`-with-baked-cap for their loops).
+
+Roughly 259 lines of build-tree source deleted across the three modules,
+169 lines of plain forward added — a net shrink, and the added lines
+read like normal dspy.
+
+### The oracle's new, stronger form
+
+`forward_native` for these modules is now the AUTHOR'S OWN Python
+`forward` (`inspect.getsource` returns the file's method), not a
+printed-from-IR twin. So the equivalence test compares the engine (which
+reads that source, lowers it to the node set, and interprets the tree)
+against genuine authored Python — TWO independent implementations, the
+strongest form. All branches drive through both arms, per the A7
+fix-wave lesson: the parse-failure break path (`test_react_parse_failure`,
+`test_v2_parse_error`), the tool-failure observation path
+(`test_react_tool_failure`, `test_v2_tool_failure`), and the
+submit/finish termination path (`test_react_equivalence`,
+`test_v2_equivalence`) each assert byte-identical LM calls and identical
+outputs across engine and authored-Python.
+
+### Machinery deleted vs kept, and why
+
+DELETED (module-specific, obsoleted by the inputs-bag):
+- `ReAct._forward_tree` / `ReAct.build_forward_ir`,
+  `ReActV2._forward_tree` / `build_forward_ir`,
+  `RLM._forward_tree` / `build_forward_ir` — the per-module tree
+  builders. Nothing constructs these modules' forwards programmatically
+  anymore; the compiler reads authored source.
+- their printed-native-twin binding (`bind_forward(self, tree, ...)`).
+  The native arm is the authored method itself now.
+
+KEPT (the macro substrate — NOT obsoleted):
+- `build.py` (the typed node constructors), `printer.py`
+  (`render_forward`/`to_function`/`bind_forward`), and
+  `_generate.load_generated`. These stay because BestOfN and Refine are
+  ALSO signature-parametric BUT genuinely need programmatic tree
+  construction: a macro wraps an ARBITRARY inner module and injects a
+  loop around it. Its forward args are the INNER module's introspected
+  input names (a macro has no `signature` of its own), and the
+  `feedback=True` face rewrites the input set (`hints` stripped from the
+  splat, threaded separately). That is real tree assembly the inputs-bag
+  does not express, so the builder door in `_dspy.module_node` stays —
+  now documented as MACRO-ONLY. The `load_generated` path also still
+  serves the tool / reward wrappers (which every module uses).
+
+The signature-polymorphic modules went one way (plain forwards + record
+envelope); the loop-injecting macros stayed the other (built trees).
+The task's own test — "can the macro become a plain forward too?" —
+answers no for exactly the reason it names: it wraps an arbitrary inner
+and injects a loop.
+
+### The compiler / substrate changes (the v0.4 adoption underneath)
+
+- `schema/node-set.schema.json` synced from the contract (record
+  envelope in `args`, the leaf-call `splat` field); `manifest.schema.json`
+  `forward_stub.args` mirrors the record binding; `versions.py`
+  `node_set` → 0.4, version set gains `0.4`.
+- `forward.py` gains both authoring doors (explicit `def forward(self,
+  inputs)` needing the declared signature to tell a bag from a field;
+  the `**kwargs` desugar recognized from source shape alone so a printed
+  record forward reparses WITHOUT a signature — the round-trip law), the
+  record-splat on leaf calls, and the three refusal codes:
+  `PIR-E-NODE-002` (a splat naming anything but the record — the
+  LM-decided-dict form stays refused), `-003` (splat/explicit-kwarg
+  collision), `-004` (any write to the read-only record). `compile_forward`
+  gains a `signature` parameter; `_dspy._declared_signature` threads the
+  module's declared input fields in. Every v0.3 refusal/desugar survives
+  — a `**kwargs` never splatted still refuses, and v0.3 forwards compile
+  byte-identical (pinned by `test_v03_forward_compiles_byte_identical`).
+- `printer.py` renders the record envelope (`**record`) and the splat
+  (splat first, then authored kwargs) and round-trips both;
+  `build.py` gains `Forward(record=...)` and a `splat=` argument on the
+  Call constructors with the collision refusal at construction.
+- the engine interpreter (`engine/interpret.py`) learns the record
+  envelope: it binds the one record parameter to the whole input record
+  (a `_ReadOnlyRecord` — reads like a dict, mutation through an alias
+  raises `InterpreterTypeError`, SEM-5 shallow immutability) and expands
+  a leaf call's `splat` into its kwargs, record keys first.
+
+### One output-side gap the inputs-bag does NOT cover (and how it is filled)
+
+ReActV2 assembles its final record over the DECLARED OUTPUT fields (the
+submit args, defaulted per field) — output-side polymorphism the record
+envelope, an INPUT mechanism, does not reach. Filled by extending the
+existing literal-baking door: an `ir_literals` attribute that is a LIST
+of scalars bakes to a `List` of `Const`s (scalars still bake to `Const`),
+so `for field in self.output_fields:` in the forward compiles to a
+For-over-list with the baked output names. This is orthogonal to the
+envelope (the task blesses the literal mechanism surviving), and the
+`_fingerprint` coerces list literals to tuples so edits recompile. The
+toolless submit agent (no tools table to declare, so no `self.tools[...]`
+dispatch) reads a SECOND plain forward that answers non-submit calls
+in-forward; the one `__init__` binds it on the instance, and both
+forwards are authored Python the compiler reads.
+
+### 0.4 semantics vs the contract — one hardening signal
+
+The contract states door (b) — the `**kwargs` desugar — under
+"both requiring a declared module signature." But the ROUND-TRIP LAW
+forces door (b) recognition to be signature-INDEPENDENT: the printer
+renders a record forward as `def forward(self, **record):` and the
+reparse (`assert_roundtrip`, no signature) must reproduce the same tree,
+including the `splat`. Resolution adopted here: door (b) is recognized
+from the source shape alone (a `**kwargs` parameter USED as a `**splat`
+on a leaf call); only door (a) — the explicit `def forward(self, inputs)`
+form, where a bare parameter name is ambiguous between bag and field —
+needs the signature. A `**kwargs` never splatted stays the v0.3 refusal.
+This keeps the invariant "the artifact is self-describing" (the tree
+carries the `splat`; no external signature is needed to re-recognize the
+envelope) while the signature-dependent door (a) covers the ambiguous
+authored form. Contract-hardening signal: the node-set spec's "both
+doors need a signature" sentence is true for the AUTHORING frontend but
+should note that door (b) is re-recognizable from the serialized tree
+alone — otherwise a conforming loader could not reparse a printed record
+forward without also carrying component 2.
