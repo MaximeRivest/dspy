@@ -1807,3 +1807,117 @@ covered by the splat-guard test running through a real ReAct.
   `_check_self_contained`) — factored-not-forked per the brief, pinned by
   the admission tests; a public source-first entry point would be
   cleaner when leaves.py is next touched.
+
+### A10 fix wave — the adversarial review's nine findings (all fixed, none rejected)
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 393
+passed (A10's 377 + 16 new regression tests). `ruff check dspy/
+tests_greenfield/` clean.** Every finding was reproduced with a probe
+first, then fixed properly (no suppressions) and pinned by a regression
+test. Two critical safety findings collapsed to one fix (same root
+cause); the rest are independent. Commits, newest first: `a1b91e96b`,
+`80ae74900`, `7caba6945`, `cc62f3ab6`, `e4b1fcd65` (fixes) plus
+`6dc98d886` (a follow-on test repair the metric-exception fix required).
+
+- **[critical, R2 defeat — FIXED `e4b1fcd65`] Import allowlist bypassed by
+  builtins.** `_refuse_disallowed_imports` walked only `ast.Import`/
+  `ImportFrom` nodes, so `__import__`, `eval`, `exec`, `compile`, `open`
+  reached import/exec/filesystem machinery with NO import node — and
+  `_check_self_contained` admitted them (they live in `dir(builtins)`).
+  Proven end to end: a leaf running `__import__("os").system("touch
+  <SENTINEL>")` (a stand-in for a hidden HTTP LM call) was ADMITTED,
+  refusals=`[]`, and the SENTINEL FILE WAS CREATED when the engine scored
+  the leaf during compile. Fix: a builtin-denylist AST walk added to
+  admission (`_refuse_builtin_escapes`) — refuses a Load of any name in
+  `DISALLOWED_BUILTINS` (`__import__`/`eval`/`exec`/`compile`/`open`/
+  `globals`/`vars`/`locals`/`input`/`breakpoint`), the reflection call
+  names `getattr`/`setattr`/`delattr`, and any dotted access to a
+  sandbox-escape dunder (`__globals__`, `__class__`, `__bases__`,
+  `__subclasses__`, `__mro__`, `__code__`, …), while honoring a LOCAL
+  rebinding (`open = 1` is the user's own name, not the door). The
+  duplicate "generated-code-safety" finding of the same shape is closed by
+  the same fix. Verified: 9 escape doors now refuse with no sentinel; the
+  legit uppercasing leaf still admits.
+
+- **[important, parse-crash — FIXED `e4b1fcd65`] A malformed `def` killed
+  the whole run.** `SyntaxError` is not a `ValueError`, so a source
+  missing its colon escaped `_apply_code`'s `except ValueError` and
+  propagated through the loop's `except Exception` re-raise, aborting
+  `compile()` on one bad reflection proposal. Fix: `ast.parse` in
+  `admit_tool_source` is wrapped `except SyntaxError -> teaching
+  ValueError` (admission's own contract is "ValueError for every
+  rejection class"). Verified: the loop now runs to completion, the parse
+  failure is a recorded refusal fed to the next call.
+
+- **[critical, reward-hacking — FIXED `cc62f3ab6`] The holdout gate only
+  guarded code candidates.** `_accept` gated the holdout under `if
+  has_code`, so a poisoning `add_demo`/`set_instructions` that won the dev
+  split while collapsing the truly-held-out split shipped un-gated. Proven:
+  a poison demo drove dev 0.0→1.0 while holdout 1.0→0.0 and was ACCEPTED
+  (the holdout 0.0 was computed but never consulted). Fix: the gate now
+  covers EVERY accepted candidate — the `has_code` condition is gone.
+
+- **[critical, reward-hacking — FIXED `cc62f3ab6`] `best_holdout` ratcheted
+  down through the gate's blind spot.** An un-gated data-op accept set
+  `best_holdout := holdout_score` (0.0), so a later memorizing code leaf
+  passed the gate trivially (`0.0 >= 0.0 - eps`). Fix: `best_holdout` is a
+  MONOTONIC CEILING — only raised (`max`), and only from candidates that
+  passed the gate (which, after the previous fix, all accepts do).
+  Verified: the iter0-poison/iter1-memorizer chain is broken; neither
+  ships, an unseen input still reaches the LM.
+
+- **[important, reward-hacking — FIXED `cc62f3ab6`] No disjointness check.**
+  A caller passing an overlapping (or trainset-equal) holdout silently
+  disabled the guard; a pure memorizer aced both and shipped. Fix:
+  `_refuse_overlapping_holdout` refuses at compile time when any holdout
+  input also appears in the trainset (fail-closed, teaching the split
+  fix). The committed `TestPartialReplace` holdouts used an overlapping
+  France row — moved to a disjoint Germany row (a new fixture capital).
+
+- **[important, reward-hacking — FIXED `a1b91e96b`] An always-true partial
+  fast path ships as cheaper at an invisible cost.** A `_partial` op whose
+  fast path never declines (always returns a dict) is a full replacement
+  wearing partial clothing; correct on dev AND holdout, it permanently
+  bypasses the LM on whatever the fixed split does not exercise (measured,
+  not proven). Fix: a `_partial` candidate whose fast path made 0 LM calls
+  across the holdout split (never declined there) is refused, teaching the
+  LM to return None on inputs it cannot answer or to use the honest
+  `replace_predict_with_code` full swap (gated identically). Deterministic
+  — reuses the single holdout evaluation, no extra LM calls. The
+  legitimate partial that declines on a held-out input still passes.
+
+- **[critical, cheapness-honesty — FIXED `7caba6945`] `_partial` silently
+  no-ops on a `return self.leaf(...)` site yet reports it as applied.**
+  `_partial_replacement` rewrites only a top-level `Assign(target,
+  CallPredict)`; on a one-line `Return CallPredict(...)` it matched
+  nothing, `applied` still claimed success, and no cheapness landed
+  (lm_calls stayed at the pre-swap count). Fix: `_rewrite_partial` returns
+  the count of sites wrapped; when a predict site exists but none is a
+  rewritable top-level Assign, the applier REFUSES with a teaching error
+  (reshape to an assign, or use the full replace op) instead of a false
+  "applied". Verified end to end on a Return-shaped forward.
+
+- **[important, OSS-parity — FIXED `80ae74900`] A metric exception aborted
+  the whole run (brief 1.f dropped).** `evaluate()` wrapped only
+  `run_engine`; the `metric(example, prediction)` call sat outside any
+  guard, so a metric raising on one example propagated and killed the
+  run — no per-example failure score, no continuation. The upstream fork
+  kept exactly this fallback. Fix: the metric call is wrapped; on a metric
+  exception it warns, records 0.0 for that example, and continues.
+  `CatchableError`-from-engine and typed-infra propagation are unchanged.
+  Follow-on (`6dc98d886`): the old `TestExceptionSafeUnwind` used a metric
+  raise as its crash proxy — since that no longer crashes, the test now
+  triggers the unwind via a genuine NON-catchable engine crash (a
+  RuntimeError from the task LM on the poisoned candidate), keeping the
+  same unwind assertions.
+
+**Regression coverage added (16 tests):** 9 builtin-escape params + a
+parse-failure-is-a-refusal test (`TestGeneratedCodeSafety`); poison-demo
+gated, chained-ratchet broken, overlapping-holdout refused, always-true
+partial refused (`TestRewardHackingGuard`); a Return-shaped partial refusal
+(`TestPartialReplace`); and a metric-exception continuation
+(`test_optim.py::TestEvaluate`).
+
+**Nothing rejected.** No finding was argued away; the one "inherent to a
+fixed-split measure" concession (the always-true partial) is mitigated by
+a real deterministic guard, not waved off.
