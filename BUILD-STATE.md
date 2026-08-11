@@ -338,3 +338,169 @@ entry IS the adapter.
 - `dspy/programir/` remains dormant and still imports deleted modules
   (`dspy.predict.predict`, old primitives Module) — rewire per A1's
   notes; nothing in the new `dspy/adapters` imports it.
+
+## 2026-08-10 — A3: the execution spine (agent A3)
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 208
+passed (A1+A2's 185 + 23 new: `test_spine.py`).** The program IS the IR:
+`program(**inputs)` compiles forward to node-set v0.3, materializes
+against live bindings, and runs the engine interpreter. The equivalence
+test holds byte-for-byte on both branches.
+
+### What exists now
+
+- `dspy/modules/module.py` — `Module`: author exactly as classic dspy
+  (children in `__init__`, a `forward`), but `__call__` = compile_ir
+  (cached) → materialize(live bindings) → interpret. Also:
+  `forward_native()` (the equivalence control arm ONLY), `compile_ir()`,
+  `to_manifest()` (which makes any Module a valid target for every
+  programir tool via `load_manifest`'s duck check), `save(dir)`,
+  `named_predictors()`, `explain()` (str), `lint()` (Finding list),
+  `cost()` (bounds dict), `invalidate_ir()`.
+- `dspy/modules/predict.py` — `Predict(signature, lm=, adapter=,
+  **config)`: the leaf, A2's four-line exchange verbatim (resolve lm +
+  adapter → `format` → `lm(messages, **request)` → `parse` →
+  `Prediction`). Per-predictor bindings via constructor kwargs or
+  `set_lm`/`set_adapter`; a STRING binding is a name looked up in the
+  `dspy.configure` table at call time; a live object binds directly.
+  LM missing anywhere refuses with `BindingError`; adapter defaults to
+  one shared `ChatAdapter()` singleton (stable identity keeps the pool
+  and the compile cache honest). `predictor.config` merges under the
+  adapter's request (`lm(messages, **{**config, **call.request})`).
+- `dspy/programir/_dspy.py` — rewired to the new core, zero settings
+  reads. NEW: `compile_with_live(program) -> (ir, live_bindings)` — the
+  compiler records pool-name → live object for all four kinds; that
+  dict is exactly `materialize`'s `bindings` argument, which is how the
+  default execution path runs the freshly compiled IR in-process.
+- `dspy/programir/engine/materialize.py` — rebuilt predictors are the
+  NEW `Predict` (lm+adapter bound per-predictor); LM bindings must be
+  `dspy.lm.LM` instances; adapters rebuild via `load_entry` on the
+  carried v2 entry (component 4 = A2's extended shape, byte-exact);
+  tools rebuild from source sidecars (verified end to end: authored
+  function → sidecar → fresh namespace at load). `ExecutableProgram`
+  now aggregates a per-run `_trajectory["predictor_calls"]` exhaust
+  (path, inputs, outputs per leaf call).
+- `dspy/programir/export.py` — credential harvesting without
+  settings/clients: env-var regex + each resolved LM's `kwargs["api_key"]`
+  / sensitive headers / `api_key` attributes.
+- `dspy/programir/__init__.py` grows `load(path, bindings)` = read +
+  link + materialize; `dspy/__init__.py` exports `Module`, `Predict`,
+  `load`, `diff` (lazy wrappers over programir/tools).
+- Observability wiring (point 5) landed whole: explain/lint/cost as
+  Module methods, `dspy.diff` accepting Modules/IRs/paths on both
+  sides. NOTHING trimmed this stage.
+
+### The compile-at-call decision
+
+Forward compiles at FIRST `__call__` and at explicit `compile_ir()` —
+NOT at `__init_subclass__`: the leaves are instance attributes, unknown
+until `__init__` runs, and a teaching error should surface where the
+program is used, with the full leaf table in hand. The compiled
+executable is cached on the instance, keyed by a live fingerprint per
+predictor: (resolved lm id, resolved adapter id, demo ids, instructions,
+config repr). Reconfiguring `dspy.configure(lm=...)`, `set_lm`, demo
+edits, and instruction edits all recompile automatically (tested);
+structural edits (rebinding a child attribute after `__init__`) are NOT
+fingerprinted — call `invalidate_ir()` after those.
+
+### Decisions taken
+
+1. **`Predict.__call__` runs the exchange directly**, never through the
+   engine: the leaf IS its own machinery on both paths, and the engine's
+   rebuilt predictors re-enter exactly this code. A bare Predict still
+   compiles to the trivial `5_forward/self` (equivalence tested).
+2. **Engine-path predictors are rebuilt from the manifest**, not the
+   live objects — signature, instructions, demos, config all flow
+   through components 2/3a/3b/3c. What runs is what saves; the
+   equivalence test proves the round trip loses nothing (for the
+   representable type set — see gaps).
+3. **LM capability facts ride in the LM entry's `config` slot**
+   (`config.lm_capabilities`) — `lm_entry` is additionalProperties:false
+   in the manifest schema, and `config` is its one loose slot. They are
+   provenance; at materialize time the BOUND LM's own declared facts
+   drive the strategies.
+4. **`11_ambient_policy` compiles as `{}`** — the greenfield core has no
+   settings object; the component's contents are spec-loose until
+   ratified.
+5. **Exhaust**: native Predict sets `_trajectory["completion"]` (raw
+   text); the engine's root Prediction gets
+   `_trajectory["predictor_calls"]`. Leaf-level `_trajectory` does NOT
+   survive the engine's record boundary (records are plain dicts —
+   PIR-013) — declared outputs only, exhaust is per-layer.
+6. **BindingError stays host-side**: compile wraps it naming the
+   predictor path; `materialize`/`load` refuse missing LM/interpreter
+   bindings with ValueError naming the pool entry (test d covers both).
+
+### IR gaps hit (esp. component 4 / write-read carriage)
+
+- **Signature rebuild is shape-poor**: `materialize._build_predictor`
+  maps JSON-Schema `type` → {str,int,float,bool,list,dict} only. A
+  signature with a media field (PIL type), pydantic model, or typed
+  list refuses at materialize naming the field. So a program using
+  A2's media shapes SAVES fine (component 2 carries the schema; the
+  adapter entry carries the shape codec) but cannot yet LOAD/engine-run.
+  The missing piece is a shape→annotation lifter (and/or driving
+  `format` off the field records directly instead of a rebuilt class).
+- **`dump_entry(for_signature=)` is never passed by the compiler**:
+  component 4 entries are pooled per adapter IDENTITY, but per-field
+  shape codecs are per-SIGNATURE. One adapter serving two signatures
+  would need signature-lowered variants; the manifest has no
+  per-predictor codec slot. A4/A5 hitting media should either pool
+  per (adapter, signature) or ratify a 3d-style slot.
+- **`prefix` is write-only**: the field API deprecated it, so rebuilt
+  signatures carry desc only; identical prompts today because prefixes
+  derive from field names.
+- **LM entry carries no default kwargs** (temperature/max_tokens of the
+  LM object): per-predictor config is 3c; the receiver's bound LM
+  brings its own defaults. Fine for DummyLM tests; a real
+  cross-process replay will want them ratified into the entry.
+- **`write()` shells `uv lock --script`** (~1s warm here; needs uv and
+  possibly network for a cold cache). The save/load tests run the real
+  path on this machine. If CI ever runs cold/offline, stub
+  `_materialize_environment_locks` there.
+- Adapter v2 entries round-trip write/read exactly (chat entry loads
+  back and reproduces the same messages) — no gap found in component 4
+  carriage itself for the data-level entries.
+
+### Notes for A4 (ReAct / ReActV2 / RLM)
+
+- **Leaf declarations you get for free** (compiler + engine already
+  handle them; tool leaves smoke-tested end to end including
+  load-from-sidecar):
+  - tools TABLE: `self.tools = {"search": fn_or_Tool, ...}` — compiles
+    each entry into component 6 and admits DYNAMIC dispatch
+    `self.tools[name_expr](**kwargs)` in forward (SEM-8);
+  - static tool: `self.count = fn` → `self.count(text=...)`;
+  - extract predictor: just another `dspy.Predict` child;
+  - interpreter leaf: a child with `programir_profile()` (D-033
+    structural identity; `PythonInterpreter` itself REFUSES export —
+    runtime versions unpinned), called `self.interp(code=...)`, exactly
+    one kwarg; at materialize the receiver must bind the runtime.
+- **Tool functions must satisfy `extract_tool`**: full type hints +
+  return hint, no closures, no global reads, deps via `# deps:` line.
+  Tool ERRORS: raise/let-fail inside the leaf → engine wraps as
+  `ToolError` → catchable by `except ToolError` in forward.
+- **The zero-reach-back trap for loop caps**: forward cannot read
+  `self.max_iters`. `For` needs a LITERAL range; so either bake the cap
+  as a literal in the class's forward source, take `max_iters` as a
+  forward argument (list-form loop or While+break), or use `While` with
+  an explicit counter (SEM-6 caps While at 1000). Decide per module and
+  note it.
+- **Trajectory**: build it as a plain list/dict with the closed
+  builtin/method tables (`json_dumps`, Format, append). If users must
+  SEE it, declare it an output field (PIR-013: engine records carry
+  declared outputs only); `_trajectory` exhaust does not cross the
+  engine's record boundary.
+- **Native-FC tools**: A2's missing-channel→None ruling means a
+  native-FC model answering without tool calls parses clean — branch on
+  `x.tool_calls == None`... note `is None` lowers to `== null` in the
+  subset. A1's LM returns bare `list[str]` (no channels yet), so
+  native-FC strategies need the LM channel surface first or the
+  cli_text/xml_blocks strategies.
+- **ChainOfThought did not land in A3** (charter lists it; my scope was
+  Module+Predict): in this world it is a thin Predict wrapper — extend
+  the signature with a reasoning-role field, or bind the `prefix_cot`
+  strategy. One of A4's first moves; keep it a leaf, not a composite.
+- Engine record access in forward: leaf results are dicts —
+  `route.category` (Attr) and `route["category"]` (Index) both work;
+  iteration order is insertion order (v0.2 Dict ruling).
