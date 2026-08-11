@@ -770,9 +770,16 @@ def run_forward(
             raise MalformedNodeError("Call kwargs must be an object")
         # The v0.4 record-splat (D-041): the record's keys merge in FIRST
         # (declared field order), then the explicit kwargs (authored order).
-        # A collision is refused at compile (PIR-E-NODE-003), so no
-        # last-writer ambiguity survives to here.
+        # A collision (an explicit kwarg naming a splatted record key) is
+        # refused at compile as PIR-E-NODE-003 — but that check needs the
+        # signature, so the printer-reparse path (signature=None) and any
+        # foreign tree can slip a collision past it. This runtime guard is
+        # the durable backstop: the splatted record's ACTUAL keys are known
+        # here, so a collision refuses (MalformedNodeError — a tree the
+        # compiler should have refused) rather than silently resolving
+        # last-writer-wins, the exact ambiguity D-041 exists to forbid.
         kw: dict[str, Any] = {}
+        splat_keys: frozenset[str] = frozenset()
         if "splat" in e:
             splat_name = e["splat"]
             if not isinstance(splat_name, str) or splat_name not in env:
@@ -783,7 +790,14 @@ def run_forward(
                     f"Call splat {splat_name!r} is not a record, got {type(record).__name__} (D-041)"
                 )
             kw.update(record)
+            splat_keys = frozenset(record)
         for k, v in kwargs_spec.items():
+            if k in splat_keys:
+                raise MalformedNodeError(
+                    f"record-splat {splat_name!r} and explicit kwarg {k!r} both supply {k!r} "
+                    "(PIR-E-NODE-003, D-041) — never last-writer-wins; the compiler must refuse this, "
+                    "so a tree carrying it should never have reached the interpreter"
+                )
             kw[k] = ev(v)
         if kind in ("predict", "module"):
             ref = leaf.get("ref")

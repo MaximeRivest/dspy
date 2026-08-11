@@ -703,6 +703,65 @@ class TestBadTreeRefusalParity:
         assert refusal.code == "PIR-E-NODE-001"
         assert "Goto" in str(refusal)
 
+    def test_splat_kwarg_collision_never_resolves_last_writer_wins(self):
+        # PIR-E-NODE-003: a record-splat plus an explicit kwarg naming a
+        # splatted field collides. The compiler catches it only WITH a
+        # signature, so the printer-reparse path (signature=None) and the
+        # builder (no signature) can admit a collision tree. The interpreter
+        # is the durable backstop: with the record's ACTUAL keys in hand, a
+        # collision refuses instead of silently applying last-writer-wins.
+        from dspy.core.errors import MalformedNodeError
+        from dspy.programir.engine.interpret import run_forward
+
+        # The builder admits the collision tree (no signature to catch it).
+        tree = build.Forward(
+            [],
+            record="inputs",
+            body=[
+                build.Assign("pred", build.CallPredict("step", splat="inputs", question=build.Const("OVERRIDE"))),
+                build.Return(build.Var("pred")),
+            ],
+        )
+
+        class Runner:
+            def __init__(self):
+                self.calls: list = []
+
+            def predict(self, path, kw):
+                self.calls.append(dict(kw))
+                return {"answer": kw.get("question")}
+
+            def tool(self, *a, **k):  # pragma: no cover - unused arm
+                raise NotImplementedError
+
+            def interpreter(self, *a, **k):  # pragma: no cover - unused arm
+                raise NotImplementedError
+
+            def module(self, *a, **k):  # pragma: no cover - unused arm
+                raise NotImplementedError
+
+        runner = Runner()
+        # The input record carries a 'question' field: the splat expands it,
+        # and the explicit kwarg would silently override it (last-writer-wins)
+        # WITHOUT the guard. The guard refuses instead.
+        with pytest.raises(MalformedNodeError, match="PIR-E-NODE-003"):
+            run_forward({"self": tree}, "", {"question": "from-record"}, runner)
+        assert runner.calls == []  # the collided predict never fired
+
+        # The compiler WITH a signature catches the same shape earlier, at
+        # compile — the layered defense: refuse at compile when the field set
+        # is known, refuse at run when it is not.
+        from dspy.modules._generate import load_generated
+
+        function = load_generated(
+            "def forward(self, **kwargs):\n    p = self.step(**kwargs, question='OVERRIDE')\n    return p\n",
+            tag="collision",
+            name="forward",
+        )
+        with pytest.raises(ProgramIRRefusal) as compiled:
+            compile_forward(function, {"step": LeafRef("predict", "step")}, signature=["question"])
+        assert compiled.value.code == "PIR-E-NODE-003"
+
 
 class TestSharedNameHygiene:
     """Findings of the A7 adversarial review: name hygiene is ONE law.
