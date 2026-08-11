@@ -49,10 +49,24 @@ def render_forward(tree: dict[str, Any], *, name: str = "forward") -> str:
     Returns:
         The source text; `compile_forward` on it reproduces `tree`.
     """
-    args = "".join(f", {argument}" for argument in tree["args"])
+    args = "".join(f", {_argument(argument)}" for argument in tree["args"])
     lines = [f"def {name}(self{args}):"]
     lines.extend(_block(tree["body"], 1))
     return "\n".join(lines) + "\n"
+
+
+def _argument(argument: Any) -> str:
+    """Print one forward parameter: a plain name, or the v0.4 record bag.
+
+    The record envelope (D-041) is `args: [{"name": <bag>, "record":
+    "self"}]`; it prints as the `**<bag>` desugar door (door b), which
+    `compile_forward` recognizes and lowers back to the SAME record
+    binding. The bag name reparses under the `**kwargs` spelling, so the
+    round trip is exact.
+    """
+    if isinstance(argument, dict):
+        return f"**{argument['name']}"
+    return argument
 
 
 def to_function(tree: dict[str, Any], *, name: str = "forward", tag: str = "printed"):
@@ -256,7 +270,14 @@ def _call(node: dict[str, Any]) -> tuple[str, int]:
         arguments = ", ".join(_at(argument, _IFEXP) for argument in node["args"])
         return f"{receiver}.{node['method']}({arguments})", _ATOM
     leaf = node["leaf"]
-    kwargs = ", ".join(f"{key}={_at(value, _IFEXP)}" for key, value in node["kwargs"].items())
+    # The v0.4 record-splat (D-041): `**<record>` renders FIRST, before the
+    # explicit kwargs — the merge order the contract pins (expanded keys in
+    # declared order, then authored kwargs). Reparse reproduces the splat.
+    pieces = []
+    if "splat" in node:
+        pieces.append(f"**{node['splat']}")
+    pieces.extend(f"{key}={_at(value, _IFEXP)}" for key, value in node["kwargs"].items())
+    kwargs = ", ".join(pieces)
     if "name" in node:
         # Dynamic tool dispatch prints against the conventional table
         # attribute: `self.tools[<name expr>](...)`.

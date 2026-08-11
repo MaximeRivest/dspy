@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ProgramIR node set v0.3 (SEM-8)",
-  "description": "The forward grammar's JSON encoding, spec/node-set.md SEM-8 ruling as amended by the ratified v0.2 ergonomics batch (D-034) and v0.3 values batch (D-037, 2026-08-10): the `node` discriminator, the statement/expression vocabulary below, leaves as {leaf: {kind, ref?}} with the interpreter leaf carrying a required ref (D-029), dynamic tools as {leaf: {kind: 'tool'}, name: <expr>}. v0.2 added statements SetIndex/AssignTuple, expressions IfExp/BoolOp/UnaryOp/Format/List/Dict/Index, the For list-iter form, and the widened Compare/BinOp operator enums. v0.3 adds statements Pass/Log, the Slice expression, and two pure call forms (builtin table, value-method table); the aforward rule (D-037) makes async twins lower to this identical vocabulary. Artifact form carries no source spans (SEM-8: refusal locations are an input-side concern). The root of this schema is one forward object -- the input to the node_compile op (harness/PROTOCOL.md). Anything outside this closed vocabulary refuses at compile with PIR-E-NODE-* (spec/errors.md).",
+  "title": "ProgramIR node set v0.4 (SEM-8)",
+  "description": "The forward grammar's JSON encoding, spec/node-set.md SEM-8 ruling as amended by the ratified v0.2 ergonomics batch (D-034), v0.3 values batch (D-037, 2026-08-10), and v0.4 inputs-bag admission (D-041, 2026-08-11): the `node` discriminator, the statement/expression vocabulary below, leaves as {leaf: {kind, ref?}} with the interpreter leaf carrying a required ref (D-029), dynamic tools as {leaf: {kind: 'tool'}, name: <expr>}. v0.2 added statements SetIndex/AssignTuple, expressions IfExp/BoolOp/UnaryOp/Format/List/Dict/Index, the For list-iter form, and the widened Compare/BinOp operator enums. v0.3 adds statements Pass/Log, the Slice expression, and two pure call forms (builtin table, value-method table); the aforward rule (D-037) makes async twins lower to this identical vocabulary. v0.4 adds the record envelope (args as exactly one record binding, bound to the module's own input signature, D-036 component 2) and the leaf-call `splat` field (the signature-record splat; LM-decided dicts stay refused). Artifact form carries no source spans (SEM-8: refusal locations are an input-side concern). The root of this schema is one forward object -- the input to the node_compile op (harness/PROTOCOL.md). Anything outside this closed vocabulary refuses at compile with PIR-E-NODE-* (spec/errors.md).",
   "$ref": "#/$defs/forward",
   "$defs": {
     "identifier": {
@@ -19,9 +19,20 @@
         },
         "args": {
           "type": "array",
-          "items": {"$ref": "#/$defs/identifier"},
-          "uniqueItems": true,
-          "description": "The forward's declared input names ('self' excluded), SEM-8 v0 envelope."
+          "description": "The forward's parameter list ('self' excluded), in exactly one of two forms (v0.4, D-041): the plain form -- input names as identifier strings (the SEM-8 v0 envelope) -- or the record envelope -- exactly ONE record binding object, def forward(self, inputs). A record beside plain names is not a lawful envelope (unobserved, so refused; PIR-E-NODE-001).",
+          "oneOf": [
+            {
+              "items": {"$ref": "#/$defs/identifier"},
+              "uniqueItems": true,
+              "description": "Plain form: the declared input names (SEM-8 v0 envelope)."
+            },
+            {
+              "items": {"$ref": "#/$defs/record_binding"},
+              "minItems": 1,
+              "maxItems": 1,
+              "description": "Record envelope (v0.4, D-041): exactly one record binding, the whole parameter list. minItems keeps the empty list unambiguous (it is the plain form)."
+            }
+          ]
         },
         "body": {
           "type": "array",
@@ -31,6 +42,22 @@
         }
       },
       "required": ["language", "args", "body"],
+      "additionalProperties": false
+    },
+    "record_binding": {
+      "type": "object",
+      "description": "The record envelope's one parameter (v0.4, D-041): the module's own input record, def forward(self, inputs). The record's key set is STATIC -- exactly the input fields of the module signature it binds (D-036 component 2), in declared field order; the forward restates nothing. The record is read-only (any Assign/AssignTuple/For-target/SetIndex naming it refuses PIR-E-NODE-004) and shallowly immutable at execution.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier",
+          "description": "The record parameter's name -- what Attr reads, and what a leaf call's `splat` may reference."
+        },
+        "record": {
+          "const": "self",
+          "description": "The binding target: the module's OWN input signature (D-036 component 2). 'self' is the only lawful target in v0.4 -- an explicit const so any future target is a visible versioned extension, never a reinterpretation of a bare name."
+        }
+      },
+      "required": ["name", "record"],
       "additionalProperties": false
     },
     "statement": {
@@ -285,6 +312,10 @@
         "name": {
           "$ref": "#/$defs/expression",
           "description": "Dynamic tool dispatch ONLY: the expression evaluating to the tool's name at runtime (SEM-8: dynamic tools as {leaf: {kind: 'tool'}, name: <expr>}). Forbidden on every other leaf kind -- enforced by the allOf below."
+        },
+        "splat": {
+          "$ref": "#/$defs/identifier",
+          "description": "Record-splat (v0.4, D-041): the name of the forward's record parameter, whose signature-defined key set merges into this call's kwargs -- expanded keys first (declared field order), then the explicit kwargs (authored order). Lawful ONLY when it names the forward's declared record (compile checks; a splat of anything else -- an LM-decided dict -- refuses PIR-E-NODE-002 naming the target). A splat/kwarg collision refuses PIR-E-NODE-003 naming the key. One splat per call by construction; absent on the builtin/method call forms (closed objects)."
         }
       },
       "required": ["node", "leaf", "kwargs"],

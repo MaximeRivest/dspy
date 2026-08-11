@@ -189,7 +189,12 @@ class _DSPyCompiler:
         else:
             # A generated forward bound on the instance wins over the class's.
             forward_fn = module.__dict__.get("forward") or type(module).forward
-            self.forwards[path] = compile_forward(forward_fn, leaves, literals=_declared_literals(module))
+            self.forwards[path] = compile_forward(
+                forward_fn,
+                leaves,
+                literals=_declared_literals(module),
+                signature=_declared_signature(module),
+            )
         class_name = type(module).__name__
         node = {
             "kind": class_name,
@@ -430,6 +435,22 @@ def _declared_literals(module: Module) -> dict[str, Any]:
             )
         literals[name] = value
     return literals
+
+
+def _declared_signature(module: Module) -> list[str] | None:
+    """The module's declared input field names, or None when it has none.
+
+    The v0.4 record envelope (D-041) needs the module's own input
+    signature (component 2, D-036): a signature-polymorphic forward
+    (`def forward(self, inputs)` or `**kwargs`) threads exactly these
+    fields. A module without a `signature.input_fields` attribute (a
+    plain composite whose forward names its inputs) has no record
+    envelope available — the compiler stays byte-identical to v0.3.
+    """
+    signature = getattr(module, "signature", None)
+    if signature is None or not hasattr(signature, "input_fields"):
+        return None
+    return list(signature.input_fields)
 
 
 def _is_identifier(value: str) -> bool:

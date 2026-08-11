@@ -594,7 +594,7 @@ def Method(obj: Any, name: str, *args: Any) -> Node:
     }
 
 
-def _leaf_call(kind: str, ref: str | None, kwargs: dict[str, Any], name: Any = None) -> Node:
+def _leaf_call(kind: str, ref: str | None, kwargs: dict[str, Any], name: Any = None, splat: str | None = None) -> Node:
     checked_kwargs = {}
     for key, value in kwargs.items():
         _name(key, f"{kind} call keyword")
@@ -605,39 +605,66 @@ def _leaf_call(kind: str, ref: str | None, kwargs: dict[str, Any], name: Any = N
     call: Node = {"node": "Call", "leaf": leaf, "kwargs": checked_kwargs}
     if name is not None:
         call["name"] = _expr(name, "dynamic tool name")
+    if splat is not None:
+        # The v0.4 record-splat (D-041): `**<record>` spreads the forward's
+        # signature record into the kwargs; a splat naming a declared field
+        # ALSO passed explicitly is the caller's error (collision, checked
+        # at admission). The name must be a lawful identifier.
+        _name(splat, f"{kind} call splat")
+        if splat in checked_kwargs:
+            _refuse(
+                "PIR-E-NODE-003",
+                {"key": splat, "reason": "collision"},
+                f"record-splat {splat!r} also appears as an explicit kwarg — never last-writer-wins (D-041)",
+            )
+        call["splat"] = splat
     return call
 
 
-def CallPredict(ref: str, **kwargs: Any) -> Node:
-    """Invoke a declared Predict leaf: ``self.<ref>(**kwargs)``."""
-    return _leaf_call("predict", ref, kwargs)
+def CallPredict(ref: str, *, splat: str | None = None, **kwargs: Any) -> Node:
+    """Invoke a declared Predict leaf: ``self.<ref>(**splat, **kwargs)``."""
+    return _leaf_call("predict", ref, kwargs, splat=splat)
 
 
-def CallModule(ref: str, **kwargs: Any) -> Node:
-    """Invoke a declared sub-module leaf: ``self.<ref>(**kwargs)``."""
-    return _leaf_call("module", ref, kwargs)
+def CallModule(ref: str, *, splat: str | None = None, **kwargs: Any) -> Node:
+    """Invoke a declared sub-module leaf: ``self.<ref>(**splat, **kwargs)``."""
+    return _leaf_call("module", ref, kwargs, splat=splat)
 
 
-def CallTool(ref: str, **kwargs: Any) -> Node:
-    """Invoke a declared tool leaf statically: ``self.<ref>(**kwargs)``."""
-    return _leaf_call("tool", ref, kwargs)
+def CallTool(ref: str, *, splat: str | None = None, **kwargs: Any) -> Node:
+    """Invoke a declared tool leaf statically: ``self.<ref>(**splat, **kwargs)``."""
+    return _leaf_call("tool", ref, kwargs, splat=splat)
 
 
-def CallToolDynamic(name: Any, **kwargs: Any) -> Node:
-    """Model-dispatched tool call: ``self.tools[<name expr>](**kwargs)``."""
-    return _leaf_call("tool", None, kwargs, name=_expr(name, "dynamic tool name"))
+def CallToolDynamic(name: Any, *, splat: str | None = None, **kwargs: Any) -> Node:
+    """Model-dispatched tool call: ``self.tools[<name expr>](**splat, **kwargs)``."""
+    return _leaf_call("tool", None, kwargs, name=_expr(name, "dynamic tool name"), splat=splat)
 
 
-def CallInterpreter(ref: str, **kwargs: Any) -> Node:
-    """Invoke a declared interpreter leaf: ``self.<ref>(**kwargs)``."""
-    return _leaf_call("interpreter", ref, kwargs)
+def CallInterpreter(ref: str, *, splat: str | None = None, **kwargs: Any) -> Node:
+    """Invoke a declared interpreter leaf: ``self.<ref>(**splat, **kwargs)``."""
+    return _leaf_call("interpreter", ref, kwargs, splat=splat)
 
 
 # ─── the envelope ────────────────────────────────────────────────────
 
 
-def Forward(args: Iterable[str], body: Any, *, leaves: Mapping[str, Any] | None = None) -> Node:
+def Forward(
+    args: Iterable[str], body: Any, *, record: str | None = None, leaves: Mapping[str, Any] | None = None
+) -> Node:
     """The forward root: argument names + statement body, admitted.
+
+    Args:
+        args: The forward's plain input names (the SEM-8 v0 envelope).
+            Ignored when `record` is given — the record envelope IS the
+            whole parameter list (D-041).
+        body: The statement body.
+        record: The v0.4 record-envelope parameter name (D-041). When
+            given, `args` becomes exactly one record binding
+            (`{"name": record, "record": "self"}`) — the
+            signature-polymorphic `def forward(self, <record>)` form; the
+            body threads it into a leaf with a `splat=` call.
+        leaves: The declared-leaf table for finalize resolution.
 
     Finalize runs the SAME structural admission the parse compiler runs
     (`admit_forward`: schema, closed tables, arity, leaf resolution when
@@ -645,12 +672,16 @@ def Forward(args: Iterable[str], body: Any, *, leaves: Mapping[str, Any] | None 
     """
     from dspy.programir.forward import admit_forward
 
-    names = [_name(argument, "forward argument") for argument in args]
-    if len(set(names)) != len(names):
-        _refuse("PIR-E-NODE-001", {"args": names}, "forward argument names must be distinct")
+    if record is not None:
+        emitted_args: list[Any] = [{"name": _name(record, "forward record"), "record": "self"}]
+    else:
+        names = [_name(argument, "forward argument") for argument in args]
+        if len(set(names)) != len(names):
+            _refuse("PIR-E-NODE-001", {"args": names}, "forward argument names must be distinct")
+        emitted_args = names
     tree = {
         "language": "restricted-python-ast",
-        "args": names,
+        "args": emitted_args,
         "body": _body(body, "forward body"),
     }
     return admit_forward(tree, leaves)
