@@ -1,29 +1,32 @@
+"""The custom-type base: host objects that render as structured content.
+
+A `Type` subclass is a host-language value with a declared wire rendering:
+`format()` returns either a plain string or a list of content parts (the
+OpenAI-style content-part dicts). Values render into message text through
+the reserved part markers; `split_message_content_for_custom_types` then
+splits each user message around them so providers receive real content
+parts. The streaming/native-feature hooks of the legacy type died with the
+carve — strategies conduct native features now, as data.
+"""
+
 import json
 import re
-from typing import TYPE_CHECKING, Any, Optional, get_args, get_origin
+from typing import Any, get_args, get_origin
 
 import json_repair
 import pydantic
-
-from dspy.clients.base_lm import BaseLM
-
-if TYPE_CHECKING:
-    from litellm import ModelResponseStream
-
-    from dspy.signatures.signature import Signature
 
 CUSTOM_TYPE_START_IDENTIFIER = "<<CUSTOM-TYPE-START-IDENTIFIER>>"
 CUSTOM_TYPE_END_IDENTIFIER = "<<CUSTOM-TYPE-END-IDENTIFIER>>"
 
 
 class Type(pydantic.BaseModel):
-    """Base class to support creating custom types for DSPy signatures.
+    """Base class for custom types carried in DSPy signatures.
 
-    This is the parent class of DSPy custom types, e.g, dspy.Image. Subclasses must implement the `format` method to
-    return a list of dictionaries (same as the Array of content parts in the OpenAI API user message's content field).
+    Subclasses implement `format()` to return either a string or a list of
+    content-part dicts (the OpenAI user-message content array shape).
 
     Examples:
-
         ```python
         class Image(Type):
             url: str
@@ -38,18 +41,14 @@ class Type(pydantic.BaseModel):
 
     @classmethod
     def description(cls) -> str:
-        """Description of the custom type"""
+        """Description of the custom type, appended to field descriptions."""
         return ""
 
     @classmethod
     def extract_custom_type_from_annotation(cls, annotation):
-        """Extract all custom types from the annotation.
-
-        This is used to extract all custom types from the annotation of a field, while the annotation can
-        have arbitrary level of nesting. For example, we detect `Tool` is in `list[dict[str, Tool]]`.
-        """
-        # Direct match. Nested type like `list[dict[str, Event]]` passes `isinstance(annotation, type)` in python 3.10
-        # while fails in python 3.11. To accommodate users using python 3.10, we need to capture the error and ignore it.
+        """Extract all custom types from an annotation, at any nesting depth."""
+        # Direct match. Nested aliases like `list[dict[str, Event]]` pass
+        # `isinstance(annotation, type)` on 3.10 but fail on 3.11+; ignore.
         try:
             if isinstance(annotation, type) and issubclass(annotation, cls):
                 return [annotation]
@@ -61,7 +60,6 @@ class Type(pydantic.BaseModel):
             return []
 
         result = []
-        # Recurse into all type args
         for arg in get_args(annotation):
             result.extend(cls.extract_custom_type_from_annotation(arg))
 
@@ -76,68 +74,13 @@ class Type(pydantic.BaseModel):
             )
         return formatted
 
-    @classmethod
-    def adapt_to_native_lm_feature(
-        cls,
-        signature: type["Signature"],
-        field_name: str,
-        lm: BaseLM,
-        lm_kwargs: dict[str, Any],
-    ) -> type["Signature"]:
-        """Adapt the custom type to the native LM feature if possible.
-
-        When the LM and configuration supports the related native LM feature, e.g., native tool calling, native
-        reasoning, etc., we adapt the signature and `lm_kwargs` to enable the native LM feature.
-
-        Args:
-            signature: The DSPy signature for the LM call.
-            field_name: The name of the field in the signature to adapt to the native LM feature.
-            lm: The LM instance.
-            lm_kwargs: The keyword arguments for the LM call, subject to in-place updates if adaptation if required.
-
-        Returns:
-            The adapted signature. If the custom type is not natively supported by the LM, return the original
-            signature.
-        """
-        return signature
-
-    @classmethod
-    def is_streamable(cls) -> bool:
-        """Whether the custom type is streamable."""
-        return False
-
-    @classmethod
-    def parse_stream_chunk(cls, chunk: "ModelResponseStream") -> Optional["Type"]:
-        """
-        Parse a stream chunk into the custom type.
-
-        Args:
-            chunk: A stream chunk.
-
-        Returns:
-            A custom type object or None if the chunk is not for this custom type.
-        """
-        return None
-
-    @classmethod
-    def parse_lm_response(cls, response: str | dict[str, Any]) -> Optional["Type"]:
-        """Parse a LM response into the custom type.
-
-        Args:
-            response: A LM response.
-
-        Returns:
-            A custom type object.
-        """
-        return None
-
 
 def split_message_content_for_custom_types(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Split user message content into a list of content blocks.
+    """Split user message content into content-part lists around custom types.
 
-    This method splits each user message's content in the `messages` list to be a list of content block, so that
-    the custom types like `dspy.Image` can be properly formatted for better quality. For example, the split content
-    may look like below if the user message has a `dspy.Image` object:
+    Finds the reserved custom-type markers in each user message's string
+    content and splits the content around them, so values like `dspy.Image`
+    reach the provider as native content parts:
 
     ```
     [
@@ -147,36 +90,24 @@ def split_message_content_for_custom_types(messages: list[dict[str, Any]]) -> li
     ]
     ```
 
-    This is implemented by finding the `<<CUSTOM-TYPE-START-IDENTIFIER>>` and `<<CUSTOM-TYPE-END-IDENTIFIER>>`
-    in the user message content and splitting the content around them. The `<<CUSTOM-TYPE-START-IDENTIFIER>>`
-    and `<<CUSTOM-TYPE-END-IDENTIFIER>>` are the reserved identifiers for the custom types as in `dspy.Type`.
-
-    Args:
-        messages: a list of messages sent to the LM. The format is the same as [OpenAI API's messages
-            format](https://platform.openai.com/docs/guides/chat-completions/response-format).
-
-    Returns:
-        A list of messages with the content split into a list of content blocks around custom types content.
+    Messages without markers pass through unchanged.
     """
     for message in messages:
         if message["role"] != "user":
-            # Custom type messages are only in user messages
+            # Custom type parts live in user messages only.
             continue
 
         pattern = rf"{CUSTOM_TYPE_START_IDENTIFIER}(.*?){CUSTOM_TYPE_END_IDENTIFIER}"
         result = []
         last_end = 0
-        # DSPy adapter always formats user input into a string content before custom type splitting
         content: str = message["content"]
 
         for match in re.finditer(pattern, content, re.DOTALL):
             start, end = match.span()
 
-            # Add text before the current block
             if start > last_end:
                 result.append({"type": "text", "text": content[last_end:start]})
 
-            # Parse the JSON inside the block
             custom_type_content = match.group(1).strip()
             parsed = None
 
@@ -188,19 +119,16 @@ def split_message_content_for_custom_types(messages: list[dict[str, Any]]) -> li
                     continue
 
             if parsed:
-                for custom_type_content in parsed:
-                    result.append(custom_type_content)
+                for part in parsed:
+                    result.append(part)
             else:
-                # fallback to raw string if it's not valid JSON
                 result.append({"type": "text", "text": custom_type_content})
 
             last_end = end
 
         if last_end == 0:
-            # No custom type found, return the original message
             continue
 
-        # Add any remaining text after the last match
         if last_end < len(content):
             result.append({"type": "text", "text": content[last_end:]})
 
@@ -210,8 +138,6 @@ def split_message_content_for_custom_types(messages: list[dict[str, Any]]) -> li
 
 
 def _parse_doubly_quoted_json(json_str: str) -> Any:
-    """
-    Parse a doubly quoted JSON string into a Python dict.
-    `dspy.Type` can be json-encoded twice if included in either list or dict, e.g., `list[dspy.experimental.Document]`
-    """
+    """Parse a doubly quoted JSON string (a `Type` nested in a list or dict
+    is json-encoded twice)."""
     return json.loads(json.loads(f'"{json_str}"'))

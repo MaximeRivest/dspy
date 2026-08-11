@@ -1,45 +1,23 @@
-from dspy.adapters.base import Adapter
-from dspy.adapters.chat_adapter import ChatAdapter
-from dspy.adapters.json_adapter import JSONAdapter
-from dspy.adapters.registry import (
-    describe_template_language,
-    register_codec,
-    register_preset,
-    register_strategy,
-    unregister_codec,
-    unregister_preset,
-    unregister_strategy,
+"""Adapters v2 (stage A2, assembling): the type frontend is live; the
+entry-backed adapter, lens parsers, combinators, and strategies land in
+the next commit."""
+
+from dspy.adapters.types import (
+    Citations,
+    History,
+    Image,
+    Tool,
+    ToolCallResults,
+    ToolCalls,
+    Type,
 )
-from dspy.adapters.serde import PresetAdapter, load_entry
-from dspy.adapters.template_adapter import TemplateAdapter
-from dspy.adapters.two_step_adapter import TwoStepAdapter
-from dspy.adapters.types import Audio, Code, File, History, Image, Reasoning, Tool, ToolCallResults, ToolCalls, Type
-from dspy.adapters.xml_adapter import XMLAdapter
 
 __all__ = [
-    "Adapter",
-    "ChatAdapter",
-    "Type",
+    "Citations",
     "History",
     "Image",
-    "Audio",
-    "File",
-    "Code",
-    "JSONAdapter",
-    "XMLAdapter",
-    "TemplateAdapter",
-    "PresetAdapter",
-    "TwoStepAdapter",
     "Tool",
-    "ToolCalls",
     "ToolCallResults",
-    "Reasoning",
-    "load_entry",
-    "describe_template_language",
-    "register_codec",
-    "register_preset",
-    "register_strategy",
-    "unregister_codec",
-    "unregister_preset",
-    "unregister_strategy",
+    "ToolCalls",
+    "Type",
 ]
