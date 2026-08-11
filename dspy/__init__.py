@@ -6,7 +6,10 @@ IS the adapter (lens parsers, rule strategies, codec families). Stage
 A3: the execution spine — the program IS the IR: `Module.forward`
 compiles to the node set, `program(**inputs)` runs through the engine,
 `program.save(dir)` / `dspy.load(dir, bindings=...)` is the one
-serialization path. Composed modules and optimizers land next.
+serialization path. Stage A4: the module library (ChainOfThought, ReAct,
+ReActV2, RLM), subset-clean by construction. Stage A5: optimizers as IR
+mutations — propose mutates demos/instructions as data, score replays
+the program through the engine, keep is the artifact.
 """
 
 from dspy.core import (
@@ -56,6 +59,8 @@ from dspy.adapters import (
 
 from dspy.modules import RLM, ChainOfThought, Module, Predict, ReAct, ReActV2
 from dspy.programir.interpreters import InProcessInterpreter
+from dspy import optim
+from dspy.optim import BootstrapFewShot, BootstrapFewShotWithRandomSearch, LabeledFewShot
 
 from dspy.__metadata__ import __author__, __author_email__, __description__, __name__, __url__, __version__
 
