@@ -419,13 +419,35 @@ def _check_branches(value: Any, branches: list, root: dict, ipath: tuple,
 
     if branches and all(isinstance(c, str) for c in consts):
         kind = value.get("node") if isinstance(value, dict) else None
-        for i, (branch, const) in enumerate(zip(branches, consts)):
-            if const == kind:
+        matching = [(branch, i) for i, (branch, const)
+                    in enumerate(zip(branches, consts)) if const == kind]
+        if len(matching) == 1:
+            branch, i = matching[0]
+            sub_spath = (branch["$ref"]
+                         if isinstance(branch, dict) and "$ref" in branch
+                         else f"{spath}/{i}")
+            _check(value, branch, root, ipath, sub_spath, out)
+            return
+        if matching:
+            # Several branches share the const — the v0.3 Call forms
+            # (leaf / builtin / method). Any passing branch accepts;
+            # otherwise report the branch whose first error is deepest
+            # (the closest-intent heuristic, same as the fallback path).
+            errsets: list[list[Violation]] = []
+            for branch, i in matching:
                 sub_spath = (branch["$ref"]
                              if isinstance(branch, dict) and "$ref" in branch
                              else f"{spath}/{i}")
-                _check(value, branch, root, ipath, sub_spath, out)
-                return
+                errs: list[Violation] = []
+                _check(value, branch, root, ipath, sub_spath, errs)
+                if not errs:
+                    return
+                errsets.append(errs)
+            best = max(range(len(errsets)),
+                       key=lambda j: len(errsets[j][0].path)
+                       if errsets[j] else -1)
+            out.extend(errsets[best])
+            return
         if isinstance(kind, str):
             message = f"node kind {kind!r} is not in the whitelist"
         else:
@@ -656,46 +678,29 @@ def resolve_bindings(manifest: dict) -> tuple[dict | None, dict | None]:
 # ─── Forward compile: node-set schema + leaf resolution ──────────────
 
 def iter_calls(forward: dict) -> list[tuple[tuple, dict]]:
-    """Every Call node in a schema-valid forward, with its instance path."""
+    """Every LEAF Call node in a schema-valid forward, with its path.
+
+    Generic structural walk (v0.2/v0.3 made the expression grammar rich
+    enough that per-node traversal invited drift): any dict with
+    ``node == "Call"`` carrying a ``leaf`` object is a leaf call; the
+    builtin/method call forms (v0.3, D-037) carry no ``leaf`` and are
+    recursed through, never collected — they resolve against the closed
+    tables at schema level, not against declared pools.
+    """
     out: list[tuple[tuple, dict]] = []
 
-    def expr(e: Any, path: tuple) -> None:
-        if not isinstance(e, dict):
-            return
-        node = e.get("node")
-        if node == "Call":
-            out.append((path, e))
-            for key, sub in e.get("kwargs", {}).items():
-                expr(sub, path + ("kwargs", key))
-            if "name" in e:
-                expr(e["name"], path + ("name",))
-        elif node in ("Compare", "BinOp"):
-            expr(e.get("left"), path + ("left",))
-            expr(e.get("right"), path + ("right",))
+    def walk(value: Any, path: tuple) -> None:
+        if isinstance(value, dict):
+            if value.get("node") == "Call" and isinstance(
+                    value.get("leaf"), dict):
+                out.append((path, value))
+            for key, sub in value.items():
+                walk(sub, path + (key,))
+        elif isinstance(value, list):
+            for i, sub in enumerate(value):
+                walk(sub, path + (i,))
 
-    def stmts(body: list, path: tuple) -> None:
-        for i, s in enumerate(body):
-            here = path + (i,)
-            node = s.get("node")
-            if node == "Assign":
-                expr(s["value"], here + ("value",))
-            elif node == "Return":
-                expr(s["value"], here + ("value",))
-            elif node == "If":
-                expr(s["test"], here + ("test",))
-                stmts(s["body"], here + ("body",))
-                stmts(s.get("orelse", []), here + ("orelse",))
-            elif node == "For":
-                stmts(s["body"], here + ("body",))
-            elif node == "While":
-                expr(s["test"], here + ("test",))
-                stmts(s["body"], here + ("body",))
-            elif node == "Try":
-                stmts(s["body"], here + ("body",))
-                for h, handler in enumerate(s["handlers"]):
-                    stmts(handler["body"], here + ("handlers", h, "body"))
-
-    stmts(forward.get("body", []), ("body",))
+    walk(forward.get("body", []), ("body",))
     return out
 
 
@@ -733,6 +738,49 @@ def _nearest_node_kind(forward: Any, segs: tuple) -> str | None:
     return kind
 
 
+def _call_tables() -> tuple[set, set]:
+    """The closed v0.3 builtin and value-method tables, read from the
+    schema enums (one source of truth; D-037)."""
+    defs = node_set_schema()["$defs"]
+    return (
+        set(defs["expr_call_builtin"]["properties"]["builtin"]["enum"]),
+        set(defs["expr_call_method"]["properties"]["method"]["enum"]),
+    )
+
+
+def _unknown_call_target(value: Any, path: tuple) -> dict | None:
+    """An unknown builtin/method name is an UNRESOLVED CALL — the tables
+    are closed (v0.3, D-037) — so it refuses PIR-E-NODE-002 naming the
+    target, not NODE-001's malformed-node shape. Checked before schema
+    validation so the enum violation never masks the better refusal."""
+    builtins_, methods_ = _call_tables()
+    if isinstance(value, dict):
+        if value.get("node") == "Call":
+            for field, table in (("builtin", builtins_),
+                                 ("method", methods_)):
+                name = value.get(field)
+                if isinstance(name, str) and name not in table:
+                    return {
+                        "code": "PIR-E-NODE-002",
+                        "component": "5_forward",
+                        "target": name,
+                        "location": render_path(path),
+                        "message": f"unknown {field} {name!r} — the "
+                                   "table is closed (v0.3, D-037); an "
+                                   "unlisted name is an unresolved call",
+                    }
+        for key, sub in value.items():
+            found = _unknown_call_target(sub, path + (key,))
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for i, sub in enumerate(value):
+            found = _unknown_call_target(sub, path + (i,))
+            if found is not None:
+                return found
+    return None
+
+
 def forward_refusal(forward: Any, declared: dict | None = None) -> dict | None:
     """Compile-check one forward object (the node_compile op's core).
 
@@ -753,6 +801,9 @@ def forward_refusal(forward: Any, declared: dict | None = None) -> dict | None:
     compile refuses PIR-E-NODE-002 naming ``leaf`` + ``entry``. Dynamic
     tool dispatch resolves at runtime by convention, never here.
     """
+    unknown = _unknown_call_target(forward, ())
+    if unknown is not None:
+        return unknown
     violations = check(forward, node_set_schema())
     if violations:
         v = violations[0]

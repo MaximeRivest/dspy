@@ -78,7 +78,7 @@ from typing import Any, Callable
 
 from dspy.programir import contract_validate as validate
 from dspy.programir import explain_view
-from dspy.programir.versions import IMPLEMENTED_VERSIONS
+from dspy.programir.versions import IMPLEMENTED_VERSIONS, supported_versions
 
 JsonObject = dict[str, Any]
 
@@ -184,8 +184,9 @@ def _versions_gate(manifest: JsonObject) -> None:
         same_major = (artifact_major is not None
                       and artifact_major == _major(implemented))
         pre_1_0_exact = same_major and artifact_major == "0"
+        accepted = supported_versions(name) or ()
         if not same_major or (pre_1_0_exact
-                              and artifact_version != implemented):
+                              and artifact_version not in accepted):
             raise Refusal({
                 "code": "PIR-E-VERSION-001",
                 "component": "versions",

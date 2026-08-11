@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ProgramIR node set v0 (SEM-8)",
-  "description": "The forward grammar's JSON encoding, spec/node-set.md SEM-8 ruling: the observed encoding of examples 13-15 adopted as node_set v0 -- the `node` discriminator, the statement/expression vocabulary below, leaves as {leaf: {kind, ref?}} with the interpreter leaf carrying a required ref (D-029; the examples' unnamed singleton is pre-ratification, the migrator adds ref: 'main'), dynamic tools as {leaf: {kind: 'tool'}, name: <expr>}. Artifact form carries no source spans (SEM-8: refusal locations are an input-side concern). The root of this schema is one forward object -- the input to the node_compile op (harness/PROTOCOL.md). Anything outside this closed vocabulary refuses at compile with PIR-E-NODE-* (spec/errors.md).",
+  "title": "ProgramIR node set v0.3 (SEM-8)",
+  "description": "The forward grammar's JSON encoding, spec/node-set.md SEM-8 ruling as amended by the ratified v0.2 ergonomics batch (D-034) and v0.3 values batch (D-037, 2026-08-10): the `node` discriminator, the statement/expression vocabulary below, leaves as {leaf: {kind, ref?}} with the interpreter leaf carrying a required ref (D-029), dynamic tools as {leaf: {kind: 'tool'}, name: <expr>}. v0.2 added statements SetIndex/AssignTuple, expressions IfExp/BoolOp/UnaryOp/Format/List/Dict/Index, the For list-iter form, and the widened Compare/BinOp operator enums. v0.3 adds statements Pass/Log, the Slice expression, and two pure call forms (builtin table, value-method table); the aforward rule (D-037) makes async twins lower to this identical vocabulary. Artifact form carries no source spans (SEM-8: refusal locations are an input-side concern). The root of this schema is one forward object -- the input to the node_compile op (harness/PROTOCOL.md). Anything outside this closed vocabulary refuses at compile with PIR-E-NODE-* (spec/errors.md).",
   "$ref": "#/$defs/forward",
   "$defs": {
     "identifier": {
       "type": "string",
       "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-      "description": "A simple name. Assignment targets are simple names only (spec/node-set.md SEM-5 ruling: subscript and tuple targets refuse at compile)."
+      "description": "A simple name. Assign targets are simple names (spec/node-set.md SEM-5 ruling, amended v0.2: tuple destructuring is the AssignTuple statement, subscript writes are the SetIndex statement; attribute targets refuse at compile)."
     },
     "forward": {
       "type": "object",
@@ -34,9 +34,11 @@
       "additionalProperties": false
     },
     "statement": {
-      "description": "A whitelisted statement, spec/node-set.md statement whitelist, discriminated on `node`. v0 statements: Assign, Return, If, For, While, Break, Continue, Try, Raise. Note: IfExp and BoolOp appear in the whitelist table but have NO observed v0 encoding in examples 13-15 and are therefore absent here -- admitting them is an additive versioned act (see schema/README.md).",
+      "description": "A whitelisted statement, spec/node-set.md statement whitelist, discriminated on `node`. Statements: Assign, AssignTuple, SetIndex, Return, If, For, While, Break, Continue, Try, Raise (AssignTuple/SetIndex v0.2, D-034), Pass, Log (v0.3, D-037).",
       "oneOf": [
         {"$ref": "#/$defs/stmt_assign"},
+        {"$ref": "#/$defs/stmt_assigntuple"},
+        {"$ref": "#/$defs/stmt_setindex"},
         {"$ref": "#/$defs/stmt_return"},
         {"$ref": "#/$defs/stmt_if"},
         {"$ref": "#/$defs/stmt_for"},
@@ -44,18 +46,30 @@
         {"$ref": "#/$defs/stmt_break"},
         {"$ref": "#/$defs/stmt_continue"},
         {"$ref": "#/$defs/stmt_try"},
-        {"$ref": "#/$defs/stmt_raise"}
+        {"$ref": "#/$defs/stmt_raise"},
+        {"$ref": "#/$defs/stmt_pass"},
+        {"$ref": "#/$defs/stmt_log"}
       ]
     },
     "expression": {
-      "description": "A whitelisted expression, discriminated on `node`. v0 expressions: Call, Attr, Var, Const, Compare, BinOp (spec/node-set.md SEM-8; SEM-4 pins the operator subsets).",
+      "description": "A whitelisted expression, discriminated on `node`. Expressions: Call (leaf, builtin, or method form), Attr, Var, Const, Compare, BinOp, IfExp, BoolOp, UnaryOp, Format, List, Dict, Index (v0.2, D-034), Slice (v0.3, D-037). spec/node-set.md SEM-8; SEM-4 pins the operator subsets and call forms.",
       "oneOf": [
         {"$ref": "#/$defs/expr_call"},
+        {"$ref": "#/$defs/expr_call_builtin"},
+        {"$ref": "#/$defs/expr_call_method"},
         {"$ref": "#/$defs/expr_attr"},
         {"$ref": "#/$defs/expr_var"},
         {"$ref": "#/$defs/expr_const"},
         {"$ref": "#/$defs/expr_compare"},
-        {"$ref": "#/$defs/expr_binop"}
+        {"$ref": "#/$defs/expr_binop"},
+        {"$ref": "#/$defs/expr_ifexp"},
+        {"$ref": "#/$defs/expr_boolop"},
+        {"$ref": "#/$defs/expr_unaryop"},
+        {"$ref": "#/$defs/expr_format"},
+        {"$ref": "#/$defs/expr_list"},
+        {"$ref": "#/$defs/expr_dict"},
+        {"$ref": "#/$defs/expr_index"},
+        {"$ref": "#/$defs/expr_slice"}
       ]
     },
     "stmt_assign": {
@@ -114,7 +128,7 @@
     },
     "stmt_for": {
       "type": "object",
-      "description": "For: bounded loop (spec/node-set.md whitelist). v0 iterates range(<non-negative int literal>) ONLY -- the compiled form; list iteration is a future additive change (SEM-2 ruling). Bounded by its literal (SEM-6 ruling). for/else is not representable.",
+      "description": "For: bounded loop (spec/node-set.md whitelist), in exactly one of two forms (SEM-2 ruling, amended v0.2): the range form {node, target, range, body} iterating range(<non-negative int literal>), or the list form {node, target, iter, body} whose `iter` expression must evaluate to a list, iterated as a shallow snapshot taken at loop entry (mutation during iteration affects the list, never the iteration; non-list raises InterpreterTypeError). Bounded by its literal or the list length (SEM-6). for/else is not representable.",
       "properties": {
         "node": {"const": "For", "description": "The node discriminator (SEM-8)."},
         "target": {
@@ -124,7 +138,11 @@
         "range": {
           "type": "integer",
           "minimum": 0,
-          "description": "The literal iteration count: range(<non-negative int literal>), SEM-2 ruling."
+          "description": "Range form: the literal iteration count, range(<non-negative int literal>) (SEM-2 ruling)."
+        },
+        "iter": {
+          "$ref": "#/$defs/expression",
+          "description": "List form (v0.2): an expression evaluating to a list; shallow snapshot at loop entry (SEM-2 ruling as amended)."
         },
         "body": {
           "type": "array",
@@ -133,8 +151,12 @@
           "description": "The loop body; non-empty."
         }
       },
-      "required": ["node", "target", "range", "body"],
-      "additionalProperties": false
+      "required": ["node", "target", "body"],
+      "additionalProperties": false,
+      "oneOf": [
+        {"required": ["range"], "not": {"required": ["iter"]}},
+        {"required": ["iter"], "not": {"required": ["range"]}}
+      ]
     },
     "stmt_while": {
       "type": "object",
@@ -199,8 +221,8 @@
       "description": "One except clause. Handler matching is exact name, or 'Exception' which catches every table error -- including Raise'd ones, which flow through the same channel as leaf errors (SEM-3 ruling). Binding the caught error to a name is not representable (v0).",
       "properties": {
         "type": {
-          "enum": ["ToolError", "InterpreterError", "AdapterParseError", "LMError", "Exception"],
-          "description": "The caught type: the SEM-3 typed-error table plus 'Exception'. LoopCapError is deliberately absent -- it is a harness guard, never catchable (SEM-6 ruling). The runtime-raised InterpreterTypeError/InterpreterKeyError (SEM-1/SEM-7) are not in the table; whether they are catchable by exact name is an unresolved spec tension recorded in schema/README.md -- until ruled, only 'Exception' can catch them."
+          "enum": ["ToolError", "InterpreterError", "AdapterParseError", "LMError", "InterpreterTypeError", "InterpreterKeyError", "InterpreterArithmeticError", "Exception"],
+          "description": "The caught type: the SEM-3 typed-error table plus 'Exception', which catches every table error. The v0.2 error-table amendment (D-034) adds InterpreterTypeError, InterpreterKeyError, and InterpreterArithmeticError as exact-matchable names, resolving the former catchability tension. LoopCapError and MalformedNodeError are deliberately absent -- harness guards, never catchable (SEM-6 ruling)."
         },
         "body": {
           "type": "array",
@@ -352,7 +374,7 @@
     },
     "expr_const": {
       "type": "object",
-      "description": "Const: a literal. Values flowing between leaves are JSON values, Prediction records, and typed errors (SEM-7 ruling); v0 literals are the JSON scalars -- container literals have no observed encoding.",
+      "description": "Const: a literal. Values flowing between leaves are JSON values, Prediction records, and typed errors (SEM-7 ruling); Const literals are the JSON scalars -- container literals are the dedicated List/Dict expression nodes (v0.2).",
       "properties": {
         "node": {"const": "Const", "description": "The node discriminator (SEM-8)."},
         "value": {
@@ -365,12 +387,12 @@
     },
     "expr_compare": {
       "type": "object",
-      "description": "Compare: single eq/ne comparison (spec/node-set.md whitelist, closed operator subset). SEM-4 ruling: eq/ne is JSON-value equality; different JSON types are unequal, never an error. Chained comparisons and other operators are not representable in v0.",
+      "description": "Compare: single comparison (spec/node-set.md whitelist, closed operator subset; SEM-4 ruling as amended v0.2). eq/ne is JSON-value equality (different JSON types unequal, never an error; objects order-insensitive, lists ordered); lt/le/gt/ge compares number-with-number mathematically exactly and string-with-string by Unicode code point; in/not_in is the v0.2 membership table (needle in list, substring, string in dict = key presence). Other operand pairings raise InterpreterTypeError. Chained comparisons are not representable (frontend desugar only).",
       "properties": {
         "node": {"const": "Compare", "description": "The node discriminator (SEM-8)."},
         "op": {
-          "enum": ["eq", "ne"],
-          "description": "The comparison operator, SEM-4 ruling's closed subset."
+          "enum": ["eq", "ne", "lt", "le", "gt", "ge", "in", "not_in"],
+          "description": "The comparison operator, SEM-4 ruling's closed subset as amended v0.2 (D-034)."
         },
         "left": {
           "$ref": "#/$defs/expression",
@@ -386,12 +408,12 @@
     },
     "expr_binop": {
       "type": "object",
-      "description": "BinOp: binary operation. SEM-4 ruling: `add` ONLY -- string+string concatenation or number+number addition; any other operand pairing raises InterpreterTypeError at runtime. Other operators refuse at compile.",
+      "description": "BinOp: binary operation (SEM-4 ruling as amended v0.2). `add` is string+string concatenation, number+number addition, or list+list concatenation (fresh backing store); sub/mult/div follow the v0.2 arithmetic rules -- int exactness to +/-2^63-1, InterpreterArithmeticError on int overflow, zero divisor, non-finite float results, or div with an int operand beyond 2^53. `mod` is not admitted. Any other operand pairing raises InterpreterTypeError at runtime; other operators refuse at compile.",
       "properties": {
         "node": {"const": "BinOp", "description": "The node discriminator (SEM-8)."},
         "op": {
-          "const": "add",
-          "description": "The only v0 binary operator (SEM-4 ruling)."
+          "enum": ["add", "sub", "mult", "div"],
+          "description": "The binary operator, SEM-4 ruling's closed set as amended v0.2 (D-034)."
         },
         "left": {
           "$ref": "#/$defs/expression",
@@ -403,6 +425,268 @@
         }
       },
       "required": ["node", "op", "left", "right"],
+      "additionalProperties": false
+    },
+    "stmt_assigntuple": {
+      "type": "object",
+      "description": "AssignTuple (v0.2, D-034): destructuring bind. The value must evaluate to a list of exactly len(targets) elements (InterpreterTypeError otherwise); targets bind left to right. Tuple values do not exist -- frontends lower tuple literals to lists. Single-name binds are Assign; a one-target AssignTuple is unobserved and refuses (refusing is cheaper than specifying).",
+      "properties": {
+        "node": {"const": "AssignTuple", "description": "The node discriminator (SEM-8)."},
+        "targets": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/identifier"},
+          "minItems": 2,
+          "uniqueItems": true,
+          "description": "The bound names, left to right; simple names only (SEM-5 ruling as amended)."
+        },
+        "value": {
+          "$ref": "#/$defs/expression",
+          "description": "The destructured expression; must evaluate to a list of exactly len(targets) elements."
+        }
+      },
+      "required": ["node", "targets", "value"],
+      "additionalProperties": false
+    },
+    "stmt_setindex": {
+      "type": "object",
+      "description": "SetIndex (v0.2, D-034): subscript write, the ReAct trajectory idiom (trajectory[key] = v). Target names a variable holding a dict (insert-or-overwrite, string keys, overwrite keeps the key's original insertion position) or a list (existing index only). In-place mutation per the v0.2 aliasing ruling -- visible through every variable bound to the container. Errors as Index: missing/out-of-range key InterpreterKeyError, other pairings InterpreterTypeError. Prediction records are not dicts here (SEM-7 as amended).",
+      "properties": {
+        "node": {"const": "SetIndex", "description": "The node discriminator (SEM-8)."},
+        "target": {
+          "$ref": "#/$defs/identifier",
+          "description": "The variable name holding the mutated container (a bare name string, matching Attr's obj convention)."
+        },
+        "key": {
+          "$ref": "#/$defs/expression",
+          "description": "The key expression: a string for dict targets, an int for list targets."
+        },
+        "value": {
+          "$ref": "#/$defs/expression",
+          "description": "The stored expression."
+        }
+      },
+      "required": ["node", "target", "key", "value"],
+      "additionalProperties": false
+    },
+    "expr_ifexp": {
+      "type": "object",
+      "description": "IfExp (encoding pinned v0.2, D-034 -- closes the v0 spec/schema contradiction): conditional expression. Evaluate test (boolean, SEM-1); evaluate and yield exactly one branch; the untaken branch is never evaluated.",
+      "properties": {
+        "node": {"const": "IfExp", "description": "The node discriminator (SEM-8)."},
+        "test": {
+          "$ref": "#/$defs/expression",
+          "description": "The condition; boolean at runtime per SEM-1 ruling."
+        },
+        "body": {
+          "$ref": "#/$defs/expression",
+          "description": "Yielded when the test is true."
+        },
+        "orelse": {
+          "$ref": "#/$defs/expression",
+          "description": "Yielded when the test is false."
+        }
+      },
+      "required": ["node", "test", "body", "orelse"],
+      "additionalProperties": false
+    },
+    "expr_boolop": {
+      "type": "object",
+      "description": "BoolOp (encoding pinned v0.2, D-034 -- closes the v0 spec/schema contradiction): and/or over two or more boolean operands (SEM-1's rule); short-circuit left to right; unevaluated operands are never type-checked.",
+      "properties": {
+        "node": {"const": "BoolOp", "description": "The node discriminator (SEM-8)."},
+        "op": {
+          "enum": ["and", "or"],
+          "description": "The boolean operator."
+        },
+        "values": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/expression"},
+          "minItems": 2,
+          "description": "The operands, evaluated left to right with short-circuit."
+        }
+      },
+      "required": ["node", "op", "values"],
+      "additionalProperties": false
+    },
+    "expr_unaryop": {
+      "type": "object",
+      "description": "UnaryOp (v0.2, D-034): `not` on booleans; `neg` on numbers, with neg 0.0 yielding 0.0 (-0.0 is kept out of the value model); anything else raises InterpreterTypeError.",
+      "properties": {
+        "node": {"const": "UnaryOp", "description": "The node discriminator (SEM-8)."},
+        "op": {
+          "enum": ["not", "neg"],
+          "description": "The unary operator."
+        },
+        "value": {
+          "$ref": "#/$defs/expression",
+          "description": "The operand."
+        }
+      },
+      "required": ["node", "op", "value"],
+      "additionalProperties": false
+    },
+    "expr_format": {
+      "type": "object",
+      "description": "Format (v0.2, D-034): string building, the f-string / template-literal / Sprintf compile target. Evaluate parts left to right; string values pass through verbatim; int values render in canonical decimal (optional leading '-', digits, no leading zeros, no '+', no grouping); anything else (float, bool, null, container) raises InterpreterTypeError. Concatenate. Floats are deliberately excluded until a cross-language float repr is pinned (v0.3 candidate).",
+      "properties": {
+        "node": {"const": "Format", "description": "The node discriminator (SEM-8)."},
+        "parts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/expression"},
+          "minItems": 1,
+          "description": "The concatenated parts, evaluated left to right."
+        }
+      },
+      "required": ["node", "parts"],
+      "additionalProperties": false
+    },
+    "expr_list": {
+      "type": "object",
+      "description": "List (v0.2, D-034): list literal. Evaluate items in order; yield a fresh list (a reference value under the aliasing ruling). May be empty -- the comprehension desugar's seed.",
+      "properties": {
+        "node": {"const": "List", "description": "The node discriminator (SEM-8)."},
+        "items": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/expression"},
+          "description": "The element expressions, evaluated in order; may be empty."
+        }
+      },
+      "required": ["node", "items"],
+      "additionalProperties": false
+    },
+    "expr_dict": {
+      "type": "object",
+      "description": "Dict (v0.2, D-034): object literal. Keys are expressions evaluating to strings (InterpreterTypeError otherwise); a later duplicate key overwrites the value but keeps the key's original insertion position; insertion order is preserved and observable in serialized output. Equality: objects compare order-insensitively; lists compare ordered. May be empty (trajectory = {}). Go engines need an ordered-map value type; map[string]any is non-conforming.",
+      "properties": {
+        "node": {"const": "Dict", "description": "The node discriminator (SEM-8)."},
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/expression",
+                "description": "The key expression; must evaluate to a string."
+              },
+              "value": {
+                "$ref": "#/$defs/expression",
+                "description": "The value expression."
+              }
+            },
+            "required": ["key", "value"],
+            "additionalProperties": false
+          },
+          "description": "The entries in authoring order; may be empty."
+        }
+      },
+      "required": ["node", "entries"],
+      "additionalProperties": false
+    },
+    "stmt_pass": {
+      "type": "object",
+      "description": "Pass (v0.3, D-037): no-op statement; exists so frontends compile empty blocks without inventing filler.",
+      "properties": {
+        "node": {"const": "Pass", "description": "The node discriminator (SEM-8)."}
+      },
+      "required": ["node"],
+      "additionalProperties": false
+    },
+    "stmt_log": {
+      "type": "object",
+      "description": "Log (v0.3, D-037): print's lawful home. Parts follow Format's argument rules; the rendered string is written to the run's observability trace (_trajectory overlay), NEVER to program state -- fixtures assert Log cannot affect any subsequent value.",
+      "properties": {
+        "node": {"const": "Log", "description": "The node discriminator (SEM-8)."},
+        "parts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/expression"},
+          "minItems": 1,
+          "description": "The logged parts, Format's evaluation and rendering rules."
+        }
+      },
+      "required": ["node", "parts"],
+      "additionalProperties": false
+    },
+    "expr_slice": {
+      "type": "object",
+      "description": "Slice (v0.3, D-037): read-only slice of a list or string. Python clamping semantics (out-of-range clamps, never errors); negative indices count from the end; absent start/stop mean the ends; step admitted only as literal 1 or -1 (any other step is a compile refusal, hence the const forms). Yields a fresh list/string. Slice assignment is NOT admitted.",
+      "properties": {
+        "node": {"const": "Slice", "description": "The node discriminator (SEM-8)."},
+        "obj": {
+          "$ref": "#/$defs/expression",
+          "description": "The sliced list or string expression (other runtime types raise InterpreterTypeError)."
+        },
+        "start": {
+          "$ref": "#/$defs/expression",
+          "description": "Optional start index expression (int at runtime; negative counts from the end)."
+        },
+        "stop": {
+          "$ref": "#/$defs/expression",
+          "description": "Optional stop index expression (int at runtime; negative counts from the end)."
+        },
+        "step": {
+          "enum": [1, -1],
+          "description": "Literal step, 1 (default when absent) or -1. Non-literal or other steps refuse at compile."
+        }
+      },
+      "required": ["node", "obj"],
+      "additionalProperties": false
+    },
+    "expr_call_builtin": {
+      "type": "object",
+      "description": "Builtin call (v0.3, D-037): {node:'Call', builtin, args} -- the closed pure-builtin table; unknown names refuse at compile (PIR-E-NODE-*). All entries are pure functions of their operands; semantics pinned in spec/node-set.md v0.3 (len/str/int/float/max/min/sum/sorted/any/all, json_dumps/json_parse bound to the canonical-JSON serde profile). str/float rendering follows the float-repr pin.",
+      "properties": {
+        "node": {"const": "Call", "description": "The node discriminator (SEM-8)."},
+        "builtin": {
+          "enum": ["len", "str", "int", "float", "max", "min", "sum", "sorted", "any", "all", "json_dumps", "json_parse"],
+          "description": "The builtin name, the closed v0.3 table."
+        },
+        "args": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/expression"},
+          "minItems": 1,
+          "description": "Positional argument expressions, evaluated left to right."
+        }
+      },
+      "required": ["node", "builtin", "args"],
+      "additionalProperties": false
+    },
+    "expr_call_method": {
+      "type": "object",
+      "description": "Value-method call (v0.3, D-037): {node:'Call', method, obj, args} -- the closed str/list/dict method table; unknown names refuse at compile. Receiver type checked at runtime (InterpreterTypeError on mismatch); list/dict mutators follow the v0.2 aliasing ruling; str methods yield fresh values with code-point semantics; case mapping is Unicode simple-case, locale-free. Semantics pinned in spec/node-set.md v0.3.",
+      "properties": {
+        "node": {"const": "Call", "description": "The node discriminator (SEM-8)."},
+        "method": {
+          "enum": ["strip", "lstrip", "rstrip", "lower", "upper", "split", "join", "replace", "startswith", "endswith", "append", "extend", "pop", "get", "keys", "values", "items", "update"],
+          "description": "The method name, the closed v0.3 table (str/list/dict families; receiver type resolves the family at runtime)."
+        },
+        "obj": {
+          "$ref": "#/$defs/expression",
+          "description": "The receiver expression."
+        },
+        "args": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/expression"},
+          "description": "Positional argument expressions; may be empty (e.g. no-arg strip/pop/keys)."
+        }
+      },
+      "required": ["node", "method", "obj", "args"],
+      "additionalProperties": false
+    },
+    "expr_index": {
+      "type": "object",
+      "description": "Index (v0.2, D-034): subscript read. Dict + string key -> member, missing -> InterpreterKeyError. List + int key -> 0-based element; negative or out-of-range -> InterpreterKeyError. Any other obj/key pairing -> InterpreterTypeError. Prediction records are not dicts here -- only Attr reads them (SEM-7 as amended).",
+      "properties": {
+        "node": {"const": "Index", "description": "The node discriminator (SEM-8)."},
+        "obj": {
+          "$ref": "#/$defs/expression",
+          "description": "The indexed container expression."
+        },
+        "key": {
+          "$ref": "#/$defs/expression",
+          "description": "The key expression: a string for dicts, an int for lists."
+        }
+      },
+      "required": ["node", "obj", "key"],
       "additionalProperties": false
     }
   }

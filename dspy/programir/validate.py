@@ -8,7 +8,7 @@ from typing import Any
 from dspy.programir import contract_validate
 from dspy.programir.errors import ProgramIRRefusal
 from dspy.programir.interpreters import validate_interpreter_profile
-from dspy.programir.versions import IMPLEMENTED_VERSIONS, REQUIRED_VERSION_KEYS
+from dspy.programir.versions import IMPLEMENTED_VERSIONS, REQUIRED_VERSION_KEYS, supported_versions
 
 _REQUIRED_COMPONENTS = (
     "1_module_tree",
@@ -117,7 +117,8 @@ def check_versions(manifest: dict[str, Any]) -> dict[str, str]:
         implemented_major = _major(implemented)
         compatible = declared_major == implemented_major and declared_major is not None
         if compatible and declared_major == 0:
-            compatible = declared == implemented
+            # Pre-1.0 version-set rule (D-034): membership accepts.
+            compatible = declared in (supported_versions(name) or ())
         if not compatible:
             raise ProgramIRRefusal(
                 "PIR-E-VERSION-001",

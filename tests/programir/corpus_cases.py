@@ -248,9 +248,9 @@ def emit(artifacts: Path, contract: Path, sha: str):
         ),
         (
             "ve-zero-minor-refuse",
-            ("set", "node_set", "0.2"),
-            {"ok": False, "error": {"code": "PIR-E-VERSION-001", "entry": "node_set", "declared": "0.2"}},
-            "node_set changed from 0.1 to 0.2 under exact pre-1.0 matching",
+            ("set", "node_set", "0.9"),
+            {"ok": False, "error": {"code": "PIR-E-VERSION-001", "entry": "node_set", "declared": "0.9"}},
+            "node_set changed to 0.9, outside the pre-1.0 supported set {0.1, 0.2, 0.3}",
         ),
     ):
         manifest = copy.deepcopy(manifests["09"])
