@@ -1106,3 +1106,184 @@ FOREIGN tree carrying Const `-0.0` still prints `-0.0` and reparses as
 `0.0` — the schema's number type cannot exclude it and the hygiene
 walker checks names, not scalars. Both in-repo frontends now normalize
 it away.
+
+## 2026-08-11 — A8: the IR macros (BestOfN, Refine) + FlexIR (agent A8)
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 333
+passed (A7-fix-wave's 301 + 32: `test_macros.py` (23) + `test_flex.py`
+(9)). `ruff check` clean.** The tier-3 macro family A7 promised exists:
+`dspy.BestOfN` and `dspy.Refine` are builder-made rewrites around one
+declared sub-module leaf, and `dspy.optim.FlexIR` is a reflection
+optimizer whose whole edit surface is a closed, validated vocabulary —
+including a STRUCTURAL edit that applies macro 1 through the builder.
+
+### The macro tree shape (one builder, two faces)
+
+`dspy/modules/best_of_n.py` holds everything; `Refine(BestOfN)` is a
+constructor that makes the threshold mandatory and unlocks `feedback=`.
+The built forward (`_forward_tree`, printed twin via `bind_forward`):
+
+```
+attempts = 0; best_score = 0.0; best = {}; found = False   [; hints = ""]
+for attempt in range(<n literal>):
+    attempts = attempts + 1
+    try:
+        outputs = self.inner(**inputs [, hints=hints])     # module|predict leaf
+        score = self.reward(outputs=outputs)               # declared tool leaf
+    except AdapterParseError: continue
+    except ToolError: continue
+    if not found or score > best_score:
+        best = outputs; best_score = score; found = True
+    [if best_score >= <threshold literal>: break]          # threshold given
+    [note = self.describe_attempt(outputs=outputs, score=score)]
+    [hints = "Previous attempt {}".format(note)]           # feedback=True
+if not found: raise ToolError("...all N attempt(s) failed...")
+final = {}; final.update(best)
+final["best_score"] = best_score; final["attempts"] = attempts
+return final
+```
+
+Decisions inside that shape:
+
+- **The inner leaf kind is picked at build**: `CallPredict` when the
+  inner is a `Predict` subclass, else `CallModule` — the compiler
+  classifies children the same way, so the leaf table always matches.
+  Wrapping ReAct nests fine (paths `inner.react`, `inner.extract`;
+  save→load→run tested).
+- **The reward is a generated static tool leaf** named `reward`
+  (attribute = pool name): the user's plain one-argument function is
+  embedded VERBATIM inside `def reward(outputs: dict) -> float`, which
+  converts failures to `ToolError` and floats the result —
+  `build_dispatch_tool`'s pattern exactly. `extract_tool` runs EAGERLY
+  at construction, so a closure/global-reading/lambda reward refuses
+  where it is declared. Rewards read fields by subscript: the engine
+  arm hands them the record dict, the native arm the inner Prediction
+  (both subscriptable — documented convention).
+- **Attempt failures skip, typed**: handlers are exactly
+  `AdapterParseError` (inner parse trouble) + `ToolError` (reward or
+  inner tool trouble). `LMError` deliberately propagates — a transport
+  failure is configuration, not sampling variance, and catching it
+  would silently swallow DummyLM script exhaustion in every test.
+- **`found` is a real flag**, not a sentinel score: rewards may be
+  legitimately ≤ 0, so first-success seeds best-so-far and strict `>`
+  keeps the EARLIEST best (argmax test pins [0.2, 0.9, 0.4] → attempt
+  2). All-failed raises `ToolError` naming the cap.
+- **`final.update(best)` needs no output-name introspection**: dict
+  update accepts the engine record and the native Prediction alike
+  (Prediction quacks keys()/getitem), so the macro wraps modules whose
+  outputs it cannot enumerate.
+- **`ir_literals = ("n", "threshold")`** — the caps are literals in the
+  artifact; edits recompile via the fingerprint (tested: `best.n = 1`).
+
+### The exhaust decision (per the A4 record-boundary rule)
+
+`best_score` and `attempts` are DECLARED outputs on the returned
+record, not `_trajectory` exhaust. Justification: PIR-013 — engine
+records carry declared outputs only, so exhaust dies at the first
+record boundary; a program that wraps BestOfN (FlexIR's wrap edit does
+exactly this) could never see an exhaust-borne score, and the metric/
+reward of an outer layer may legitimately read it. Reserved-name
+refusals guard the merge: an inner OUTPUT named `best_score`/`attempts`
+refuses at construction (when the inner exposes a signature), and an
+inner INPUT colliding with the loop's locals refuses always.
+
+### Refine
+
+`Refine(module, n, reward, threshold, feedback=False)`; `threshold=None`
+refuses ("a Refine that never stops early is BestOfN — say which one
+you mean"). `feedback=True` threads the previous attempt into the
+inner's RESERVED `hints` input: `hints` leaves the macro's own argument
+list, initializes to `""`, and updates each non-breaking, non-failed
+attempt. An inner without a declared `hints` input refuses at
+construction with the teaching error (never silently dropped — tested).
+The rendered feedback is asserted in the actual prompt bytes on both
+arms.
+
+### A parity trap found: Format floats diverge between the arms
+
+The engine renders Format/str parts under the v0.3 `render_float` pin
+(`0.0` → `"0"`, `1.0` → `"1"`); the printed native twin runs Python's
+`str.format` (`"0.0"`, `"1.0"`). A score formatted in-forward therefore
+produces DIFFERENT prompt bytes on the two arms — the first behavioral
+divergence between printer output and engine semantics found since A7.
+The macro sidesteps it: `describe_attempt(outputs, score)` is a
+generated TOOL leaf, so both arms run the identical Python and the
+feedback bytes agree. Worth a contract thought: either the printer
+should spell Format parts through an engine-faithful render helper, or
+the pin should be documented as engine-only. (Same family, noted:
+integral-float rendering also diverges for `str()` in user tools — but
+tools are one Python on both arms, so only FORWARD-level Format/str/Log
+of floats can split.)
+
+### FlexIR (`dspy/optim/flex.py`) — the edit vocabulary as implemented
+
+`FlexIR(reflection_lm, metric, iterations=8, *, reward=None)`;
+`compile(program, *, trainset, checkpoint_dir=None)`. The closed
+vocabulary (op → exact key set, anything else refuses):
+
+- `set_instructions {path, text}` — text must be a non-empty string;
+  path must name a live predictor.
+- `add_demo {path, inputs, labels}` — non-empty objects; field names
+  validated against the predictor's signature (unknown names refuse by
+  name; values are not validated).
+- `remove_demo {path, index}` — int within the demo list.
+- `wrap_best_of_n {path, N}` — the STRUCTURAL edit: the named
+  sub-module attribute (never the root) is wrapped in
+  `BestOfN(child, N, self.reward)`. Requires `FlexIR(reward=...)`
+  (BestOfN demands a declared reward leaf); without it the proposal
+  refuses with that sentence. Rebinding + `invalidate_ir()` on apply
+  AND on unwind (structure is not fingerprinted — A3's rule).
+
+The loop per iteration: render report → one reflection Predict call
+(`program_report: str -> proposals: list`, instructions teach the
+vocabulary) → per-proposal validate-and-apply IN ORDER against the
+live candidate (a bad proposal is refused whole — atomic — while valid
+siblings still apply; refusals carry the offending proposal's JSON and
+the teaching reason) → if anything applied, `evaluate` by engine
+replay → keep iff STRICTLY better → `Checkpointer.accept` + manifest
+into the trajectory; else unwind (structural setattr-restores in
+reverse, then `apply_state` snapshot). The report = `program.explain()`
++ `"{score} over {k} example(s)"` + up to 3 failing examples (metric
+< 1.0) as inputs/expected/got JSON + the previous round's refusals —
+so every refusal is IN the next reflection call's rendered input
+(tested against the DummyLM's recorded messages). The baseline is
+evaluated, checkpointed (`candidate-000`, label `baseline`), and its
+manifest recorded, so `dspy.diff(trajectory[0]["manifest"],
+trajectory[-1]["manifest"])` renders the whole search delta.
+
+### Honest gaps
+
+- **No per-attempt variation**: BestOfN/Refine resample the SAME
+  predictor with the SAME inputs — under a scripted DummyLM the
+  attempts differ only by script order, and under a real LM only by
+  provider-side sampling. The old rollout_id/temperature-bump
+  cache-busting has no greenfield counterpart yet (A5 noted the same
+  for bootstrap retries); per-attempt config (e.g. a temperature
+  schedule) would need 3c-style per-attempt deltas the node set cannot
+  express today. Said plainly: attempt k's request bytes are identical
+  to attempt 1's.
+- **One reward identity per program**: the reward pool name is the
+  attribute name `reward`, so two macros in one program with DIFFERENT
+  reward functions collide at compile ("multiple function identities");
+  the same function dedupes fine. Same pre-existing rule as duplicate
+  tool names in two ReActs.
+- **The AdapterParseError skip path needs ≥2 output fields**: a
+  one-output inner degenerates to full_text parsing (A2's lens rule)
+  and parses ANY completion, so its failed-attempt path is
+  unreachable — the battery uses a two-output inner to drive it.
+- **FlexIR runs exactly `iterations` reflection calls** — no early
+  stop at a perfect score, no stop_at_score; deterministic and simple,
+  but a scripted reflection LM must carry one reply per iteration.
+- **An unparseable `proposals` FIELD propagates** as
+  `AdapterParseError` (optimizer misconfiguration, loud); only a
+  parseable non-array or bad elements become recorded refusals.
+- **`reward=` is a FlexIR constructor extra** beyond the stage spec's
+  three parameters — wrap edits are impossible without a declared
+  reward function, and refusing them by name beats inventing a metric
+  bridge (`metric(example, prediction)` needs an example; a reward
+  leaf sees outputs only).
+- The spec's `N` parameter is spelled `n` (pep8-naming N803 is
+  enforced repo-wide); the vocabulary's JSON key stays `"N"`.
+- `Module._named_modules` is now read by FlexIR's wrap validation —
+  the same private-access impurity A5 noted for `_executable`; one
+  public door for both would clean it up when Module is next touched.
