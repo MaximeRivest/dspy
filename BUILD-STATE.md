@@ -1287,3 +1287,66 @@ trajectory[-1]["manifest"])` renders the whole search delta.
 - `Module._named_modules` is now read by FlexIR's wrap validation —
   the same private-access impurity A5 noted for `_executable`; one
   public door for both would clean it up when Module is next touched.
+
+## 2026-08-11 — A8 fix wave: the adversarial review's five findings
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 346
+passed (A8's 333 + 13: 6 in `test_macros.py`, 7 in `test_flex.py`).
+`ruff check` clean. All five verified findings fixed — none rejected.**
+
+1. **Tie semantics were untested** (important). The gt→ge sabotage
+   mutant on the keep-if-best Compare survived all 23 macro tests:
+   every scripted reward was distinct, so no test could see ties
+   keeping the LATEST attempt against the docstring's earliest-wins
+   promise. A tie test (0.5/0.5 → attempt 1 wins, both arms) now pins
+   it; verified to be the ONLY test that fails under the mutant.
+2. **Macro tool leaves collided ungoverned** (important). The fixed
+   pool names (`reward`, `describe_attempt`) made BestOfN(ReAct with a
+   `reward` tool), nested macros with different rewards, and
+   Refine(feedback) over a `describe_attempt` owner accept at
+   construction and then refuse at first compile with the pool's
+   non-teaching "multiple function identities" error. Two changes: the
+   reward wrapper source no longer embeds the owner class name, so the
+   SAME user reward is byte-identical under both faces and
+   `Refine(BestOfN(m, n, r), n, r)` now compiles to ONE pooled leaf;
+   and `_setup` walks the inner tree with the compiler's exact tool
+   classification and refuses REAL identity collisions at construction,
+   naming the owning sub-module path and the remedy.
+3. **Non-string `path` crashed compile with residue** (critical). A
+   JSON array/object where the path string belongs hit `path not in
+   predictors` unchecked (`unhashable type` TypeError), and the
+   snapshot revert lived only in the score-comparison else branch, so
+   earlier valid edits from the batch stayed applied: unscored,
+   unreverted state on the live program. `_apply_one` now refuses
+   non-string paths with a teaching message, and the per-iteration
+   apply+evaluate block unwinds through one `_unwind` helper
+   (structure in reverse, `apply_state`, `invalidate_ir`) on ANY
+   exception before propagating — no exception path strands a
+   candidate. Pinned by a metric-crash test: the poisoned instructions
+   AND the structural wrap both revert.
+4. **add_demo validated names, never values** (critical). A well-formed
+   proposal whose demo value the adapter cannot format (a list holding
+   null) applied cleanly, then killed the next evaluate with a raw
+   TypeError deep in `_format_blob`. After the name check the op now
+   DRY-RUNS `adapter.format()` over the candidate demo; render
+   failures become recorded teaching refusals. Partial-fields demos
+   probed against false refusals; a valid sibling in the same batch
+   still applies and scores.
+5. **An unparseable reflection reply killed the loop** (important).
+   `proposals` that did not parse as a JSON array (bare prose, an
+   object, a quoted string, an empty value) raised AdapterParseError
+   out of compile, and the in-loop non-list guard was unreachable (the
+   Predict output is pydantic-validated to list). `compile` now
+   catches AdapterParseError around the reflection call, records a
+   "refused reply: could not parse `proposals`..." refusal, feeds it
+   into the next report, and continues with no edits — the documented
+   refuse-loudly-and-feed-back contract now exists for whole-reply
+   malformation. All four shapes tested; the next iteration still
+   lands a valid edit. The isinstance guard stays as defense for
+   non-validating adapters.
+
+Two A8 honest-gap bullets are superseded: "one reward identity per
+program" still holds across DIFFERENT reward functions but now refuses
+at construction with a teaching error (and identical rewards dedupe
+across BestOfN/Refine faces); "an unparseable `proposals` FIELD
+propagates" no longer — it is a recorded refusal.
