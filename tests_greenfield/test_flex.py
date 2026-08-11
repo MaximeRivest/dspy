@@ -250,6 +250,44 @@ class TestRefusalFeedbackLoop:
         assert program.solver.signature.instructions == MAGIC
 
 
+class TestMalformedReflectionReply:
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            chat_completion(proposals=json.dumps({"op": "set_instructions"})),  # a JSON object
+            chat_completion(proposals=json.dumps("hello")),  # a quoted string
+            chat_completion(proposals=""),  # an empty value
+            "bare prose with no proposals marker at all",  # no field marker
+        ],
+        ids=["object", "string", "empty", "no-marker"],
+    )
+    def test_unparseable_reply_refuses_and_the_loop_continues(self, reply):
+        # A reply whose `proposals` field does not parse as a JSON array
+        # used to raise AdapterParseError out of compile, killing the
+        # loop. The contract is refuse-loudly-and-feed-back: record the
+        # refusal, show it to the next reflection call, keep going.
+        program = dspy.Predict("question -> answer")
+        reflection = dspy.DummyLM(
+            [reply, reflection_reply([{"op": "set_instructions", "path": "self", "text": MAGIC}])]
+        )
+        optimizer = optim.FlexIR(reflection, exact_answer, iterations=2)
+        dspy.configure(lm=dspy.DummyLM(task_pilot))
+
+        optimizer.compile(program, trainset=devset_of("France"))
+
+        first = optimizer.trajectory[1]
+        assert len(first["refusals"]) == 1
+        assert "could not parse `proposals` as a JSON array" in first["refusals"][0]
+        assert first["applied"] == []
+        assert first["score"] is None  # nothing applied, nothing evaluated
+        # The refusal is IN the next reflection call's rendered input...
+        second_report = reflection.calls[1]["messages"][-1]["content"]
+        assert "could not parse `proposals`" in second_report
+        # ...and the loop stayed alive: iteration 2's valid edit landed.
+        assert program.signature.instructions == MAGIC
+        assert optimizer.trajectory[2]["accepted"] is True
+
+
 class TestDemoValueValidation:
     def test_unrenderable_demo_values_refuse_and_the_loop_survives(self):
         # Well-formed shape, poison VALUES (a list holding null): the

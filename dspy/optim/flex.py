@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from dspy.core.errors import AdapterParseError
 from dspy.core.example import Example
 from dspy.lm.lm import LM
 from dspy.modules.best_of_n import BestOfN
@@ -168,9 +169,19 @@ class FlexIR(Optimizer):
         pending_refusals: list[str] = []
         for iteration in range(self.iterations):
             report = self._render_report(program, best_score, best_results, pending_refusals)
-            proposals = self.reflect(program_report=report).proposals
-
             refusals: list[str] = []
+            try:
+                proposals = self.reflect(program_report=report).proposals
+            except AdapterParseError as error:
+                # A whole-reply malformation — bare prose, a JSON object,
+                # a quoted string, an empty value where the proposals
+                # array belongs — is the reflection LM misspeaking, not
+                # optimizer misconfiguration: refuse it loudly, record
+                # it, feed it back, and keep the loop alive. Program
+                # state is untouched here (the crash precedes any edit).
+                refusals.append(f"refused reply: could not parse `proposals` as a JSON array of edit objects — {error}")
+                proposals = []
+
             applied: list[dict[str, Any]] = []
             undo_structural: list[tuple[Module, str, Module]] = []
             snapshot = snapshot_state(program)
