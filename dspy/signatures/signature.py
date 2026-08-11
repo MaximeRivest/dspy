@@ -28,8 +28,7 @@ from typing import Any, Iterator
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
-from dspy.signatures.field import InputField, OutputField
-from dspy.utils.constants import IS_TYPE_UNDEFINED
+from dspy.signatures.field import IS_TYPE_UNDEFINED, InputField, OutputField
 
 
 def _default_instructions(cls) -> str:

@@ -2,7 +2,8 @@ import warnings
 
 import pydantic
 
-from dspy.utils.constants import IS_TYPE_UNDEFINED
+# Marks a signature field whose type the user never declared (defaulted to str).
+IS_TYPE_UNDEFINED = "IS_TYPE_UNDEFINED"
 
 # The following arguments can be used in DSPy InputField and OutputField in addition
 # to the standard pydantic.Field arguments. We just hope pydanitc doesn't add these,
