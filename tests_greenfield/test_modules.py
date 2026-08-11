@@ -213,6 +213,35 @@ class TestReAct:
         assert "The tool call failed" in lm.calls[1]["messages"][-1]["content"]
         assert "The tool call failed" in lm.calls[2]["messages"][-1]["content"]
 
+    def test_react_tool_failure_equivalence(self):
+        # The ToolError observation branch (react.py) under the
+        # engine==native oracle. react_script goes lookup->finish->extract
+        # and never fails a tool, so test_react_equivalence never drives
+        # this handler; here a bad kwarg then an unknown tool both raise
+        # ToolError and become the typed observation — on BOTH arms.
+        script = [
+            react_step("Try bad args.", "lookup", {"nation": "france"}),  # wrong kwarg -> ToolError
+            react_step("Try an unknown tool.", "search", {"q": "france"}),  # unknown -> ToolError
+            react_step("Give up gathering.", "finish", {}),
+            chat_completion(reasoning="Nothing was gathered.", answer="unknown"),
+        ]
+        react = dspy.ReAct("question -> answer", tools=[lookup], max_iters=5)
+
+        engine_lm = dspy.DummyLM(script)
+        dspy.configure(lm=engine_lm)
+        engine_prediction = react(question="What is the capital of France?")
+
+        native_lm = dspy.DummyLM(script)
+        dspy.configure(lm=native_lm)
+        native_prediction = react.forward_native(question="What is the capital of France?")
+
+        assert_identical_calls(engine_lm, native_lm)
+        assert engine_prediction.toDict() == native_prediction.toDict()
+        assert engine_prediction.answer == "unknown"
+        # The typed observation reached the prompts on both failing rounds.
+        assert "The tool call failed" in engine_lm.calls[1]["messages"][-1]["content"]
+        assert "The tool call failed" in engine_lm.calls[2]["messages"][-1]["content"]
+
     def test_react_equivalence(self):
         react = dspy.ReAct("question -> answer", tools=[lookup], max_iters=5)
 
