@@ -940,3 +940,120 @@ refactored.**
 - `Module._executable()` is private but `optim.run_engine` uses it — a
   public `Module.executable()` was A5's ask; one rename, do it when the
   next stage touches Module anyway.
+
+## 2026-08-11 — A7: the IR-first program-maker (builder + printer)
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 285
+passed (A1–A6's 256 + 29: `test_build.py` (27) + 2 in
+`test_modules.py`). `ruff check` clean. The string-template half of A4's
+"generated forwards" mechanism is RETIRED: modules now BUILD their
+forwards as trees, and the native twin is DERIVED by a printer.**
+
+### 1. `dspy/programir/build.py` — typed node builders (quasi-quotation)
+
+One constructor per v0.3 node kind, emitting EXACTLY the compiler's JSON
+(field names, field ORDER — byte-compatible, tested via `json.dumps`
+equality against parsed twins). Surface:
+
+- statements: `Assign`, `Do` (statement-position call, binds `_`),
+  `AssignTuple`, `SetIndex`, `Return`, `If`, `For(target, body,
+  range=|iter=)`, `While`, `Break`, `Continue`, `Pass`, `Try` +
+  `Except`, `Raise`, `Log(*values)` (print's separator convention);
+- expressions: `Var`, `Const`, `Attr`, `Index`, `Slice`, `Format`,
+  `List`, `Dict` (mapping or (key, value) pairs), `Compare`, `BinOp`,
+  `BoolOp`, `UnaryOp` (neg folds literal numbers, the parser's rule),
+  `IfExp`;
+- calls: `Builtin` (12-name table; json arity enforced), `Method`
+  (18-name table), `CallPredict`/`CallModule`/`CallTool`/
+  `CallInterpreter`/`CallToolDynamic` (leaf forms incl. dynamic-name
+  dispatch);
+- `Forward(args, body, leaves=)` — the envelope; finalize runs the
+  shared admission (below).
+
+Ergonomics: expression slots accept Python literals (scalar → `Const`,
+list → `List`, plain dict → `Dict`). THE HYGIENE WIN: every name
+position validates at CONSTRUCTION — non-identifier (`"foo (x)"`),
+keyword (`"class"`), dunder, and `"self"` refuse with teaching errors
+naming the role and the name, as `ProgramIRRefusal` in the compiler's
+voice. Unknown builtin/method names refuse NODE-002 naming the target —
+the same code the validator gives a bad tree.
+
+### 2. The shared validator — one admission, two frontends
+
+`forward.admit_forward(tree, leaves=None)` is THE structural admission:
+`contract_validate.forward_refusal` (schema: known node kinds, closed
+tables, shapes, For-range rules, refusal invariants) + the one rule the
+schema cannot express (json_dumps/json_parse arity 1) + declared-leaf
+resolution when `leaves` is given. `compile_forward` now runs it on its
+OUTPUT; `build.Forward` runs it at finalize — parsed and built trees
+pass the IDENTICAL checks, proven by the parity battery (unknown method,
+unknown builtin, untyped raise, json arity, undeclared leaf: same code,
+same named offender on both arms). One parity fix en route: the parse
+compiler's unknown-METHOD refusal was NODE-001; it now speaks NODE-002
+naming the target, matching the tree-level validator.
+
+### 3. `dspy/programir/printer.py` — the round-trip law
+
+`render_forward(tree)` prints node JSON as readable Python;
+`to_function` linecache-registers and execs it (inspect.getsource ==
+the printed bytes); `bind_forward` binds it on an instance. THE LAW:
+`compile_forward(to_function(tree), leaves) == tree`, exact JSON text
+equality, tested over a synthetic all-nodes corpus (every statement,
+expression, builtin, method, leaf kind and both For forms), the suite's
+corpus programs (branchy, desugar-heavy source with comprehension/
+walrus/dict-merge/enumerate — gensym names print fine), and the three
+migrated modules. Printer decisions:
+
+- precedence-aware; nested BoolOps always parenthesize (reparse would
+  flatten), Compare operands of Compare parenthesize (reparse would
+  chain), method receivers that are numeric literals parenthesize;
+- `Format` prints as the `.format` desugar (template + `{}` slots);
+  adjacent/empty Const-string parts ride as arguments so every part
+  list reproduces exactly;
+- dynamic tool dispatch prints against the CONVENTIONAL attribute
+  `self.tools[...]` (the tree does not carry the attribute name);
+- NO node kind is unprintable. Two SHAPES no source lowers to refuse
+  honestly: a `Log` outside print's separator convention, and
+  `UnaryOp neg` on a literal number (the parser folds it; build.py
+  folds it too, so neither frontend emits it).
+
+### 4. The migrated modules (ReAct, ReActV2, RLM)
+
+Each module now builds its forward tree in `build_forward_ir()`
+(`_forward_tree` uses the constructors; `ir_literals` semantics kept:
+`max_iters` arrives as `Const`/`For.range` at BUILD time, and the class
+still declares `ir_literals` so the fingerprint recompiles on edit —
+the cap-refresh test still passes). The compiler grew an IR-first door:
+`_dspy.module_node` prefers a callable `build_forward_ir` and hands the
+tree straight to `admit_forward` with the declared leaf table — no
+source parse for built modules. The native twin is DERIVED:
+`build_forward_ir` prints the tree and rebinds `forward` on the
+instance (linecache), so `forward_native` runs genuine Python that
+agrees with the engine arm by construction — refreshed at every build,
+i.e. at `__init__` and at every compile. (Caveat, same shape as A4's
+structural-edit note: editing `max_iters` and calling `forward_native`
+BEFORE any engine call/compile runs the previous twin; the engine path
+is the default door and refreshes it.) Tool dispatch wrappers are
+untouched (leaf bodies, not forward structure). DELETED:
+`_FORWARD_TEMPLATE` ×3, the `_DISPATCH_*` fragments, and
+`bind_generated_forward`; `_generate.py` keeps `load_generated` (the
+one linecache/exec door, now also the printer's), `ToolTable`,
+`normalize_tools`, `build_dispatch_tool`.
+
+### What this unblocks
+
+Tier-3 IR macros: a module (Refine, BestOfN, fallback wrappers) can now
+be written as a BUILDER-MADE REWRITE — take a child's forward tree,
+wrap it in retry/branch structure with build.py constructors, and the
+result is admitted, printable, and equivalence-testable for free. The
+refused runtime-ClassDef family becomes ordinary data transformation;
+no string templates, no source splicing.
+
+### Notes for the next agent
+
+- `admit_forward` is the only door new tree producers need; pass the
+  `leaves` table when you have one, or rely on the compiler's call.
+- `printer.to_function(tree)` + `test_build.leaves_of` is the two-line
+  recipe for running any tree natively in tests.
+- The parity battery (`TestBadTreeRefusalParity`) is the drift alarm:
+  extend it when the node set grows.
