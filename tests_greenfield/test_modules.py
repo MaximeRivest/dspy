@@ -542,6 +542,34 @@ class TestRLM:
         # extract saw the empty result channel.
         assert "[[ ## result ## ]]" in lm.calls[1]["messages"][-1]["content"]
 
+    def test_rlm_cap_break_equivalence(self):
+        # The cap-break While branch (`if rounds == max_iters: break`) under
+        # the engine==native oracle. rlm_script's success round makes
+        # `result != ""` end the loop, so test_rlm_equivalence never fires
+        # this branch; here every round fails to compute (result stays "")
+        # and only the literal cap ends the run — on BOTH arms.
+        script = [
+            chat_completion(code="oops ="),  # syntax error, no result
+            chat_completion(code="result = undefined_name"),  # NameError, no result
+            chat_completion(answer="no result"),
+        ]
+
+        engine_lm = dspy.DummyLM(script)
+        dspy.configure(lm=engine_lm)
+        engine_prediction = dspy.RLM("question -> answer", max_iters=2)(question="anything")
+
+        native_lm = dspy.DummyLM(script)
+        dspy.configure(lm=native_lm)
+        native_prediction = dspy.RLM("question -> answer", max_iters=2).forward_native(question="anything")
+
+        assert_identical_calls(engine_lm, native_lm)
+        assert engine_prediction.toDict() == native_prediction.toDict()
+        assert engine_prediction.answer == "no result"
+        # The cap, not a computed result, ended the loop: two gen calls
+        # (max_iters) both failed to compute, then extract ran.
+        calls = engine_prediction._trajectory["predictor_calls"]
+        assert [call["predictor"] for call in calls] == ["gen", "gen", "extract"]
+
     def test_rlm_interpreter_contract(self):
         interpreter = dspy.InProcessInterpreter()
         assert interpreter(code="result = 2 + 3") == "5"
