@@ -110,6 +110,31 @@ class TestEvaluate:
         with pytest.raises(ValueError, match="with_inputs"):
             optim.evaluate(cot, [dspy.Example(question="q", answer="a")], exact_answer)
 
+    def test_metric_exception_scores_that_example_zero_and_continues(self):
+        # Brief 1.f: a metric that raises on ONE example scores that example
+        # 0.0 and the devset pass continues — one flaky metric call must not
+        # abort the whole run. The prediction ran fine, so its LM call still
+        # counts.
+        cot = dspy.ChainOfThought("question -> answer")
+        dspy.configure(lm=dspy.DummyLM(oracle(dict(CAPITALS))))
+        devset = trainset_of("France", "Japan", "Canada")
+
+        def flaky_metric(example, prediction):
+            if "Japan" in example.question:
+                raise ValueError("metric exploded on Japan")
+            return example.answer == prediction.answer
+
+        with pytest.warns(UserWarning, match="metric raised on one example"):
+            result = optim.evaluate(cot, devset, flaky_metric)
+
+        # The run COMPLETED: France 1.0, Japan 0.0 (the raise), Canada 1.0.
+        assert [score for _, _, score in result.results] == [1.0, 0.0, 1.0]
+        assert result.score == pytest.approx(2 / 3)
+        # The exploding example still has its prediction (only the metric
+        # failed) and its engine call is counted.
+        assert result.results[1][1] is not None
+        assert result.lm_calls == 3
+
 
 # ---------------------------------------------------------------------------
 # LabeledFewShot: the trivial mutation proves the plumbing

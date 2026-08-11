@@ -17,6 +17,7 @@ trajectory in order.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -141,6 +142,9 @@ def evaluate(program: Any, devset: Any, metric: Callable[[Example, Any], Any]) -
 
     Returns:
         An `EvaluationResult`; `result.score` is the mean metric value.
+        A run that raises a catchable error scores 0.0 (prediction None);
+        a metric that raises on one example scores THAT example 0.0 and the
+        pass continues (brief 1.f) — one bad example never aborts the run.
 
     Raises:
         ValueError: On an empty devset or an undeclared-input example.
@@ -158,7 +162,23 @@ def evaluate(program: Any, devset: Any, metric: Callable[[Example, Any], Any]) -
             results.append((example, None, 0.0))
             continue
         lm_calls += _count_lm_calls(prediction)
-        results.append((example, prediction, float(metric(example, prediction))))
+        # A metric that raises scores THAT example 0.0 and the run continues
+        # (brief 1.f): one bad example must not abort the whole devset pass,
+        # or a single flaky metric call would kill an optimization run. The
+        # prediction itself succeeded (it ran through the engine), so its
+        # lm_calls are already counted above. Only a real metric exception is
+        # swallowed here; typed infrastructure errors from the ENGINE surface
+        # as CatchableError above and keep their semantics.
+        try:
+            value = float(metric(example, prediction))
+        except Exception as error:
+            warnings.warn(
+                f"metric raised on one example ({type(error).__name__}: {error}); scoring it 0.0 and "
+                "continuing the devset pass",
+                stacklevel=2,
+            )
+            value = 0.0
+        results.append((example, prediction, value))
     score = sum(value for _, _, value in results) / len(results)
     return EvaluationResult(score=score, results=results, lm_calls=lm_calls)
 
