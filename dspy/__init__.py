@@ -2,8 +2,11 @@
 
 Stage A1: core (signatures, examples, predictions, typed errors) and
 lm (LM, DummyLM, explicit bindings). Stage A2: adapters v2 — the entry
-IS the adapter (lens parsers, rule strategies, codec families). The
-execution spine, modules, and optimizers land in later stages.
+IS the adapter (lens parsers, rule strategies, codec families). Stage
+A3: the execution spine — the program IS the IR: `Module.forward`
+compiles to the node set, `program(**inputs)` runs through the engine,
+`program.save(dir)` / `dspy.load(dir, bindings=...)` is the one
+serialization path. Composed modules and optimizers land next.
 """
 
 from dspy.core import (
@@ -51,4 +54,41 @@ from dspy.adapters import (
     make_adapter,
 )
 
+from dspy.modules import Module, Predict
+
 from dspy.__metadata__ import __author__, __author_email__, __description__, __name__, __url__, __version__
+
+
+def load(path, bindings=None):
+    """Load a saved program artifact: read + link + materialize.
+
+    Args:
+        path: Artifact directory written by `program.save(path)`.
+        bindings: Receiver bindings, keyed by kind (`"lm"`, `"adapter"`,
+            `"tool"`, `"interpreter"`), then by pool entry name. LM and
+            interpreter entries always need a binding; a missing one
+            refuses naming the entry.
+
+    Returns:
+        A callable program running the artifact through the engine.
+
+    Examples:
+        ```python
+        program = dspy.load("artifacts/qa", bindings={"lm": {"openai-gpt-4o-mini": lm}})
+        prediction = program(question="Why is the sky blue?")
+        ```
+    """
+    from dspy.programir import load as _load
+
+    return _load(path, bindings)
+
+
+def diff(old, new):
+    """Semantic diff of two programs or artifacts as report lines.
+
+    Accepts `Module`s, `ProgramIR` values, manifest dicts, or artifact
+    paths on either side; returns rendered lines (empty = equivalent).
+    """
+    from dspy.programir.tools.diff import diff as _diff
+
+    return _diff(old, new)

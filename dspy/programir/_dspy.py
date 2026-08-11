@@ -1,4 +1,15 @@
-"""DSPy frontend for ProgramIR compilation."""
+"""DSPy frontend for ProgramIR compilation.
+
+Compiles the IR-native `Module`/`Predict` tree into one ProgramIR value.
+Every predictor's LM and adapter resolve through explicit bindings
+(per-predictor first, then the default table `dspy.configure` writes) —
+there is no ambient settings object anywhere on this path.
+
+`compile_with_live` additionally returns the live pool bindings (pool
+name -> the live LM/adapter/tool/interpreter captured at compile time),
+which is exactly what `materialize` needs to execute the freshly
+compiled IR in this process.
+"""
 
 from __future__ import annotations
 
@@ -8,13 +19,11 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.adapters.types.tool import Tool
-from dspy.clients.base_lm import BaseLM
-from dspy.clients.lm import LM
-from dspy.dsp.utils.settings import settings
-from dspy.predict.predict import Predict
-from dspy.primitives.module import Module
+from dspy.lm.bindings import BindingError
+from dspy.lm.lm import LM
+from dspy.modules.module import Module
+from dspy.modules.predict import Predict
 from dspy.programir.compile import build_program_ir
 from dspy.programir.environment import python_environment
 from dspy.programir.forward import LeafRef, compile_forward
@@ -28,7 +37,23 @@ from dspy.signatures.roles import resolve_semantic_role
 
 def compile_program(program: Module, *, metric: Any = None, devset: Any = None) -> ProgramIR:
     """Compile one DSPy module directly into a ProgramIR value."""
-    return _DSPyCompiler(metric=metric, devset=devset).compile(program)
+    ir, _ = compile_with_live(program, metric=metric, devset=devset)
+    return ir
+
+
+def compile_with_live(
+    program: Module, *, metric: Any = None, devset: Any = None
+) -> tuple[ProgramIR, dict[str, dict[str, Any]]]:
+    """Compile one module and return `(ir, live_bindings)`.
+
+    `live_bindings` maps binding kinds (`lm`, `adapter`, `tool`,
+    `interpreter`) to pool-name -> live-object tables — the bindings
+    `materialize` needs to run the IR against the very objects the
+    program held at compile time.
+    """
+    compiler = _DSPyCompiler(metric=metric, devset=devset)
+    ir = compiler.compile(program)
+    return ir, compiler.live
 
 
 class _DSPyCompiler:
@@ -44,6 +69,7 @@ class _DSPyCompiler:
         self.interpreters: dict[str, Any] = {}
         self.sidecars: dict[str, bytes] = {}
         self.credentials: list[dict[str, str]] = []
+        self.live: dict[str, dict[str, Any]] = {"lm": {}, "adapter": {}, "tool": {}, "interpreter": {}}
         self.metric = metric
         self.devset = devset
         self._adapter_names: dict[int, str] = {}
@@ -52,7 +78,6 @@ class _DSPyCompiler:
         self._predictor_owners: dict[int, str] = {}
         self._interpreter_names: dict[int, str] = {}
         self._baked_lm_count = 0
-        self._default_adapter = ChatAdapter()
 
     def compile(self, program: Module) -> ProgramIR:
         if isinstance(program, Predict):
@@ -72,7 +97,9 @@ class _DSPyCompiler:
                 "devset": [_devset_record(example) for example in (self.devset or [])],
             }
 
-        authored_lms = [entry["class"] for entry in self.lms.values() if entry.get("class", {}).get("origin") == "authored"]
+        authored_lms = [
+            entry["class"] for entry in self.lms.values() if entry.get("class", {}).get("origin") == "authored"
+        ]
         authored_python = [*self.tools.values(), *metrics.values(), *authored_lms]
         dependencies = [dependency for entry in authored_python for dependency in entry.get("deps", [])]
         python_block, entry_source = python_environment(dependencies)
@@ -92,11 +119,9 @@ class _DSPyCompiler:
             "8_lm": self.lms,
             "9_environment": environment,
             "10_credentials": self.credentials,
-            "11_ambient_policy": {
-                "max_errors": settings.max_errors,
-                "async_max_workers": settings.async_max_workers,
-                "allow_tool_async_sync_conversion": settings.allow_tool_async_sync_conversion,
-            },
+            # Contents loose until ratified; the greenfield core has no
+            # ambient settings to record.
+            "11_ambient_policy": {},
         }
         if evaluation is not None:
             components["12_metric"] = evaluation
@@ -110,7 +135,9 @@ class _DSPyCompiler:
     def module_node(self, module: Module, *, path: str, name: str) -> dict[str, Any]:
         previous = self._module_owners.get(id(module))
         if previous is not None and previous != path:
-            raise ValueError(f"DSPy module instance is shared by {previous!r} and {path!r}; shared modules are not ratified")
+            raise ValueError(
+                f"DSPy module instance is shared by {previous!r} and {path!r}; shared modules are not ratified"
+            )
         self._module_owners[id(module)] = path
 
         children: list[dict[str, Any]] = []
@@ -132,11 +159,15 @@ class _DSPyCompiler:
                 tool_name = self.register_tool(child, name=child_name)
                 leaves[child_name] = LeafRef("tool", tool_name)
                 module_tools.append(tool_name)
-            elif isinstance(child, dict) and child and all(
-                isinstance(key, str)
-                and _is_identifier(key)
-                and (isinstance(value, Tool) or inspect.isfunction(value))
-                for key, value in child.items()
+            elif (
+                isinstance(child, dict)
+                and child
+                and all(
+                    isinstance(key, str)
+                    and _is_identifier(key)
+                    and (isinstance(value, Tool) or inspect.isfunction(value))
+                    for key, value in child.items()
+                )
             ):
                 for tool_name, tool in child.items():
                     module_tools.append(self.register_tool(tool, name=tool_name))
@@ -169,17 +200,16 @@ class _DSPyCompiler:
                 "shared predictor state is not ratified"
             )
         self._predictor_owners[id(predictor)] = path
-        lm = predictor.lm or settings.lm
-        if lm is None:
-            raise ValueError(f"ProgramIR compile cannot resolve an LM for predictor {path!r}")
-        if not isinstance(lm, BaseLM):
-            raise ValueError(f"ProgramIR cannot compile non-BaseLM {type(lm).__name__} bound to predictor {path!r}")
-        if not isinstance(lm, LM) and not _is_openai_compatible_lm(lm) and not has_weight_spec(lm):
+        try:
+            lm = predictor.resolve_lm()
+        except BindingError as error:
+            raise BindingError(f"ProgramIR compile cannot resolve an LM for predictor {path!r}: {error}") from error
+        if not isinstance(lm, LM) and not has_weight_spec(lm):
             raise ValueError(
                 f"ProgramIR cannot compile {type(lm).__name__} bound to predictor {path!r}; "
-                "custom BaseLM subclasses must declare programir_weight_spec()"
+                "bind a dspy.LM, or a custom class declaring programir_weight_spec()"
             )
-        adapter = predictor._resolve_adapter(default=self._default_adapter)
+        adapter = predictor.resolve_adapter()
         try:
             adapter_entry = adapter.dump_entry()
         except (AttributeError, ValueError) as error:
@@ -215,6 +245,7 @@ class _DSPyCompiler:
         pool_name = _allocate_name(_pool_name(name), self.interpreters)
         self.interpreters[pool_name] = extract_interpreter(interpreter, name=pool_name)
         self._interpreter_names[id(interpreter)] = pool_name
+        self.live["interpreter"][pool_name] = interpreter
         return pool_name
 
     def register_tool(self, tool: Tool | Any, *, name: str) -> str:
@@ -226,6 +257,7 @@ class _DSPyCompiler:
             return name
         self.tools[name] = extracted.entry
         self.sidecars[extracted.source_path] = extracted.source
+        self.live["tool"][name] = tool
         return name
 
     def adapter_name(self, adapter: Any, entry: dict[str, Any]) -> str:
@@ -235,9 +267,10 @@ class _DSPyCompiler:
         name = _allocate_name(entry["name"], self.adapters)
         self._adapter_names[id(adapter)] = name
         self.adapters[name] = entry
+        self.live["adapter"][name] = adapter
         return name
 
-    def lm_name(self, lm: BaseLM) -> str:
+    def lm_name(self, lm: LM) -> str:
         existing = self._lm_names.get(id(lm))
         if existing is not None:
             return existing
@@ -251,6 +284,7 @@ class _DSPyCompiler:
             self._lm_names[id(lm)] = name
             self.lms[name] = baked.entry
             self.sidecars.update(baked.sidecars)
+            self.live["lm"][name] = lm
             return name
 
         name = _allocate_name(_pool_name(lm.model), self.lms)
@@ -260,6 +294,7 @@ class _DSPyCompiler:
         self._lm_names[id(lm)] = name
         self.lms[name] = _lm_entry(lm, endpoint_ref=endpoint_ref, credential_ref=credential_ref)
         self.credentials.append({"name": credential_ref, "scope": f"LM {name}"})
+        self.live["lm"][name] = lm
         return name
 
 
@@ -301,37 +336,22 @@ def _devset_record(example: Any) -> dict[str, Any]:
     return values
 
 
-def _lm_entry(lm: BaseLM, *, endpoint_ref: str, credential_ref: str) -> dict[str, Any]:
-    placement = {
-        "rung": "http_remote",
-        "contract": "forward(LMRequest)->LMResponse",
-        "endpoint_ref": endpoint_ref,
-        "isolation": "none",
-        "credential_ref": credential_ref,
-    }
-    entry = {
+def _lm_entry(lm: LM, *, endpoint_ref: str, credential_ref: str) -> dict[str, Any]:
+    return {
         "forward_contract": "typed_lm",
         "weights_identity": lm.model,
-        "placement": placement,
+        # `config` is the schema's loose entry-level slot; the declared
+        # capability facts ride here as provenance. The receiver's bound
+        # LM brings its own facts at materialize time.
+        "config": {"lm_capabilities": lm.capabilities.to_dict()},
+        "placement": {
+            "rung": "http_remote",
+            "contract": "forward(LMRequest)->LMResponse",
+            "endpoint_ref": endpoint_ref,
+            "isolation": "none",
+            "credential_ref": credential_ref,
+        },
     }
-    if _is_openai_compatible_lm(lm):
-        base_url = lm.base_url
-        if base_url.startswith(("http://localhost", "http://127.0.0.1", "http://[::1]")):
-            placement["rung"] = "http_local"
-        placement["default_endpoint"] = base_url
-        entry["class"] = {
-            "identity": "dspy.clients.openai_compat_lm._OpenAICompatLM",
-            "origin": "packaged",
-            "language": "python",
-            "deps": ["dspy"],
-        }
-    return entry
-
-
-def _is_openai_compatible_lm(lm: Any) -> bool:
-    from dspy.clients.openai_compat_lm import _OpenAICompatLM
-
-    return isinstance(lm, _OpenAICompatLM)
 
 
 def _predict_forward(input_names: list[str]) -> dict[str, Any]:

@@ -4,7 +4,8 @@
 component and returns an `ExecutableProgram` that runs the compiled
 forward trees through the engine interpreter. Resolution is loud: an
 entry the artifact cannot rebuild and the caller did not bind refuses by
-name. There is no ambient fallback — `dspy.settings` is never consulted.
+name. There is no ambient fallback — the default binding table is never
+consulted here; what runs is the artifact plus the bindings you pass.
 
 Resolution per pool:
 
@@ -26,12 +27,12 @@ import ast
 from copy import deepcopy
 from typing import Any, Callable
 
-from dspy.adapters import load_entry
-from dspy.adapters.base import Adapter
-from dspy.clients.base_lm import BaseLM
-from dspy.predict.predict import Predict
-from dspy.primitives.example import Example
-from dspy.primitives.prediction import Prediction
+from dspy.adapters.adapter import Adapter
+from dspy.adapters.serde import load_entry
+from dspy.core.example import Example
+from dspy.core.prediction import Prediction
+from dspy.lm.lm import LM
+from dspy.modules.predict import Predict
 from dspy.programir.engine import interpret
 from dspy.programir.engine.errors import InterpreterError, ToolError
 from dspy.programir.link import link
@@ -58,9 +59,10 @@ class ExecutableProgram:
 
     Call it with the root forward's keyword inputs; it returns a
     `dspy.Prediction` built from the record the interpreter produced.
-    Every predict call runs the real reconstructed `dspy.Predict`, so
-    adapters, demos, config, and the ambient trace behave exactly as in
-    native execution.
+    Every predict call runs a real reconstructed `dspy.Predict`, so the
+    adapter exchange, demos, and config behave exactly as in native
+    execution. The per-run predictor call sequence rides in the
+    prediction's `_trajectory["predictor_calls"]` exhaust.
     """
 
     def __init__(
@@ -77,8 +79,11 @@ class ExecutableProgram:
         self.interpreters = interpreters
 
     def __call__(self, **inputs: Any) -> Prediction:
-        record = interpret.run_forward(self.forwards, "", dict(inputs), _Leaves(self))
-        return Prediction(**record)
+        leaves = _Leaves(self)
+        record = interpret.run_forward(self.forwards, "", dict(inputs), leaves)
+        prediction = Prediction(**record)
+        prediction._trajectory["predictor_calls"] = leaves.trace
+        return prediction
 
 
 class _Leaves:
@@ -86,12 +91,15 @@ class _Leaves:
 
     def __init__(self, program: ExecutableProgram):
         self.program = program
+        self.trace: list[dict[str, Any]] = []
 
     def predict(self, path: str, kwargs: dict) -> dict:
         predictor = self.program.predictors.get(path)
         if predictor is None:
             raise interpret.MalformedNodeError(f"no materialized predictor at path {path!r}")
-        return dict(predictor(**kwargs))
+        record = predictor(**kwargs).toDict()
+        self.trace.append({"predictor": path, "inputs": dict(kwargs), "outputs": dict(record)})
+        return record
 
     def tool(self, name: str, kwargs: dict) -> Any:
         tool = self.program.tools.get(name)
@@ -163,18 +171,18 @@ def materialize(ir: ProgramIR, bindings: dict[str, dict[str, Any]] | None = None
     )
 
 
-def _resolve_lms(pool: dict[str, Any], bound: dict[str, Any]) -> dict[str, BaseLM]:
+def _resolve_lms(pool: dict[str, Any], bound: dict[str, Any]) -> dict[str, LM]:
     _check_bound_names("lm", pool, bound)
-    resolved: dict[str, BaseLM] = {}
+    resolved: dict[str, LM] = {}
     for name in pool:
         lm = bound.get(name)
         if lm is None:
             raise ValueError(
                 f"programir.materialize() cannot resolve LM pool entry {name!r}: the artifact declares "
-                "credentials by name only; pass bindings={'lm': {" + repr(name) + ": <BaseLM>}}"
+                "credentials by name only; pass bindings={'lm': {" + repr(name) + ": <dspy.LM>}}"
             )
-        if not isinstance(lm, BaseLM):
-            raise ValueError(f"binding for LM pool entry {name!r} must be a dspy.BaseLM, got {type(lm).__name__}")
+        if not isinstance(lm, LM):
+            raise ValueError(f"binding for LM pool entry {name!r} must be a dspy.LM, got {type(lm).__name__}")
         resolved[name] = lm
     return resolved
 
@@ -255,7 +263,7 @@ def _load_function(source: str, *, entry_name: str) -> Callable[..., Any]:
     return namespace[names[0]]
 
 
-def _build_predictor(path: str, components: dict[str, Any], lm: BaseLM, adapter: Adapter) -> Predict:
+def _build_predictor(path: str, components: dict[str, Any], lm: LM, adapter: Adapter) -> Predict:
     """Rebuild one live `dspy.Predict` from its manifest components."""
     signature_entry = components["2_signature"].get(path)
     if signature_entry is None:
@@ -272,10 +280,8 @@ def _build_predictor(path: str, components: dict[str, Any], lm: BaseLM, adapter:
         fields[record["name"]] = (annotation, maker(**keywords))
     signature = make_signature(fields, components["3a_instructions"].get(path))
 
-    predictor = Predict(signature, **deepcopy(components["3c_predictor_config"].get(path, {})))
+    predictor = Predict(signature, lm=lm, adapter=adapter, **deepcopy(components["3c_predictor_config"].get(path, {})))
     predictor.demos = [_demo(record) for record in components["3b_demos"].get(path, [])]
-    predictor.lm = lm
-    predictor.adapter = adapter
     return predictor
 
 

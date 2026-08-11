@@ -28,7 +28,7 @@ def compile(program: Any, *, metric: Any = None, devset: Any = None) -> ProgramI
     Raises:
         TypeError: If no frontend recognizes `program`.
     """
-    from dspy.primitives.module import Module
+    from dspy.modules.module import Module
 
     if isinstance(program, Module):
         from dspy.programir._dspy import compile_program
