@@ -32,6 +32,7 @@ from dspy.core import (
     handler_matches,
     make_signature,
 )
+from dspy.lm import LM, BindingError, DummyLM, LMCapabilities, configure
 from dspy import roles
 
 from dspy.__metadata__ import __author__, __author_email__, __description__, __name__, __url__, __version__
