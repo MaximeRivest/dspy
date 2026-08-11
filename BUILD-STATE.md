@@ -1532,3 +1532,77 @@ doors need a signature" sentence is true for the AUTHORING frontend but
 should note that door (b) is re-recognizable from the serialized tree
 alone — otherwise a conforming loader could not reparse a printed record
 forward without also carrying component 2.
+
+### Fix wave (2026-08-11) — four verified findings closed
+
+Suite now GREEN at 353 (A9's 349 + 4 regression tests). `ruff check`
+clean. Two oracle-integrity gaps and two v0.4-correctness bypasses,
+each fixed properly (no suppressions) and regression-tested by
+demonstrating the fix's test FAILS on the reported defect and PASSES on
+the fix.
+
+1. **RLM cap-break under the equivalence oracle (fixed).** The one RLM
+   equivalence test used `rlm_script`, whose success round sets
+   `result != ""`, so the `while` ended on the result condition and the
+   cap-break branch (`if rounds == max_iters: break`, rlm.py) never fired
+   under the engine==native oracle; the only cap test ran the engine arm
+   alone. Confirmed by mutation: an off-by-one bound (`max_iters + 1`)
+   passed `test_rlm_equivalence`. New `test_rlm_cap_break_equivalence`
+   (max_iters=2, two non-computing rounds so only the literal cap ends the
+   loop) compares engine vs `forward_native`; it fails the off-by-one
+   mutation. `tests_greenfield/test_modules.py`.
+
+2. **ReAct ToolError branch under the equivalence oracle (fixed).** The
+   only ReAct equivalence test (`react_script`: lookup→finish→extract)
+   never fails a tool, so the ToolError observation branch (react.py) ran
+   on the engine arm alone (`test_react_tool_failure`). Confirmed by
+   mutation: changing the observation string passed `test_react_equivalence`.
+   New `test_react_tool_failure_equivalence` (bad kwarg then unknown tool,
+   both ToolError, then finish) compares engine vs `forward_native`,
+   mirroring ReActV2's `test_v2_tool_failure`; it fails the mutation.
+   `tests_greenfield/test_modules.py`.
+
+3. **Record-splat rule enforced in the shared gate (fixed, CRITICAL).**
+   PIR-E-NODE-002 — a leaf-call `splat` is lawful ONLY when it names the
+   forward's record — lived only in the parse compiler (`_leaf_splat`).
+   The builder frontend (`CallToolDynamic(splat=<var>)`) and the
+   printer-reparse path bypassed it: the shared `admit_forward` never
+   re-checked. So a built tree could splat an LM-produced Prediction into
+   a tool call (the D-041 line that must hold), and `compile(print(tree))`
+   of such a tree raised while `build.Forward` admitted it (round-trip
+   drift, contradicting build.py's no-drift claim). Fix: `admit_forward`
+   now runs `_splat_refusal` over the schema-valid tree via the shared
+   `iter_calls` walk — every leaf-call splat must equal the record
+   parameter name read from `args`, else PIR-E-NODE-002. The node-set
+   schema constrains `splat` to an identifier and cannot express this
+   cross-field rule, so the gate enforces it; both frontends now agree.
+   `dspy/programir/forward.py`, regression in `test_build.py`
+   (`test_record_splat_rule_is_enforced_in_the_shared_gate`).
+
+4. **Splat/kwarg collision guarded at runtime (fixed).** PIR-E-NODE-003
+   (a record-splat plus an explicit kwarg naming the same splatted field)
+   is a compile refusal, but the compiler can make it only when the
+   signature is threaded (`forward.py:1316`). The printer-reparse path
+   (signature=None) and the builder (no signature) both admit a collision
+   tree; the interpreter then merged record-first then kwargs, silently
+   applying last-writer-wins — the exact ambiguity D-041 forbids, and the
+   interpret.py comment ("no last-writer ambiguity survives to here") was
+   untrue for those paths. `admit_forward` cannot fix this statically
+   (no field set without a signature). Fix: the interpreter, which holds
+   the record's ACTUAL keys at the merge, now refuses a colliding kwarg
+   (`MalformedNodeError` naming PIR-E-NODE-003 — a tree the compiler
+   should have refused, uncatchable so no program `Try` swallows it). This
+   makes the comment true and is frontend-independent; the compile-time
+   refusal (with a signature) stays as the earlier layer. A splat plus a
+   non-field kwarg (the ReAct/RLM `trajectory` idiom) is untouched.
+   `dspy/programir/engine/interpret.py`, regression in `test_build.py`
+   (`test_splat_kwarg_collision_never_resolves_last_writer_wins`).
+
+None rejected — all four reproduced as reported. On finding 4 the fix
+hint offered "refuse ANY overlap the runtime would resolve by last-writer,
+or thread the signature"; the runtime guard is that refusal, and it also
+closes the printer-reparse (signature=None) path the compiler alone
+cannot. The builder's own `splat in checked_kwargs` check (splat name ==
+kwarg name) is a distinct, narrower case and could not be widened to
+field-collisions statically (no signature at build), so the durable fix
+lives where the field set exists — the interpreter.
