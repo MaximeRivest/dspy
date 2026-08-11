@@ -1057,6 +1057,49 @@ def test_compile_refuses_write_to_read_only_record():
     assert caught.value.detail["record"] == "kwargs"
 
 
+def comprehension_shadows_record_forward(self, inputs):
+    junk = [inputs for inputs in [1, 2, 3]]
+    return self.predict(**inputs)
+
+
+def dict_comprehension_shadows_record_forward(self, inputs):
+    junk = {inputs: inputs for inputs in [1, 2, 3]}
+    return self.predict(**inputs)
+
+
+@pytest.mark.parametrize(
+    "function",
+    [comprehension_shadows_record_forward, dict_comprehension_shadows_record_forward],
+)
+def test_compile_refuses_comprehension_target_shadowing_record(function):
+    # A comprehension loop target that shadows the record is a write to the
+    # read-only record, exactly like a plain `for` target (D-041, SEM-5).
+    with pytest.raises(ProgramIRRefusal) as caught:
+        compile_forward(
+            function,
+            {"predict": LeafRef("predict", "predict")},
+            signature=["question"],
+        )
+    assert caught.value.code == "PIR-E-NODE-004"
+    assert caught.value.detail["record"] == "inputs"
+
+
+def empty_signature_kwargs_forward(self, **kwargs):
+    return self.predict(**kwargs)
+
+
+def test_compile_empty_signature_does_not_open_the_envelope():
+    # A declared-but-empty input signature is not a reason to bind a zero-key
+    # record: `**kwargs` keeps its v0.3 refusal, not an empty envelope.
+    with pytest.raises(ProgramIRRefusal) as caught:
+        compile_forward(
+            empty_signature_kwargs_forward,
+            {"predict": LeafRef("predict", "predict")},
+            signature=[],
+        )
+    assert caught.value.code == "PIR-E-NODE-001"
+
+
 def test_compile_refuses_rebinding_the_record():
     # An Assign that rebinds the record name is a write (D-041, SEM-5).
     with pytest.raises(ProgramIRRefusal) as caught:

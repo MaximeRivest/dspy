@@ -282,7 +282,11 @@ class _Compiler:
         refuses (v0.3 behavior) and a lone bag parameter is a plain input.
         """
         args = node.args
-        if self.signature is None:
+        if not self.signature:
+            # No declared inputs (None, or an empty field set): neither door
+            # opens. `**kwargs` keeps its v0.3 refusal, and a lone bag
+            # parameter stays a plain input — an empty record would bind a
+            # zero-key envelope where the plain form is honest.
             return None
         # Door (b): the `**kwargs` desugar. A bare double-star, nothing else.
         if args.kwarg is not None and args.vararg is None and not names:
@@ -908,6 +912,7 @@ class _Compiler:
             self.refuse(node, "async comprehensions are explicit concurrency; the engine owns scheduling (D-037)")
         head: list[dict[str, Any]] = []
         if isinstance(generator.target, ast.Name):
+            self._guard_record_write(generator.target.id, generator.target)
             loop_target = generator.target.id
         elif isinstance(generator.target, ast.Tuple):
             loop_target = self._gensym()
