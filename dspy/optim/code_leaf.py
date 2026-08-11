@@ -43,7 +43,63 @@ from typing import Any, Callable
 from dspy.modules._generate import load_generated
 from dspy.programir.leaves import AuthoredLeaf, _check_self_contained, extract_tool, parse_deps
 
-__all__ = ["ADMITTED_IMPORTS", "AdmittedCode", "admit_tool_source"]
+__all__ = ["ADMITTED_IMPORTS", "DISALLOWED_BUILTINS", "AdmittedCode", "admit_tool_source"]
+
+#: Builtin names that reach import, code-exec, filesystem, or reflection
+#: machinery WITHOUT an `import` statement — the exact doors the module
+#: import allowlist (`_refuse_disallowed_imports`) cannot see, and that
+#: `leaves._check_self_contained` waves through because every one lives in
+#: `dir(builtins)`. `__import__` imports any module (a hidden HTTP LM call
+#: over `urllib`/`http`); `eval`/`exec`/`compile` run arbitrary source;
+#: `open` reads/writes files; `globals`/`vars`/`locals` hand out the module
+#: namespace; `input`/`breakpoint` block or drop to a debugger. A code leaf
+#: that names any of these is refused at admission (risk 2: a leaf may not
+#: hide an LM call or a side effect). AST filtering of Python is not a hard
+#: security boundary, but it closes the builtin-mediated escapes the
+#: import-node walk structurally cannot.
+DISALLOWED_BUILTINS = frozenset(
+    {
+        "__import__",
+        "eval",
+        "exec",
+        "compile",
+        "open",
+        "globals",
+        "vars",
+        "locals",
+        "input",
+        "breakpoint",
+    }
+)
+
+#: Dunder attributes that walk from an ordinary value back to import/exec
+#: machinery — the classic sandbox-escape chain
+#: (`().__class__.__bases__[0].__subclasses__()`, `f.__globals__`,
+#: `x.__builtins__`). A dotted access to any of these is refused so
+#: `getattr`-free attribute chains cannot reach what the name denylist
+#: bans. `getattr`/`setattr`/`delattr` are name-denied above via
+#: `_reflection_call_names` so a dynamic form cannot slip past.
+DISALLOWED_ATTRIBUTES = frozenset(
+    {
+        "__globals__",
+        "__builtins__",
+        "__class__",
+        "__bases__",
+        "__base__",
+        "__subclasses__",
+        "__mro__",
+        "__code__",
+        "__import__",
+        "__loader__",
+        "__dict__",
+        "__getattribute__",
+    }
+)
+
+#: Builtins that dispatch on a NAME at runtime, so a code leaf could reach
+#: a denied builtin or a dunder indirectly (`getattr(x, "__globals__")`,
+#: `__builtins__["eval"]`). Denied at admission alongside the doors above.
+_REFLECTION_CALL_NAMES = frozenset({"getattr", "setattr", "delattr"})
 
 #: The closed stdlib import allowlist for optimizer-authored code. Pure,
 #: deterministic, offline modules only — no network, process, filesystem,
@@ -120,7 +176,18 @@ def admit_tool_source(
     subject = f"tool {name!r}"
     # Step 1: exactly one undecorated function def (reuse the leaves check,
     # but source-first — the optimizer holds text, not a live function).
-    tree = ast.parse(python_source)
+    # A parse failure is a REFUSAL, not a crash: `SyntaxError` is not a
+    # `ValueError`, so it would otherwise escape the applier's
+    # `except ValueError` and abort the whole compile() run on one
+    # malformed reflection-LM proposal. Re-raise it as the teaching
+    # `ValueError` this module's contract promises (Raises: ValueError).
+    try:
+        tree = ast.parse(python_source)
+    except SyntaxError as error:
+        raise ValueError(
+            f"ProgramIR {subject} source does not parse as Python ({error.msg} at line {error.lineno}); "
+            "author one valid, undecorated function definition"
+        ) from error
     if not tree.body or not isinstance(tree.body[0], ast.FunctionDef) or len(tree.body) != 1:
         raise ValueError(
             f"ProgramIR {subject} source must be EXACTLY one undecorated function definition "
@@ -135,8 +202,14 @@ def admit_tool_source(
     # the shared AST check so the rule never drifts from leaves.py.
     _check_self_contained(_SourceOnly(definition.name), python_source, subject=subject)
 
-    # Step 3: the import allowlist + empty deps (risk 2).
+    # Step 3: the import allowlist + empty deps (risk 2), PLUS the builtin
+    # denylist — `__import__`/`eval`/`exec`/`compile`/`open` reach import,
+    # code-exec, and filesystem machinery WITHOUT an import node, so the
+    # allowlist walk alone cannot catch them and `_check_self_contained`
+    # admits them (they live in `dir(builtins)`). This is the only layer
+    # that closes those builtin-mediated escapes.
     _refuse_disallowed_imports(tree, subject=subject)
+    _refuse_builtin_escapes(definition, subject=subject)
     deps = parse_deps(python_source)
     if deps:
         raise ValueError(
@@ -191,6 +264,67 @@ def _refuse_disallowed_imports(tree: ast.Module, *, subject: str) -> None:
                 f"{sorted(ADMITTED_IMPORTS)}; network/process/reflection modules refuse (a code leaf may not "
                 "hide an LM call or a side effect)"
             )
+
+
+def _refuse_builtin_escapes(definition: ast.FunctionDef, *, subject: str) -> None:
+    """Refuse code-exec / dynamic-import / reflection builtins (risk 2).
+
+    Walks every `Name` load and `Attribute` access in the function body.
+    Refuses a reference to any name in `DISALLOWED_BUILTINS` or
+    `_REFLECTION_CALL_NAMES` (`__import__`, `eval`, `exec`, `compile`,
+    `open`, `globals`, `getattr`, ...) and any dotted access to a dunder in
+    `DISALLOWED_ATTRIBUTES` (`x.__globals__`, `().__class__.__bases__`).
+    These are the builtin-mediated doors the module import allowlist
+    (`_refuse_disallowed_imports`) and the `dir(builtins)` self-containment
+    allowance (`leaves._check_self_contained`) structurally cannot see.
+
+    A local rebinding (`def eval(...)`, `eval = ...`, a parameter named
+    `open`) is NOT an escape — only a Load of a denied NAME that is not
+    bound locally, and any denied ATTRIBUTE access, is refused.
+    """
+    local = _locally_bound_names(definition)
+    banned_names = DISALLOWED_BUILTINS | _REFLECTION_CALL_NAMES
+    for node in ast.walk(definition):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if node.id in banned_names and node.id not in local:
+                raise ValueError(
+                    f"ProgramIR {subject} uses the builtin {node.id!r}, which reaches import, code-exec, "
+                    "filesystem, or reflection machinery — refused (a code leaf may not hide an LM call or a "
+                    f"side effect; the denied builtins are {sorted(DISALLOWED_BUILTINS | _REFLECTION_CALL_NAMES)})"
+                )
+        elif isinstance(node, ast.Attribute) and node.attr in DISALLOWED_ATTRIBUTES:
+            raise ValueError(
+                f"ProgramIR {subject} accesses the reflection attribute {'.' + node.attr!r} — refused; a code "
+                "leaf may not walk from a value back to import or exec machinery"
+            )
+
+
+def _locally_bound_names(definition: ast.FunctionDef) -> set[str]:
+    """Names bound inside the def (params, assignments, nested defs, imports).
+
+    A Load of one of these is the leaf's OWN name, not the dangerous
+    builtin, so it must not trip the denylist. Mirrors the local-name
+    collection `leaves._check_self_contained` does for the global-read walk.
+    """
+    local: set[str] = set()
+    for item in ast.walk(definition):
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if not isinstance(item, ast.Lambda):
+                local.add(item.name)
+            inner = item.args
+            local.update(argument.arg for argument in (*inner.posonlyargs, *inner.args, *inner.kwonlyargs))
+            if inner.vararg:
+                local.add(inner.vararg.arg)
+            if inner.kwarg:
+                local.add(inner.kwarg.arg)
+        elif isinstance(item, ast.ExceptHandler) and item.name:
+            local.add(item.name)
+        elif isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del)):
+            local.add(item.id)
+        elif isinstance(item, (ast.Import, ast.ImportFrom)):
+            for alias in item.names:
+                local.add(alias.asname or alias.name.split(".")[0])
+    return local
 
 
 def _check_io_contract(definition: ast.FunctionDef, signature: Any, *, subject: str, partial: bool) -> None:

@@ -457,6 +457,115 @@ class TestGeneratedCodeSafety:
         second_report = reflection.calls[1]["messages"][-1]["content"]
         assert needle in second_report
 
+    @pytest.mark.parametrize(
+        "body, needle",
+        [
+            ('    __import__("os").system("x")\n', "builtin '__import__'"),
+            ('    eval("1 + 1")\n', "builtin 'eval'"),
+            ("    exec('x = 1')\n", "builtin 'exec'"),
+            ('    compile("1", "x", "eval")\n', "builtin 'compile'"),
+            ('    open("/etc/hostname")\n', "builtin 'open'"),
+            ("    globals()\n", "builtin 'globals'"),
+            ('    getattr(text, "__class__")\n', "builtin 'getattr'"),
+            ("    x = ().__class__.__bases__[0].__subclasses__()\n", "reflection attribute"),
+            ("    g = (lambda: 0).__globals__\n", "reflection attribute"),
+        ],
+        ids=[
+            "dynamic-import",
+            "eval",
+            "exec",
+            "compile",
+            "open",
+            "globals",
+            "getattr-dunder",
+            "class-bases-chain",
+            "globals-attr",
+        ],
+    )
+    def test_builtin_escape_doors_refuse_at_admission(self, tmp_path, body, needle):
+        # The import allowlist walks only import NODES; `__import__`, `eval`,
+        # `exec`, `compile`, `open` reach import/exec/filesystem machinery
+        # with NO import node, and `dir(builtins)` self-containment admits
+        # them. Admission must refuse every builtin-mediated escape (risk 2)
+        # — and prove it end to end: a leaf carrying `__import__(...).system`
+        # as a stand-in for a hidden HTTP LM call must NEVER fire a side
+        # effect during compile.
+        sentinel = tmp_path / "escaped"
+        source = f'def tag_code(text: str) -> dict:\n{body}    return {{"tag": text}}\n'.replace(
+            'system("x")', f'system("touch {sentinel}")'
+        )
+        program = Tagger()
+        reflection = dspy.DummyLM(
+            [
+                reflection_reply(
+                    [
+                        {
+                            "op": "replace_predict_with_code",
+                            "path": "tagger",
+                            "tool_name": "tag_code",
+                            "python_source": source,
+                        }
+                    ]
+                ),
+                reflection_reply([]),
+            ]
+        )
+        dspy.configure(lm=dspy.DummyLM(upper_task))
+        optimizer = optim.FlexIR(reflection, exact_tag, iterations=2, holdout=tag_devset("owl"))
+        optimizer.compile(program, trainset=tag_devset("cat"))
+
+        entry = optimizer.trajectory[1]
+        assert entry["applied"] == []
+        assert len(entry["refusals"]) == 1
+        assert "admission" in entry["refusals"][0]
+        assert needle in entry["refusals"][0]
+        # No tool landed; the predict is untouched.
+        assert program.to_manifest()["components"]["6_tools"] == {}
+        # THE SAFETY ASSERT: the builtin-mediated side effect never fired.
+        assert not sentinel.exists()
+        # The refusal is fed to the next reflection call.
+        assert needle in reflection.calls[1]["messages"][-1]["content"]
+
+    def test_unparseable_source_is_a_refusal_not_a_crash(self):
+        # A `def` missing its colon raises SyntaxError, which is NOT a
+        # ValueError; without a guard it escapes the applier's
+        # `except ValueError` and aborts the whole compile() run. Admission
+        # must turn it into a teaching refusal and keep the loop alive.
+        program = Tagger()
+        broken = 'def tag_code(text: str) -> dict\n    return {"tag": text}\n'  # missing ':'
+        reflection = dspy.DummyLM(
+            [
+                reflection_reply(
+                    [
+                        {
+                            "op": "replace_predict_with_code",
+                            "path": "tagger",
+                            "tool_name": "tag_code",
+                            "python_source": broken,
+                        }
+                    ]
+                ),
+                reflection_reply([]),
+            ]
+        )
+        dspy.configure(lm=dspy.DummyLM(upper_task))
+        optimizer = optim.FlexIR(reflection, exact_tag, iterations=2, holdout=tag_devset("owl"))
+        # The run COMPLETES — the malformed proposal did not abort it.
+        optimizer.compile(program, trainset=tag_devset("cat"))
+
+        entry = optimizer.trajectory[1]
+        assert entry["applied"] == []
+        assert len(entry["refusals"]) == 1
+        assert "does not parse as Python" in entry["refusals"][0]
+        # The loop ran both iterations (the crash would have killed it at 1).
+        assert [record["label"] for record in optimizer.trajectory] == [
+            "baseline",
+            "iteration-0",
+            "iteration-1",
+        ]
+        # The refusal was fed to the next reflection call.
+        assert "does not parse as Python" in reflection.calls[1]["messages"][-1]["content"]
+
     def test_injection_shaped_source_is_data_never_executed(self, tmp_path):
         # A source that LOOKS like an attack (os.system) is DATA to the
         # applier: it passes through admission (which refuses the import),
