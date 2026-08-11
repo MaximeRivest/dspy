@@ -419,3 +419,20 @@ class TestDispatchMachinery:
     def test_lambda_tools_refuse_loudly(self):
         with pytest.raises(ValueError, match="plain named function"):
             dspy.ReAct("question -> answer", tools=[dspy.Tool(lambda x: x, name="echo")])
+
+    def test_hostile_tool_names_refuse_at_construction(self):
+        # The builder-era hygiene claim: a tool named "foo (x)" refuses
+        # where the tools table is DECLARED, never later inside
+        # generated source.
+        with pytest.raises(ValueError, match="must be a Python identifier"):
+            dspy.ReAct("question -> answer", tools=[dspy.Tool(lookup, name="foo (x)")])
+        with pytest.raises(ValueError, match="must be a Python identifier"):
+            dspy.ReActV2("question -> answer", tools=[dspy.Tool(lookup, name="look up")])
+
+    def test_module_forwards_are_built_ir_not_parsed_source(self):
+        # The compiler takes the BUILT tree straight through the shared
+        # admission; the manifest's forward is byte-identical to it.
+        dspy.configure(lm=dspy.DummyLM(["unused"]))
+        react = dspy.ReAct("question -> answer", tools=[lookup], max_iters=5)
+        manifest_forward = react.to_manifest()["components"]["5_forward"]["self"]
+        assert json.dumps(manifest_forward) == json.dumps(react._forward_tree())
