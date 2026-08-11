@@ -914,3 +914,269 @@ def test_contract_reference_validate_accepts_compiled_v03_nodes():
         compiled = compile_forward(function, {})
         violations = validate.check(compiled, validate.node_set_schema())
         assert violations == [], f"{function.__name__}: {violations}"
+
+
+# --- v0.4 the record envelope (D-041) ---------------------------------------
+
+
+def record_explicit_forward(self, inputs):
+    result = self.predict(**inputs)
+    return result
+
+
+def record_desugar_forward(self, **kwargs):
+    result = self.predict(**kwargs)
+    return result
+
+
+def record_splat_extra_kwarg_forward(self, **kwargs):
+    result = self.predict(**kwargs, trajectory="")
+    return result
+
+
+def _echo_leaves():
+    """A LeafRunner whose predict echoes its merged kwargs back, in order."""
+
+    class _Echo:
+        def predict(self, path, kwargs):
+            return dict(kwargs)
+
+        def tool(self, name, kwargs):
+            raise AssertionError("no tool leaves in this fixture")
+
+        def interpreter(self, ref, code):
+            raise AssertionError("no interpreter leaves in this fixture")
+
+    return _Echo()
+
+
+def test_compile_record_envelope_explicit_door():
+    # Door (a): def forward(self, inputs) with `inputs` used as the record.
+    compiled = compile_forward(
+        record_explicit_forward,
+        {"predict": LeafRef("predict", "predict")},
+        signature=["question", "context"],
+    )
+    assert compiled["args"] == [{"name": "inputs", "record": "self"}]
+    call = compiled["body"][0]["value"]
+    assert call == {
+        "node": "Call",
+        "leaf": {"kind": "predict", "ref": "predict"},
+        "kwargs": {},
+        "splat": "inputs",
+    }
+    _assert_valid(compiled)
+
+
+def test_compile_record_envelope_desugar_door():
+    # Door (b): the ergonomic `def forward(self, **kwargs)` desugar.
+    compiled = compile_forward(
+        record_desugar_forward,
+        {"predict": LeafRef("predict", "predict")},
+        signature=["question"],
+    )
+    assert compiled["args"] == [{"name": "kwargs", "record": "self"}]
+    assert compiled["body"][0]["value"]["splat"] == "kwargs"
+    _assert_valid(compiled)
+
+
+def test_compile_record_splat_merges_with_explicit_kwarg():
+    # A splat plus a NON-declared explicit kwarg is a lawful merge:
+    # expanded record keys first, then the explicit kwarg (authored order).
+    compiled = compile_forward(
+        record_splat_extra_kwarg_forward,
+        {"predict": LeafRef("predict", "predict")},
+        signature=["question"],
+    )
+    call = compiled["body"][0]["value"]
+    assert call["splat"] == "kwargs"
+    assert call["kwargs"] == {"trajectory": {"node": "Const", "value": ""}}
+    _assert_valid(compiled)
+    interp = _load_reference("interp")
+    if interp is not None:
+        # Merge order (D-041): expanded record keys first, then the
+        # explicit kwarg — observable through the echoing leaf.
+        result = interp.run_forward({"self": compiled}, "", {"question": "q"}, _echo_leaves())
+        assert result == {"question": "q", "trajectory": ""}
+
+
+def test_compile_record_envelope_round_trips_the_splat():
+    compiled = compile_forward(
+        record_desugar_forward,
+        {"predict": LeafRef("predict", "predict")},
+        signature=["question", "context"],
+    )
+    interp = _load_reference("interp")
+    if interp is None:
+        pytest.skip("programir-contract reference interpreter is not available")
+    result = interp.run_forward({"self": compiled}, "", {"question": "q", "context": "c"}, _echo_leaves())
+    assert result == {"question": "q", "context": "c"}
+
+
+# --- v0.4 the three record refusals (D-041) ---------------------------------
+
+
+def record_collision_forward(self, **kwargs):
+    return self.predict(**kwargs, question="override")
+
+
+def record_write_forward(self, **kwargs):
+    kwargs["extra"] = 1
+    return self.predict(**kwargs)
+
+
+def record_rebind_forward(self, inputs):
+    inputs = self.predict(**inputs)
+    return inputs
+
+
+def lm_decided_record_splat_forward(self, prediction):
+    return self.tools[prediction.tool_name](**prediction.tool_args)
+
+
+def test_compile_refuses_splat_kwarg_collision():
+    with pytest.raises(ProgramIRRefusal) as caught:
+        compile_forward(
+            record_collision_forward,
+            {"predict": LeafRef("predict", "predict")},
+            signature=["question"],
+        )
+    assert caught.value.code == "PIR-E-NODE-003"
+    assert caught.value.detail["key"] == "question"
+    assert caught.value.detail["reason"] == "collision"
+
+
+def test_compile_refuses_write_to_read_only_record():
+    with pytest.raises(ProgramIRRefusal) as caught:
+        compile_forward(
+            record_write_forward,
+            {"predict": LeafRef("predict", "predict")},
+            signature=["question"],
+        )
+    assert caught.value.code == "PIR-E-NODE-004"
+    assert caught.value.detail["record"] == "kwargs"
+
+
+def test_compile_refuses_rebinding_the_record():
+    # An Assign that rebinds the record name is a write (D-041, SEM-5).
+    with pytest.raises(ProgramIRRefusal) as caught:
+        compile_forward(
+            record_rebind_forward,
+            {"predict": LeafRef("predict", "predict")},
+            signature=["question"],
+        )
+    assert caught.value.code == "PIR-E-NODE-004"
+    assert caught.value.detail["record"] == "inputs"
+
+
+def test_compile_refuses_lm_decided_splat():
+    # The line that stays: a splat naming a value the MODEL produced is not
+    # the signature record — PIR-E-NODE-002 (D-041), signature present.
+    with pytest.raises(ProgramIRRefusal) as caught:
+        compile_forward(
+            lm_decided_record_splat_forward,
+            {"tools": LeafRef("tool")},
+            signature=["question"],
+        )
+    assert caught.value.code == "PIR-E-NODE-002"
+    assert caught.value.detail["target"] == "prediction.tool_args"
+    assert caught.value.detail["reason"] == "splat"
+
+
+# --- v0.4 does not disturb v0.3 ---------------------------------------------
+
+
+def test_v03_forward_is_byte_identical_with_and_without_signature():
+    # A plain-args forward compiles to the SAME bytes whether or not a
+    # signature is supplied — the record envelope is opt-in, never a
+    # reinterpretation of the v0.1 plain form.
+    leaves = {"drafter": LeafRef("module", "drafter"), "polish": LeafRef("predict", "polish")}
+    without = compile_forward(answerer_forward, leaves)
+    with_sig = compile_forward(answerer_forward, leaves, signature=["question"])
+    assert without == with_sig
+    assert without["args"] == ["question"]
+
+
+def test_kwargs_without_signature_still_refuses_the_envelope():
+    # Door (b) needs a declared signature; absent one, **kwargs is not a
+    # forward envelope (byte-identical to v0.3 refusal shape).
+    with pytest.raises(ProgramIRRefusal) as caught:
+        compile_forward(record_desugar_forward, {"predict": LeafRef("predict", "predict")})
+    assert caught.value.code == "PIR-E-NODE-001"
+    assert caught.value.detail["node"] == "FunctionDef"
+
+
+# --- v0.4 the shipped-module desugar (D-041 census) -------------------------
+
+
+def test_chain_of_thought_forward_clears_the_kwargs_envelope():
+    # The compiler-lift residue: ChainOfThought's `def forward(self,
+    # **kwargs)` refused at the envelope pre-v0.4. The desugar clears that
+    # envelope; the residue is now its inner `_route_reasoning` helper — an
+    # undeclared module-state method, a REAL (non-envelope) refusal.
+    from dspy.predict.chain_of_thought import ChainOfThought
+
+    with pytest.raises(ProgramIRRefusal) as caught:
+        compile_forward(
+            ChainOfThought.forward,
+            {"predict": LeafRef("predict", "predict")},
+            signature=["question"],
+        )
+    # No longer the envelope refusal (FunctionDef / **kwargs).
+    assert caught.value.detail.get("node") != "FunctionDef"
+    assert "variadics" not in str(caught.value)
+
+
+def cot_shaped_forward(self, **kwargs):
+    # A ChainOfThought-shaped signature-polymorphic forward WITHOUT the
+    # `_route_reasoning` residue: this is the shape that now compiles clean
+    # through the door-(b) desugar.
+    return self.predict(**kwargs)
+
+
+def test_shipped_shaped_module_compiles_clean_through_desugar():
+    compiled = compile_forward(
+        cot_shaped_forward,
+        {"predict": LeafRef("predict", "predict")},
+        signature=["question"],
+    )
+    assert compiled["args"] == [{"name": "kwargs", "record": "self"}]
+    assert compiled["body"][0]["value"]["splat"] == "kwargs"
+    _assert_valid(compiled)
+
+
+# --- v0.4 contract-reference validation + declared-context checks -----------
+
+
+def test_contract_reference_validate_accepts_record_envelope():
+    validate = _load_reference("validate")
+    if validate is None:
+        pytest.skip("programir-contract reference validator is not available")
+    for function in (record_explicit_forward, record_desugar_forward, record_splat_extra_kwarg_forward):
+        compiled = compile_forward(function, {"predict": LeafRef("predict", "predict")}, signature=["question"])
+        violations = validate.check(compiled, validate.node_set_schema())
+        assert violations == [], f"{function.__name__}: {violations}"
+        # The contract's own record-aware compile check accepts it too.
+        assert validate.forward_refusal(compiled) is None
+
+
+def test_contract_reference_flags_context_unaccepted_key():
+    # With signature context, a callee that does not accept a record key
+    # refuses PIR-E-NODE-003 (D-041) — the contract's declared-context check.
+    validate = _load_reference("validate")
+    if validate is None:
+        pytest.skip("programir-contract reference validator is not available")
+    compiled = compile_forward(
+        record_desugar_forward,
+        {"predict": LeafRef("predict", "predict")},
+        signature=["question", "context"],
+    )
+    declared = {
+        "predict": ["predict"],
+        "signature": {"inputs": ["question", "context"]},
+        "accepts": {"predict": {"predict": ["question"]}},  # missing "context"
+    }
+    refusal = validate.forward_refusal(compiled, declared)
+    assert refusal is not None
+    assert refusal["code"] == "PIR-E-NODE-003"
+    assert refusal["key"] == "context"
