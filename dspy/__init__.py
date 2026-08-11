@@ -54,7 +54,8 @@ from dspy.adapters import (
     make_adapter,
 )
 
-from dspy.modules import Module, Predict
+from dspy.modules import RLM, ChainOfThought, Module, Predict, ReAct, ReActV2
+from dspy.programir.interpreters import InProcessInterpreter
 
 from dspy.__metadata__ import __author__, __author_email__, __description__, __name__, __url__, __version__
 

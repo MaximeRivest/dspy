@@ -1,7 +1,12 @@
-"""Extract and validate structural interpreter identity profiles."""
+"""Extract and validate structural interpreter identity profiles.
+
+Also home to `InProcessInterpreter`, the reference declared-interpreter
+runtime: an exact structural profile (D-033) plus a one-call contract.
+"""
 
 from __future__ import annotations
 
+import sys
 from copy import deepcopy
 from typing import Any
 
@@ -107,3 +112,57 @@ def validate_interpreter_profile(profile: Any, *, name: str) -> None:
 
 def _nonempty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value)
+
+
+class InProcessInterpreter:
+    """The in-process Python interpreter leaf: exec, no builtins, `result`.
+
+    The reference runtime for declared interpreter leaves (RLM's default).
+    Code runs under `exec` with an EMPTY builtins table in a fresh
+    namespace and must assign its final value to a variable named
+    `result`; the call returns `str(result)`. Every failure — bad code, a
+    missing `result`, anything the code raises — surfaces as the typed
+    `InterpreterError`, so `except InterpreterError` behaves identically
+    on the native path and under the engine.
+
+    The declared profile is structural identity, not an implementation:
+    a receiver loading an artifact binds its own runtime for the pool
+    entry (D-033).
+    """
+
+    def programir_profile(self) -> dict[str, Any]:
+        return {
+            "language": "python",
+            "runtime": {
+                "identity": "cpython",
+                "version": f"{sys.version_info.major}.{sys.version_info.minor}",
+            },
+            "contract": "call(code)->result",
+            "namespace_policy": "fresh-empty-no-builtins",
+            "result_convention": "result variable",
+            "vars_marshaling": "str-values",
+            "packages": [],
+            "resource_limits": {},
+            "isolation_floor": "none",
+            "placement": {
+                "rung": "in_process",
+                "contract": "call(code)->result",
+                "endpoint_ref": None,
+                "isolation": "none",
+                "credential_ref": None,
+            },
+        }
+
+    def __call__(self, *, code: str) -> str:
+        from dspy.core.errors import InterpreterError
+
+        namespace: dict[str, Any] = {"__builtins__": {}}
+        try:
+            exec(code, namespace)
+        except InterpreterError:
+            raise
+        except Exception as error:
+            raise InterpreterError(f"code execution failed: {error}") from error
+        if "result" not in namespace:
+            raise InterpreterError("the code must assign the final value to a variable named `result`")
+        return str(namespace["result"])
