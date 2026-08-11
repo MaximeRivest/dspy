@@ -1921,3 +1921,119 @@ partial refused (`TestRewardHackingGuard`); a Return-shaped partial refusal
 **Nothing rejected.** No finding was argued away; the one "inherent to a
 fixed-split measure" concession (the always-true partial) is mitigated by
 a real deterministic guard, not waved off.
+
+### A10 fix wave 2 — the enforced-isolation half of Critical 1 (agent)
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 394
+passed. `ruff check dspy/ tests_greenfield/` clean (`--fix` + `format`
+run).** A second adversarial pass re-listed the three criticals; the
+prior wave (above) had ALREADY closed all three code-side holes — this
+pass re-VERIFIED them against their probes, then closed the one part the
+first wave left untouched: the ENFORCED-ISOLATION half of Critical 1(b).
+
+**Critical 1(a) — AST admission bypass: FIXED (prior wave `e4b1fcd65`),
+re-verified.** `_refuse_builtin_escapes` walks `Name`/`Attribute` in the
+function body and refuses `__import__`/`eval`/`exec`/`compile`/`open`/
+`globals`/`vars`/`locals`/`getattr`/`setattr`/`delattr` and every
+sandbox-escape dunder (`__globals__`/`__class__`/`__bases__`/
+`__subclasses__`/`__mro__`/`__code__`/…), honoring local rebindings.
+Proving tests (green): `TestGeneratedCodeSafety::
+test_builtin_escape_doors_refuse_at_admission` (9 params incl.
+`__import__("os").system("touch <SENTINEL>")` — **sentinel never
+created**), `::test_injection_shaped_source_is_data_never_executed`
+(the `import os` / `os.system` sentinel — never created), and the literal
+`import os` case under `::test_unsafe_source_refuses_loudly_and_is_recorded`.
+
+**Critical 1(b) — enforced isolation: DELIVERED HALFWAY (this wave) +
+the rest OWED, recorded.** The trust pairing rule (spec/trust.md):
+authored-origin code must run at a rung whose isolation the placement
+ENFORCES, never one admission merely promises. Before this wave EVERY
+tool leaf — optimizer-authored included — got
+`_in_process_placement` (`rung: in_process`, `isolation: none`), and
+`materialize._resolve_tools` rebuilt any unbound tool from its sidecar
+with a plain in-process `exec`, ignoring the placement block entirely.
+So a receiver loading an accepted artifact ran unreviewed
+machine-written code in-process silently.
+
+  - **Delivered — the consent gate (real, fail-closed).**
+    `leaves.extract_tool` now stamps an optimizer-authored leaf
+    (`authored_by == "optimizer"`, the PIR-014 stamp) with a NON-in-process
+    placement: `rung: "isolation_required"`, `isolation: "required"`
+    (`leaves.ISOLATION_REQUIRED_RUNG`). `materialize._resolve_tools` KEEPS
+    that promise: it FAILS CLOSED on that rung — it refuses to
+    rebuild-and-run the sidecar in-process, naming the tool and teaching
+    the grant, UNLESS the receiver explicitly binds a reviewed callable
+    (`bindings={"tool": {name: fn}}` — the binding IS the grant). The
+    optimizer's own scoring is unaffected: `compile_with_live` captures the
+    live function into `live["tool"][name]`, so it takes the bound (granted)
+    branch — the guard bites only the ungranted cross-process/`dspy.load`
+    path, exactly the trust hand-off. Proving tests (green):
+    `TestReplacePredictWithCode::
+    test_optimizer_authored_leaf_carries_the_isolation_required_rung`
+    (the placement fact is recorded in the compiled and the on-disk
+    manifest), `::test_checkpoint_loads_only_when_the_authored_leaf_is_granted`
+    (load with only an LM binding REFUSES "requires isolation"; load with
+    the tool granted runs), and `TestPartialReplace::
+    test_partial_checkpoint_round_trips` (the authored fast path refuses
+    until granted, even with the LM fallback bound).
+  - **Owed — true sandbox isolation.** The consent gate makes execution a
+    deliberate receiver act; it does NOT run the code under enforced
+    isolation. A granted leaf still runs IN-PROCESS with full ambient
+    authority. What is missing to deliver the sandbox rung the pairing rule
+    actually names: (1) a sandbox RUNTIME (subprocess/wasm with no ambient
+    network, filesystem, credentials, or host globals) — greenfield has
+    none; `_load_function` is a bare `exec` + in-process call, and
+    `ExecutableProgram.tool` just calls it; (2) the `isolation: "sandbox"`
+    placement vocabulary and the interpreter `grants` list — both
+    UNRATIFIED (spec/trust.md is PROPOSED; ratification asks 2 and 5 pending)
+    and today the schema's `isolation` observes `"none"` only; (3) a grant
+    mechanism that lets a receiver run authored code under isolation WITHOUT
+    a full-trust in-process bind. Setting `rung: "sandbox"` today would be a
+    placement string `materialize` ignores — a FALSE guarantee, which the
+    review brief forbids ("do not claim a security guarantee the code
+    doesn't deliver"). Hence: fact recorded honestly + consent gate
+    enforced now; the sandbox rung awaits the runtime and the ratified
+    vocabulary.
+
+**Critical 2 — holdout gate covers only code candidates: FIXED (prior
+wave `cc62f3ab6`), re-verified.** `_accept` gates the holdout for EVERY
+accepted candidate (the `has_code` condition is gone). Proving test
+(green): `TestRewardHackingGuard::test_poisoning_add_demo_is_gated_on_the_holdout`
+— a poison `add_demo` wins dev (score 1.0) while holdout collapses to
+0.0, is REJECTED (`accepted is False`, `manifest is None`,
+"reward-hacking guard" in the verdict), and is absent from the final
+program (every predictor's demos stay `[]`).
+
+**Critical 3 — baseline ratchet neuters the gate: FIXED (prior wave
+`cc62f3ab6`), re-verified.** `best_holdout` is a monotonic ceiling
+(`max`, raised only by candidates that passed the gate). Proving test
+(green): `TestRewardHackingGuard::test_a_rejected_data_op_never_lowers_the_holdout_ceiling`
+— the two-step chain (iter0 poison demo, iter1 memorizing code leaf) —
+neither accepts, no tool ships, the predict stands, and an unseen input
+(`text="wolf"`) still reaches the LM.
+
+**HIGH/MEDIUM findings — all real ones already closed (prior wave),
+confirmed with evidence:** the `_partial` silent no-op on a
+`return self.leaf(...)` site now refuses (`TestPartialReplace::
+test_partial_on_a_return_site_refuses_instead_of_no_oping`); the 0.4
+record-splat call site refuses with a teaching error
+(`TestVocabularyParity::test_splat_bearing_call_site_refuses_with_a_teaching_error`);
+`delete_dead_leaf` with live sites refuses
+(`::test_delete_with_live_sites_refuses`); `explain_view.build_text`
+handles the v0.4 record envelope (the splat-guard test drives a real
+ReAct through `explain()` with no `TypeError`); the overlapping-holdout
+disjointness check refuses at compile
+(`TestRewardHackingGuard::test_overlapping_holdout_is_refused_at_compile`);
+the always-true `_partial` fast path is refused
+(`::test_always_true_partial_fast_path_is_refused`); a metric exception
+scores one example 0.0 and continues
+(`test_optim.py::TestEvaluate`). No finding was rejected without evidence.
+
+**Files this wave: `dspy/programir/leaves.py`** (optimizer-authored leaves
+carry `ISOLATION_REQUIRED_RUNG`, not in-process),
+**`dspy/programir/engine/materialize.py`** (`_resolve_tools` fails closed
+on that rung unless granted), **`tests_greenfield/test_flex_v2.py`**
+(the isolation-rung fact test + the two checkpoint tests updated to the
+grant contract). Non-optimizer tool leaves (ReAct etc.) are untouched:
+they carry no `authored_by` stamp, keep `in_process`, and load without a
+grant exactly as before.
