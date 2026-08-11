@@ -1057,3 +1057,52 @@ no string templates, no source splicing.
   recipe for running any tree natively in tests.
 - The parity battery (`TestBadTreeRefusalParity`) is the drift alarm:
   extend it when the node set grows.
+
+## 2026-08-11 — A7 fix wave: the adversarial review's five findings
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 301
+passed (A7's 285 + 16). `ruff check` clean. All five verified findings
+fixed — none rejected.**
+
+1. **Raise with a negative numeric message broke the round-trip law**
+   (critical). `raise LMError(-3)` printed from an admitted tree but
+   reparsed as UnaryOp(USub, Const) and refused. `raise_statement` now
+   folds the negative spelling exactly as `unaryop()` does; negative
+   zero stays out of the value model on BOTH frontends (`build._scalar`
+   normalizes `-0.0` too — it previously admitted a value the parser
+   folds away).
+2. **Frontend drift on dunders** + **admitted-but-unprintable names**
+   (the two name findings share one fix). The builder refused dunders/
+   keywords/'self' at construction while `admit_forward` admitted them,
+   so the parse compiler took `rec.__class__` and schema-valid foreign
+   trees (Var 'class', Attr obj 'self', dunder targets, keyword args)
+   printed to unloadable or unreparsable source. The rule now lives in
+   ONE place — `forward.name_refusal` — `build._name` delegates to it,
+   and a hygiene walker inside `admit_forward` runs it over every
+   identifier position (args, targets, Var, Attr obj/field, leaf refs,
+   call keywords). The build.py "cannot drift" claim is now true.
+   ONE documented exemption: leaf ref `'self'` is the compiler's
+   leaf-module convention (a bare Predict is its own leaf, printed
+   `self.self(...)`, reparses fine) — the hygiene walker skips exactly
+   that position.
+3. **Slice with an explicit `step: 1` silently mutated through
+   print→compile** (the schema enum admits it; no source lowers to it —
+   the parser normalizes `[a:b:1]` away). The printer now refuses it
+   with a teaching error; it joins the Log-shape and neg-literal
+   refusals as the third unprintable-shape family member.
+4. **Oracle integrity for generated modules**: both equivalence arms
+   derive from the one built tree, so a handler-type sabotage
+   (AdapterParseError → ToolError in ReAct's step Try) left all 66
+   module/spine/optim tests green. New behavioral tests drive the
+   handler paths through BOTH arms: ReAct's mid-loop parse failure
+   breaks gracefully and extract still runs, ReActV2's parse_error
+   termination, ReActV2's tool-failure result, and the toolless
+   in-forward answer arm. The compile-clean tests pin every Try
+   handler type in document order (`try_handler_types`). Verified: both
+   handler-swap sabotages now fail 2 tests each.
+
+Known remaining edge (out of the findings' scope, noted for honesty): a
+FOREIGN tree carrying Const `-0.0` still prints `-0.0` and reparses as
+`0.0` — the schema's number type cannot exclude it and the hygiene
+walker checks names, not scalars. Both in-repo frontends now normalize
+it away.
