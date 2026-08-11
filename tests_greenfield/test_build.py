@@ -509,7 +509,12 @@ class TestRoundTripLaw:
                         {
                             "node": "Assign",
                             "target": "obs",
-                            "value": {"node": "Call", "leaf": {"kind": "tool", "ref": "t"}, "kwargs": {}, "splat": "pred"},
+                            "value": {
+                                "node": "Call",
+                                "leaf": {"kind": "tool", "ref": "t"},
+                                "kwargs": {},
+                                "splat": "pred",
+                            },
                         }
                     ],
                 }
@@ -761,6 +766,40 @@ class TestBadTreeRefusalParity:
         with pytest.raises(ProgramIRRefusal) as compiled:
             compile_forward(function, {"step": LeafRef("predict", "step")}, signature=["question"])
         assert compiled.value.code == "PIR-E-NODE-003"
+
+
+class TestRecordGuardEdges:
+    """Record-guard holes found by /code-review on the dspy-main 0.4 diff,
+    ported here (the greenfield compiler shared both)."""
+
+    def test_comprehension_target_shadowing_record_refuses(self):
+        from dspy.modules._generate import load_generated
+
+        for comp in ("[inputs for inputs in [1, 2, 3]]", "{inputs: inputs for inputs in [1, 2, 3]}"):
+            function = load_generated(
+                f"def forward(self, inputs):\n    junk = {comp}\n    return self.step(**inputs)\n",
+                tag="comp_shadow",
+                name="forward",
+            )
+            with pytest.raises(ProgramIRRefusal) as caught:
+                compile_forward(function, {"step": LeafRef("predict", "step")}, signature=["question"])
+            assert caught.value.code == "PIR-E-NODE-004"
+
+    def test_empty_signature_does_not_open_door_a(self):
+        # A zero-input signature makes every name a "bag"; door (a) must not
+        # bind an empty record. The lone param stays plain, so `**inputs`
+        # then splats a non-record var — the D-041 line refusal, which is
+        # exactly right for a would-be empty envelope.
+        from dspy.modules._generate import load_generated
+
+        function = load_generated(
+            "def forward(self, inputs):\n    return self.step(**inputs)\n",
+            tag="empty_sig",
+            name="forward",
+        )
+        with pytest.raises(ProgramIRRefusal) as caught:
+            compile_forward(function, {"step": LeafRef("predict", "step")}, signature=[])
+        assert caught.value.code == "PIR-E-NODE-002"
 
 
 class TestSharedNameHygiene:

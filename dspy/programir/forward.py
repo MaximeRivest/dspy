@@ -580,8 +580,10 @@ class _Compiler:
                 return args.kwarg.arg
             return None
         # Door (a): a single explicit bag parameter used as a record.
-        # Requires the declared signature to distinguish bag from field.
-        if self.signature is not None and args.kwarg is None and args.vararg is None and len(names) == 1:
+        # Requires a non-empty declared signature to distinguish bag from
+        # field; a zero-input signature makes every name a "bag", so an
+        # empty signature keeps the plain form (D-041).
+        if self.signature and args.kwarg is None and args.vararg is None and len(names) == 1:
             candidate = names[0]
             if candidate not in self.signature and self._is_splatted(node, candidate):
                 return candidate
@@ -1211,6 +1213,7 @@ class _Compiler:
             self.refuse(node, "async comprehensions are explicit concurrency; the engine owns scheduling (D-037)")
         head: list[dict[str, Any]] = []
         if isinstance(generator.target, ast.Name):
+            self._guard_record_write(generator.target.id, generator.target)
             loop_target = generator.target.id
         elif isinstance(generator.target, ast.Tuple):
             loop_target = self._gensym()
