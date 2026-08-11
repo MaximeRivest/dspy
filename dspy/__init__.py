@@ -57,7 +57,7 @@ from dspy.adapters import (
     make_adapter,
 )
 
-from dspy.modules import RLM, ChainOfThought, Module, Predict, ReAct, ReActV2
+from dspy.modules import RLM, BestOfN, ChainOfThought, Module, Predict, ReAct, ReActV2, Refine
 from dspy.programir.interpreters import InProcessInterpreter
 from dspy import optim
 from dspy.optim import BootstrapFewShot, BootstrapFewShotWithRandomSearch, LabeledFewShot
