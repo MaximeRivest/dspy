@@ -863,3 +863,80 @@ score = engine replay over a devset, keep = the best state. checkpoint
   values — they render and round-trip fine.
 - `optim.evaluate` is the scoring door for the demo's before/after
   numbers; `result.lm_calls` gives the cost line.
+
+## 2026-08-11 — A6: integration, the morning review package (agent A6)
+
+**Status: FINISHED. `uv run --extra dev pytest tests_greenfield/ -q` →
+256 passed (A1–A5's 249 + 7: `test_examples.py`). `uv run ruff check
+dspy/ tests_greenfield/ examples_greenfield/` → clean. 25 commits on
+`greenfield-ir`, charter to finish. No features added, no working code
+refactored.**
+
+### What this stage added
+
+- `examples_greenfield/` — the six-script tour, all DummyLM, zero
+  network, each under 80 lines, each printing sectioned output:
+  01 hello (Signature → Predict → engine run → `explain()`),
+  02 chain-of-thought (prefix_cot vs native conduct, capability-driven
+  `auto`, differing preview bytes), 03 ReAct (two tools, trajectory +
+  lint + cost off one compiled value), 04 adapters (chat/json/xml
+  presets + a custom regex-pipeline entry, one unchanged program),
+  05 save/ship/load (artifact dir listing, manifest keys, tool sidecar,
+  byte-identical replay assert), 06 optimize (BootstrapFewShot
+  before/after 0.0 → 1.0 + `dspy.diff` showing demos as the only
+  delta). `tests_greenfield/test_examples.py` runs each via subprocess
+  and asserts exit 0 + non-empty stdout.
+- `README-GREENFIELD.md` — the file Maxime reads first: what this is,
+  the honest numbers (50,195 → 21,537 dspy/ lines; 228 → 88 files;
+  256 tests), the what's-different table, the tour with real output
+  excerpts, EVERY trim/gap from A1–A5 as one honest-limits list, the
+  five design decisions to review (ir_literals, generated forwards,
+  compile-at-first-call, string-parsers-refuse, exhaust/record
+  boundary), and the seven contract-feedback items from A3/A4.
+
+### The sweep (fixes, all trivial; nothing half-fixed)
+
+- **The ruff `include` list never matched `tests_greenfield/`** — every
+  earlier "clean" run silently skipped the battery. Fixed: include now
+  covers `tests_greenfield/**` and `examples_greenfield/**`, with
+  per-file ignores mirroring `tests/**` (plus RUF043 — match= patterns
+  quote teaching errors verbatim — and N806 for local Signature-class
+  names). First honest run found 10 findings; 2 auto-fixed
+  (test_core.py unused import + isort), 8 covered by those ignores.
+- 19 pre-existing findings in the kept `dspy/` trees fixed: explicit
+  `strict=False` on five zips (their existing semantics), unused
+  variable in tools/diff.py, trailing whitespace, ambiguous-unicode
+  docstring/comment characters. Three suppressed with named reasons
+  rather than half-fixed: N818 on `ProgramIRRefusal` and `Refusal`
+  (renaming the contract's own vocabulary is not a lint fix) and B019
+  on kept-legacy `Image.format`'s `lru_cache`.
+
+### What a reviewer should look at, in order
+
+1. `README-GREENFIELD.md`, then run `examples_greenfield/01..06` — the
+   whole thesis in ~10 minutes.
+2. `GREENFIELD.md` (the charter), then this file top to bottom — every
+   decision and trim is logged where it happened.
+3. Code, in dependency order: `dspy/core/errors.py` +
+   `dspy/lm/bindings.py` (ambient state replaced by one dict);
+   `dspy/adapters/adapter.py` + `lens.py` + `strategy.py` (the entry IS
+   the adapter); `dspy/modules/module.py` + `predict.py` and
+   `dspy/programir/_dspy.py` + `engine/materialize.py` (the program IS
+   the IR); `dspy/modules/react.py` + `_generate.py` (ir_literals +
+   generated forwards — the two novel mechanisms); `dspy/optim/base.py`
+   (propose/score/keep as data).
+4. The tests as the spec: `test_spine.py` (THE equivalence test),
+   `test_modules.py` (compile-clean + equivalence per module),
+   `test_optim.py` (checkpoint == artifact).
+
+### Open threads (deliberately not started)
+
+- The LM response-channel surface (native reasoning/FC/citations on
+  live runs) — the biggest missing piece; A2's strategies and A4's
+  ReActV2 are already shaped for it.
+- The shape→annotation lifter for signature rebuild (media load), the
+  per-(adapter, signature) codec pooling, and the rest of README §(g) —
+  contract work first, code second.
+- `Module._executable()` is private but `optim.run_engine` uses it — a
+  public `Module.executable()` was A5's ask; one rename, do it when the
+  next stage touches Module anyway.
