@@ -1606,3 +1606,204 @@ cannot. The builder's own `splat in checked_kwargs` check (splat name ==
 kwarg name) is a distinct, narrower case and could not be widened to
 field-collisions statically (no signature at build), so the durable fix
 lives where the field set exists — the interpreter.
+
+## 2026-08-11 — A10: FlexIR v2 — the leaf-implementation rewrites (agent A10)
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 377
+passed (A9-fix-wave's 353 + 2 A9 saves already counted as 355 baseline +
+22 new: `test_flex_v2.py`). `ruff check dspy/ tests_greenfield/` clean.**
+FlexIR now REWRITES THE IR ITSELF: the reflection LM writes ordinary
+Python that becomes a declared authored tool leaf, and the forward tree
+swaps a Predict call for that tool — an LM call replaced by code, the
+program made cheaper. v2 supersedes v1's vocabulary (extends the same
+loop / checkpoint / refusal-feedback machinery); v1's five ops stay
+byte-compatible.
+
+### The v2 vocabulary as implemented (closed, 7 ops)
+
+`FlexIR(reflection_lm, metric, iterations=8, *, reward=None, holdout=None,
+eps=1e-9)`. The applier is a dispatch table over EXACTLY these op names;
+any other op, missing/unexpected key, wrong type, or a source that fails
+admission refuses with a teaching error into the ledger. Edits are DATA —
+no string templating anywhere; the one code field passes admission and
+nothing else.
+
+- `set_instructions {path, text}` — v1, unchanged.
+- `add_demo {path, inputs, labels}` — v1, unchanged (name check + dry-run
+  render).
+- `remove_demo {path, index}` — v1, unchanged.
+- `wrap_best_of_n {path, N}` — v1 structural macro, unchanged.
+- `replace_predict_with_code {path, tool_name, python_source}` — the full
+  swap. The source is admitted (below), becomes a declared authored tool
+  leaf on the module owning the predict, and every `CallPredict(attr)`
+  site in that module's forward is rewritten to `CallTool(tool_name)` via
+  build.py. Downstream `Attr(target, field)` keeps working (a tool
+  returning a dict is field-addressable exactly where a prediction was,
+  SEM-7). The predict usually goes dead — clean it with delete.
+- `replace_predict_with_code_partial {path, tool_name, python_source}` —
+  code fast-path, LM fallback. Return `dict | None`; None (or a
+  `ToolError`) declines to the LM. The site is wrapped in the spelled
+  Try/If shape (below).
+- `delete_dead_leaf {path}` — remove a predictor with ZERO call sites
+  across ALL forwards (counted first; refuses with the count if any
+  remain). The clean converse of the code ops; link is the backstop.
+
+### The code-swap tree shapes (pasted)
+
+FULL — `result = self.tagger(text=text)` becomes, in the forward's node
+JSON, the call leaf swapped in place:
+
+    before: {"node": "Call", "leaf": {"kind": "predict", "ref": "tagger"},
+             "kwargs": {"text": {"node": "Var", "name": "text"}}}
+    after:  {"node": "Call", "leaf": {"kind": "tool",    "ref": "tag_code"},
+             "kwargs": {"text": {"node": "Var", "name": "text"}}}
+
+PARTIAL — `target = self.solver(**kw)` becomes two statements (build.py
+constructors; `F` is a fresh `_flex_fast_<n>`):
+
+    Try(
+        body=[Assign(F, CallTool(tool_name, **kw))],
+        handlers=[Except("ToolError", body=[Assign(F, Const(None))])],
+    ),
+    If(
+        Compare("ne", Var(F), Const(None)),
+        body=[Assign(target, Var(F))],
+        orelse=[Assign(target, CallPredict(attr, **kw))],
+    )
+
+Both arms bind `target` to a field-addressable record, so every
+downstream read is unchanged. The rewritten forward re-admits through
+`admit_forward` (the shared gate) and round-trips through the printer;
+nothing bypasses admission.
+
+The mechanism (no engine, printer, or forward-compiler changes): the
+target predict at dotted path `P` is owned by the module at `parent(P)`,
+whose forward is keyed by that path in `5_forward` with the call site's
+`leaf.ref == last_segment(P)`. The applier compiles the champion, deep-
+copies the owner's forward tree, rewrites the site(s), injects the tool
+function as an instance attribute on the owner (so the compiler declares
+it a tool leaf), and attaches a `build_forward_ir` (the macro-only IR-
+first door in `_dspy.module_node`) returning the rewritten tree. A prior
+code edit's `build_forward_ir` is already reflected at the next compile,
+so edits COMPOSE. Structural edits carry an undo entry; `_unwind`
+restores on any rejection or exception (attribute restore, or DELETE via
+an `_ABSENT` sentinel for an injected leaf that had no prior attribute).
+
+### Generated-code admission (`dspy/optim/code_leaf.py`)
+
+`admit_tool_source(name, python_source, signature, *, partial) ->
+AdmittedCode` runs the chain, refuse-first: (1) `ast.parse` + exactly one
+undecorated `def`; (2) self-containment via the REUSED
+`leaves._check_self_contained` (no closures — source-born — no global
+reads); (3) the import allowlist — a closed pure-stdlib set (re, json,
+math, string, textwrap, datetime, collections, itertools, functools,
+unicodedata, decimal, fractions, statistics, heapq, bisect); everything
+else (socket/http/urllib/requests/subprocess/os/sys/importlib/ctypes…)
+refuses, and `# deps:` must be empty (risk 2: a code leaf may not hide an
+LM call over HTTP); (4) the io-contract from the REPLACED signature —
+parameters are exactly the input fields, typed, and the return is `dict`
+(full) or `dict | None` (partial). Only on success is the one def defined
+(the `load_generated` linecache convention — defines the name, runs no
+body) and extracted the leaves.py way, stamped `authored_by: "optimizer"`.
+
+### The safety story: data, not exec
+
+The optimizer NEVER execs the proposal's code. `python_source` is DATA:
+it passes admission (which refuses `os`/`import` outside the allowlist),
+and the admitted def runs only through the engine at score time, inside
+the engine's leaf machinery. Injection-shaped source (an `os.system(...)`
+string) is refused at the import step with NO side effect — pinned by
+`test_injection_shaped_source_is_data_never_executed` (a sentinel file is
+never created). Dispatch is the closed op table; unknown ops/fields
+refuse; the single code field is the only code path.
+
+### Two-channel acceptance + the holdout split (the reward-hacking guard)
+
+Acceptance is TWO-CHANNEL: accept if the dev score strictly rises, OR if
+it holds (within eps) AND `lm_calls` strictly drops (cheapness with held
+quality). AND — for any code-bearing candidate — the holdout split the
+reflection LM NEVER sees must not regress below the champion's. A holdout
+drop refuses the candidate; the verdict (both scores) goes into the
+ledger and feeds the next reflection call. The trainset is the devset the
+LM sees; `holdout=` is a disjoint split scored separately. A rejected
+candidate is a scoring verdict, recorded in a new `rejection` trajectory
+field (NOT the proposal-level `refusals`, preserving v1 parity) and fed
+back alongside the refusals.
+
+### The reflection prompt (five slots, section 4)
+
+Each iteration the LM sees: the explain view (now including the printed
+forwards), the COST VIEW (`tools/cost.py build_text` static bounds PLUS
+the last run's measured `lm_calls`), the current score, up to 3 failing
+examples (inputs/expected/got JSON; NEVER holdout examples), and the
+prior refusal ledger. The catalog names exactly the 7 ops with the code
+contract and the import allowlist. One reflection Predict call per
+iteration; deterministic under a scripted DummyLM (exactly `iterations`
+calls).
+
+### The cheapness assert (genuine, not mocked)
+
+A one-predictor uppercasing program under a DummyLM that returns
+`text.upper()`. Scripted reflection proposes the correct op-4 function
+(`return {"tag": text.upper()}`) plus a delete in one batch. Measured:
+
+    baseline: score 1.0, lm_calls 3 (one per example), holdout 1.0
+    after:    score 1.0, lm_calls 0,                   holdout 1.0, accepted
+
+The manifest delta (`dspy.diff`): predictor 'tagger' removed; forward
+`predict[tagger](text=text)` → `tool[tag_code](text=text)`; tool
+'tag_code' added; adapter 'chat' and lm 'dummy' removed — the accepted
+artifact loads with an EMPTY lm binding (`bindings={"lm": {}}`) and runs
+the pure-Python leaf. For the partial op: N < lm_calls < 2N over a mixed
+devset, and declined inputs produce their answers through the CallPredict
+arm (asserted per-input via `predictor_calls`).
+
+### The 0.4-splat guard
+
+The builders here are v0.3+0.4-record; a call site carrying a record-
+splat (`self.react(**inputs, ...)` in ReAct/ReActV2/RLM) is not yet
+rewritable — the applier keys on call-site nodes and REFUSES a splat-
+bearing site with a teaching error ("0.4 record-splat site; rewrite not
+yet supported") rather than mis-rewriting it. Pinned on a real ReAct.
+
+### One pre-existing bug surfaced and fixed (in scope)
+
+`explain_view.build_text` crashed on a v0.4 record-envelope forward
+(`args` is `[{"name":…, "record":"self"}]`, not strings) — a
+`TypeError: sequence item 0: expected str instance, dict found` for ANY
+splat-based module, independent of FlexIR. Since the reflection report
+renders `explain()` before the splat guard could teach, the crash would
+mask the refusal. Fixed with a `_render_arg` helper (record bag → `**name`,
+the printer's convention) and a splat renderer on Call nodes; regression
+covered by the splat-guard test running through a real ReAct.
+
+### Honest gaps
+
+- **No real code-generation quality beyond the scripted tests.** The LM's
+  ability to WRITE correct Python is not exercised — every test scripts a
+  known-good (or known-hacking) function. Admission guarantees SHAPE and
+  containment; the metric on devset+holdout is the only behavioral safety
+  measure (by design — "measured, never proven"). A real reflection LM
+  writing subtly-wrong code is caught only to the extent the holdout
+  covers it.
+- **Per-attempt variation limits carry over from A8.** BestOfN/Refine
+  (the wrap op) still resample the same predictor with identical request
+  bytes; no rollout_id/temperature schedule exists.
+- **`delete_dead_leaf` alone never accepts.** A standalone hygiene op
+  changes neither score nor cost, so the two-channel rule rejects it —
+  it must ride in the SAME batch as the code op that orphans the predict
+  (both scored together, accepted for the cheapness, dead leaf cleanly
+  removed). Documented; the intended usage is a swap+delete batch.
+- **The 0.4-splat guard is a refusal, not support.** Rewriting splat-
+  bearing sites (ReAct-shaped forwards) waits on the 0.4 builder
+  propagation; today those predicts cannot be code-swapped.
+- **Only a top-level `Assign(target, CallPredict)` gets the partial
+  Try/If shape.** A predict call buried inside another expression is left
+  for the full op (the mechanical call-site shape a predict occupies).
+- **One tool identity per pool name.** An injected `tool_name` colliding
+  with an existing attribute on the owning module refuses; the pool's
+  one-identity-per-name rule (A8) still governs.
+- **`code_leaf` calls two leaves.py privates** (`_source`,
+  `_check_self_contained`) — factored-not-forked per the brief, pinned by
+  the admission tests; a public source-first entry point would be
+  cleaner when leaves.py is next touched.
