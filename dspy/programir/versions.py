@@ -2,7 +2,7 @@
 
 IMPLEMENTED_VERSIONS = {
     "ir_version": "0.1",
-    "node_set": "0.3",
+    "node_set": "0.4",
     "roles": "0.1",
     "strategies": "0.1",
     "codecs": "0.1",
@@ -16,7 +16,7 @@ IMPLEMENTED_VERSIONS = {
 #: compiler stamps the newest member (IMPLEMENTED_VERSIONS); readers
 #: accept any member.
 SUPPORTED_VERSION_SETS = {
-    "node_set": ("0.1", "0.2", "0.3"),
+    "node_set": ("0.1", "0.2", "0.3", "0.4"),
 }
 
 REQUIRED_VERSION_KEYS = (

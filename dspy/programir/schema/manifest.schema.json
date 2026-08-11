@@ -341,9 +341,29 @@
         },
         "args": {
           "type": "array",
-          "items": {"$ref": "#/$defs/identifier"},
-          "uniqueItems": true,
-          "description": "The forward's input names ('self' excluded), spec/node-set.md SEM-8 v0 envelope."
+          "description": "The forward's parameter list ('self' excluded), spec/node-set.md: plain input names (SEM-8 v0 envelope) OR exactly one record binding (the v0.4 inputs-bag envelope, D-041) -- the same two forms schema/node-set.schema.json pins in full.",
+          "oneOf": [
+            {
+              "items": {"$ref": "#/$defs/identifier"},
+              "uniqueItems": true,
+              "description": "Plain form: the declared input names."
+            },
+            {
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {"$ref": "#/$defs/identifier"},
+                  "record": {"const": "self"}
+                },
+                "required": ["name", "record"],
+                "additionalProperties": false,
+                "description": "The record binding (v0.4, D-041): the module's own input record; full semantics in schema/node-set.schema.json $defs/record_binding."
+              },
+              "minItems": 1,
+              "maxItems": 1,
+              "description": "Record envelope (v0.4, D-041): exactly one record binding, the whole parameter list."
+            }
+          ]
         },
         "body": {
           "type": "array",
