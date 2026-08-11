@@ -26,7 +26,7 @@ from dspy.modules.module import Module
 from dspy.modules.predict import Predict
 from dspy.programir.compile import build_program_ir
 from dspy.programir.environment import python_environment
-from dspy.programir.forward import LeafRef, compile_forward
+from dspy.programir.forward import LeafRef, admit_forward, compile_forward
 from dspy.programir.interpreters import extract_interpreter
 from dspy.programir.leaves import extract_metric, extract_tool
 from dspy.programir.model import ProgramIR
@@ -177,10 +177,19 @@ class _DSPyCompiler:
                 leaves[child_name] = LeafRef("interpreter", interpreter_name)
                 uses_interpreter = True
 
-        # A generated forward bound on the instance (signature-polymorphic
-        # modules like ReAct build theirs in __init__) wins over the class's.
-        forward_fn = module.__dict__.get("forward") or type(module).forward
-        self.forwards[path] = compile_forward(forward_fn, leaves, literals=_declared_literals(module))
+        # IR-first door: a module that BUILDS its forward (build.py
+        # constructors) hands the tree over directly — no source parse.
+        # `build_forward_ir` bakes the current declared-literal values and
+        # refreshes the printed native twin; the shared admission runs
+        # here with the declared leaf table, exactly as compile_forward
+        # runs it on parsed source.
+        builder = getattr(module, "build_forward_ir", None)
+        if callable(builder):
+            self.forwards[path] = admit_forward(builder(), leaves)
+        else:
+            # A generated forward bound on the instance wins over the class's.
+            forward_fn = module.__dict__.get("forward") or type(module).forward
+            self.forwards[path] = compile_forward(forward_fn, leaves, literals=_declared_literals(module))
         class_name = type(module).__name__
         node = {
             "kind": class_name,

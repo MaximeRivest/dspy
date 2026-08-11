@@ -14,6 +14,12 @@ that shape inside the v0.3 subset:
   record — engine records carry declared outputs only (PIR-013), so the
   v2 channels are contract, not exhaust.
 
+The forward is BUILT with the typed node constructors; the native twin
+is the printer's rendering of the same tree (linecache-registered, bound
+on the instance). A toolless ReActV2 is legal (pure submit agent): its
+tree swaps the dispatch arm for an in-forward answer, since an empty
+tools table cannot be declared.
+
 Deliberate trims from the legacy experimental ReActV2 (noted in
 BUILD-STATE): no `dspy.History`/`ToolCalls` typed channels (plain
 lists/dicts — native-FC strategies arrive with the LM channel surface),
@@ -22,63 +28,40 @@ and no forced-submit second pass.
 
 from __future__ import annotations
 
-from dspy.modules._generate import ToolTable, bind_generated_forward, build_dispatch_tool, normalize_tools
+from dspy.modules._generate import ToolTable, build_dispatch_tool, normalize_tools
 from dspy.modules.module import Module
 from dspy.modules.predict import Predict
+from dspy.programir.build import (
+    Assign,
+    Attr,
+    BinOp,
+    Break,
+    Builtin,
+    CallPredict,
+    CallToolDynamic,
+    Compare,
+    Const,
+    Dict,
+    Do,
+    Except,
+    For,
+    Forward,
+    If,
+    Index,
+    List,
+    Method,
+    Return,
+    Try,
+    Var,
+    While,
+)
+from dspy.programir.printer import bind_forward
 from dspy.signatures.field import InputField, OutputField
 from dspy.signatures.signature import ensure_signature, make_signature
 
 __all__ = ["ReActV2"]
 
 _RESERVED_FIELDS = ("history", "next_thought", "tool_calls", "termination_reason")
-
-_FORWARD_TEMPLATE = """\
-def forward(self{params}):
-    history = []
-    outputs = {{}}
-    termination_reason = "max_iters"
-    turn = 0
-    while turn < self.max_iters:
-        turn = turn + 1
-        try:
-            pred = self.react({react_kwargs}, history=history)
-        except AdapterParseError:
-            termination_reason = "parse_error"
-            break
-        calls = pred.tool_calls
-        if len(calls) == 0:
-            termination_reason = "empty_tool_calls"
-            break
-        results = []
-        for call in calls:
-            if call["name"] == "submit":
-                outputs = call["args"]
-                termination_reason = "submit"
-                results.append({{"name": "submit", "value": "submitted"}})
-            else:
-{dispatch}
-                results.append({{"name": call["name"], "value": value}})
-        event = {{"thought": pred.next_thought, "tool_calls": calls, "results": results}}
-        history.append(event)
-        if termination_reason == "submit":
-            break
-    final = {{{output_entries}, "history": history, "termination_reason": termination_reason}}
-    return final
-"""
-
-#: The dispatch arm when tools exist: the dynamic tool leaf, failures typed.
-_DISPATCH_TOOLS = """\
-                try:
-                    value = self.tools[call["name"]](args=call["args"])
-                except ToolError:
-                    value = "The tool call failed. Use another tool, or submit."
-"""
-
-#: The dispatch arm for a pure submit agent: no tools table is declared,
-#: so any non-submit call is answered in-forward.
-_DISPATCH_NONE = """\
-                value = "Unknown tool. The only valid call is submit."
-"""
 
 
 class ReActV2(Module):
@@ -90,8 +73,8 @@ class ReActV2(Module):
         tools: A list of plain named functions or `dspy.Tool` values (the
             same declared-leaf rules as `ReAct`). May be empty — a pure
             submit agent is legal in v2.
-        max_iters: The turn cap, baked into the compiled forward as a
-            literal (declared via `ir_literals`).
+        max_iters: The turn cap, baked into the built forward as a
+            literal (named in `ir_literals` so edits recompile).
 
     The prediction carries the signature's outputs plus the v2 channels
     `history` (the event list) and `termination_reason` (`"submit"`,
@@ -116,17 +99,91 @@ class ReActV2(Module):
 
         self.react = Predict(self._react_signature(specs))
 
-        input_names = list(signature.input_fields)
-        output_entries = ", ".join(
-            f'"{name}": outputs.get("{name}", "")' for name in signature.output_fields
+        self.build_forward_ir()
+
+    def build_forward_ir(self):
+        """Build the forward tree (current literals) and refresh the twin."""
+        tree = self._forward_tree()
+        bind_forward(self, tree, tag="react_v2")
+        return tree
+
+    def _forward_tree(self):
+        signature = self.signature
+        inputs = list(signature.input_fields)
+        step_kwargs = {name: Var(name) for name in inputs}
+        call_name = Index(Var("call"), Const("name"))
+        call_args = Index(Var("call"), Const("args"))
+
+        if self._tool_specs:
+            dispatch = [
+                Try(
+                    [Assign("value", CallToolDynamic(call_name, args=call_args))],
+                    [
+                        Except(
+                            "ToolError", [Assign("value", Const("The tool call failed. Use another tool, or submit."))]
+                        )
+                    ],
+                )
+            ]
+        else:
+            # A pure submit agent declares no tools table; any non-submit
+            # call is answered in-forward.
+            dispatch = [Assign("value", Const("Unknown tool. The only valid call is submit."))]
+
+        per_call = If(
+            Compare("eq", call_name, Const("submit")),
+            [
+                Assign("outputs", call_args),
+                Assign("termination_reason", Const("submit")),
+                Do(Method(Var("results"), "append", Dict({"name": "submit", "value": "submitted"}))),
+            ],
+            [
+                *dispatch,
+                Do(Method(Var("results"), "append", Dict({"name": call_name, "value": Var("value")}))),
+            ],
         )
-        source = _FORWARD_TEMPLATE.format(
-            params="".join(f", {name}" for name in input_names),
-            react_kwargs=", ".join(f"{name}={name}" for name in input_names),
-            output_entries=output_entries,
-            dispatch=(_DISPATCH_TOOLS if specs else _DISPATCH_NONE).rstrip("\n"),
+        turn_body = [
+            Assign("turn", BinOp("add", Var("turn"), Const(1))),
+            Try(
+                [Assign("pred", CallPredict("react", **step_kwargs, history=Var("history")))],
+                [Except("AdapterParseError", [Assign("termination_reason", Const("parse_error")), Break()])],
+            ),
+            Assign("calls", Attr("pred", "tool_calls")),
+            If(
+                Compare("eq", Builtin("len", Var("calls")), Const(0)),
+                [Assign("termination_reason", Const("empty_tool_calls")), Break()],
+            ),
+            Assign("results", List()),
+            For("call", [per_call], iter=Var("calls")),
+            Assign(
+                "event",
+                Dict({"thought": Attr("pred", "next_thought"), "tool_calls": Var("calls"), "results": Var("results")}),
+            ),
+            Do(Method(Var("history"), "append", Var("event"))),
+            If(Compare("eq", Var("termination_reason"), Const("submit")), [Break()]),
+        ]
+        final = Dict(
+            [
+                *[
+                    (Const(name), Method(Var("outputs"), "get", Const(name), Const("")))
+                    for name in signature.output_fields
+                ],
+                (Const("history"), Var("history")),
+                (Const("termination_reason"), Var("termination_reason")),
+            ]
         )
-        bind_generated_forward(self, source, tag="react_v2")
+        return Forward(
+            inputs,
+            [
+                Assign("history", List()),
+                Assign("outputs", Dict()),
+                Assign("termination_reason", Const("max_iters")),
+                Assign("turn", Const(0)),
+                While(Compare("lt", Var("turn"), Const(self.max_iters)), turn_body),
+                Assign("final", final),
+                Return(Var("final")),
+            ],
+        )
 
     def _react_signature(self, specs):
         signature = self.signature
@@ -149,9 +206,7 @@ class ReActV2(Module):
         )
         for index, spec in enumerate(specs):
             lines.append(f"({index + 1}) {spec}")
-        lines.append(
-            f"({len(specs) + 1}) submit, whose args are the final output field(s) {outputs}."
-        )
+        lines.append(f"({len(specs) + 1}) submit, whose args are the final output field(s) {outputs}.")
         fields = {}
         for name, field in signature.input_fields.items():
             desc = (field.json_schema_extra or {}).get("desc")

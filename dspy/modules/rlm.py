@@ -8,8 +8,8 @@ a usable module:
 - the interpreter is a declared leaf (a D-033 structural profile in
   component 7); the default runtime is `InProcessInterpreter` — exec,
   empty builtins, `result`-variable convention;
-- the loop is a While with a LITERAL cap: `max_iters` is a declared
-  literal (`ir_literals`), baked in at compile time;
+- the loop is a While with a LITERAL cap: `max_iters` bakes in when the
+  forward tree is built (named in `ir_literals` so edits recompile);
 - a failed round is the typed `InterpreterError`, caught in-forward and
   turned into a transcript note the next round can read;
 - the transcript is a plain string grown by concatenation — every round
@@ -17,45 +17,41 @@ a usable module:
 
 This is deliberately NOT the 817-line legacy RLM (sub-LM tools, batched
 queries, sandbox marshaling); it is the smallest RLM that earns its
-name. The forward source is generated at `__init__` (the parameter list
-is the user signature's input fields).
+name. The forward is BUILT with the typed node constructors; the native
+twin is the printer's rendering of the same tree.
 """
 
 from __future__ import annotations
 
-from dspy.modules._generate import bind_generated_forward
+from functools import reduce
+
 from dspy.modules.module import Module
 from dspy.modules.predict import Predict
+from dspy.programir.build import (
+    Assign,
+    Attr,
+    BinOp,
+    Break,
+    CallInterpreter,
+    CallPredict,
+    Compare,
+    Const,
+    Except,
+    Forward,
+    If,
+    Return,
+    Try,
+    Var,
+    While,
+)
 from dspy.programir.interpreters import InProcessInterpreter
+from dspy.programir.printer import bind_forward
 from dspy.signatures.field import InputField, OutputField
 from dspy.signatures.signature import ensure_signature, make_signature
 
 __all__ = ["RLM"]
 
 _RESERVED_FIELDS = ("transcript", "code", "result")
-
-_FORWARD_TEMPLATE = """\
-def forward(self{params}):
-    result = ""
-    transcript = ""
-    rounds = 0
-    while result == "":
-        if rounds == self.max_iters:
-            break
-        rounds = rounds + 1
-        step = self.gen({gen_kwargs}, transcript=transcript)
-        try:
-            output = self.interp(code=step.code)
-        except InterpreterError:
-            output = ""
-        if output == "":
-            transcript = transcript + "\\n>>> " + step.code + "\\n(error: the code failed; fix it and try again)"
-        else:
-            transcript = transcript + "\\n>>> " + step.code + "\\n" + output
-        result = output
-    final = self.extract({gen_kwargs}, transcript=transcript, result=result)
-    return final
-"""
 
 
 class RLM(Module):
@@ -64,8 +60,8 @@ class RLM(Module):
     Args:
         signature: The task's signature (`"question -> answer"` or a
             `dspy.Signature`).
-        max_iters: The round cap, baked into the compiled forward as a
-            literal (declared via `ir_literals`).
+        max_iters: The round cap, baked into the built forward as a
+            literal (named in `ir_literals` so edits recompile).
         interpreter: The interpreter runtime — any object with a D-033
             `programir_profile()` and a `__call__(code=...)` contract.
             Defaults to `InProcessInterpreter` (exec, empty builtins,
@@ -96,12 +92,51 @@ class RLM(Module):
         self.gen = Predict(self._gen_signature())
         self.extract = Predict(self._extract_signature())
 
-        input_names = list(signature.input_fields)
-        source = _FORWARD_TEMPLATE.format(
-            params="".join(f", {name}" for name in input_names),
-            gen_kwargs=", ".join(f"{name}={name}" for name in input_names),
+        self.build_forward_ir()
+
+    def build_forward_ir(self):
+        """Build the forward tree (current literals) and refresh the twin."""
+        tree = self._forward_tree()
+        bind_forward(self, tree, tag="rlm")
+        return tree
+
+    def _forward_tree(self):
+        inputs = list(self.signature.input_fields)
+        step_kwargs = {name: Var(name) for name in inputs}
+
+        def concat(*parts):
+            return reduce(lambda left, right: BinOp("add", left, right), parts)
+
+        note = (Var("transcript"), Const("\n>>> "), Attr("step", "code"))
+        round_body = [
+            If(Compare("eq", Var("rounds"), Const(self.max_iters)), [Break()]),
+            Assign("rounds", BinOp("add", Var("rounds"), Const(1))),
+            Assign("step", CallPredict("gen", **step_kwargs, transcript=Var("transcript"))),
+            Try(
+                [Assign("output", CallInterpreter("interp", code=Attr("step", "code")))],
+                [Except("InterpreterError", [Assign("output", Const(""))])],
+            ),
+            If(
+                Compare("eq", Var("output"), Const("")),
+                [Assign("transcript", concat(*note, Const("\n(error: the code failed; fix it and try again)")))],
+                [Assign("transcript", concat(*note, Const("\n"), Var("output")))],
+            ),
+            Assign("result", Var("output")),
+        ]
+        return Forward(
+            inputs,
+            [
+                Assign("result", Const("")),
+                Assign("transcript", Const("")),
+                Assign("rounds", Const(0)),
+                While(Compare("eq", Var("result"), Const("")), round_body),
+                Assign(
+                    "final",
+                    CallPredict("extract", **step_kwargs, transcript=Var("transcript"), result=Var("result")),
+                ),
+                Return(Var("final")),
+            ],
         )
-        bind_generated_forward(self, source, tag="rlm")
 
     def _gen_signature(self):
         signature = self.signature

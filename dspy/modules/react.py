@@ -1,11 +1,10 @@
-"""ReAct: reason + act, compiled clean into the v0.3 node set.
+"""ReAct: reason + act, built directly as v0.3 nodes.
 
 The classic loop — think, pick a tool, observe, repeat, then extract —
 authored so the compiled artifact is the whole story:
 
-- the loop cap is a LITERAL: `max_iters` is a declared literal
-  (`ir_literals`), baked into the For range at compile time — the
-  running forward never reads module state;
+- the loop cap is a LITERAL: `max_iters` bakes into the For range when
+  the forward tree is built (`ir_literals` names it so edits recompile);
 - tools are DECLARED leaves: every user tool becomes a uniform-args
   dispatch wrapper (`args: dict`) in the tools table, so one dynamic
   call site `self.tools[name](args=...)` serves them all (SEM-8);
@@ -15,46 +14,46 @@ authored so the compiled artifact is the whole story:
 - termination is the extract predictor (a ChainOfThought leaf) — the
   loop's `finish` move is a name check, not a tool.
 
-The forward source is generated at `__init__` (the parameter list is the
-user signature's input fields — the v0.3 envelope has no `**kwargs`),
-registered in linecache, and bound on the instance; the compiler and the
-native control arm both read exactly those bytes.
+The forward is BUILT with the typed node constructors (`programir.build`)
+— no source templates. The native twin is DERIVED: the printer renders
+the built tree to source, registers it in linecache, and binds it on the
+instance, so `forward_native` runs genuine Python that agrees with the
+engine arm by construction.
 """
 
 from __future__ import annotations
 
-from dspy.modules._generate import ToolTable, bind_generated_forward, build_dispatch_tool, normalize_tools
+from dspy.modules._generate import ToolTable, build_dispatch_tool, normalize_tools
 from dspy.modules.chain_of_thought import ChainOfThought
 from dspy.modules.module import Module
 from dspy.modules.predict import Predict
+from dspy.programir.build import (
+    Assign,
+    Attr,
+    BinOp,
+    Break,
+    Builtin,
+    CallPredict,
+    CallToolDynamic,
+    Compare,
+    Const,
+    Dict,
+    Except,
+    For,
+    Forward,
+    If,
+    Return,
+    SetIndex,
+    Try,
+    Var,
+)
+from dspy.programir.printer import bind_forward
 from dspy.signatures.field import InputField, OutputField
 from dspy.signatures.signature import ensure_signature, make_signature
 
 __all__ = ["ReAct"]
 
 _RESERVED_FIELDS = ("trajectory", "next_thought", "next_tool_name", "next_tool_args", "reasoning")
-
-_FORWARD_TEMPLATE = """\
-def forward(self{params}):
-    trajectory = {{}}
-    for idx in range(self.max_iters):
-        try:
-            pred = self.react({react_kwargs}, trajectory=trajectory)
-        except AdapterParseError:
-            break
-        trajectory["thought_" + str(idx)] = pred.next_thought
-        trajectory["tool_name_" + str(idx)] = pred.next_tool_name
-        trajectory["tool_args_" + str(idx)] = pred.next_tool_args
-        if pred.next_tool_name == "finish":
-            break
-        try:
-            observation = self.tools[pred.next_tool_name](args=pred.next_tool_args)
-        except ToolError:
-            observation = "The tool call failed. Use another tool, or finish."
-        trajectory["observation_" + str(idx)] = observation
-    final = self.extract({react_kwargs}, trajectory=trajectory)
-    return final
-"""
 
 
 class ReAct(Module):
@@ -67,8 +66,8 @@ class ReAct(Module):
         tools: A list of plain named functions or `dspy.Tool` values —
             full type hints, self-contained bodies (they become declared
             tool leaves in the artifact). At least one.
-        max_iters: The loop cap, baked into the compiled forward as a
-            literal (declared via `ir_literals`).
+        max_iters: The loop cap, baked into the built forward as a
+            literal (named in `ir_literals` so edits recompile).
 
     Examples:
         ```python
@@ -106,13 +105,59 @@ class ReAct(Module):
         self.react = Predict(self._react_signature(specs))
         self.extract = ChainOfThought(self._extract_signature())
 
-        input_names = list(signature.input_fields)
-        kwargs = ", ".join(f"{name}={name}" for name in input_names)
-        source = _FORWARD_TEMPLATE.format(
-            params="".join(f", {name}" for name in input_names),
-            react_kwargs=kwargs,
+        self.build_forward_ir()
+
+    def build_forward_ir(self):
+        """Build the forward tree (current literals) and refresh the twin.
+
+        The compiler calls this at every compile, so an edited `max_iters`
+        bakes freshly; the printed native `forward` rebinds alongside.
+        """
+        tree = self._forward_tree()
+        bind_forward(self, tree, tag="react")
+        return tree
+
+    def _forward_tree(self):
+        inputs = list(self.signature.input_fields)
+        step_kwargs = {name: Var(name) for name in inputs}
+
+        def journal(prefix):
+            return BinOp("add", Const(prefix), Builtin("str", Var("idx")))
+
+        loop_body = [
+            Try(
+                [Assign("pred", CallPredict("react", **step_kwargs, trajectory=Var("trajectory")))],
+                [Except("AdapterParseError", [Break()])],
+            ),
+            SetIndex("trajectory", journal("thought_"), Attr("pred", "next_thought")),
+            SetIndex("trajectory", journal("tool_name_"), Attr("pred", "next_tool_name")),
+            SetIndex("trajectory", journal("tool_args_"), Attr("pred", "next_tool_args")),
+            If(Compare("eq", Attr("pred", "next_tool_name"), Const("finish")), [Break()]),
+            Try(
+                [
+                    Assign(
+                        "observation",
+                        CallToolDynamic(Attr("pred", "next_tool_name"), args=Attr("pred", "next_tool_args")),
+                    )
+                ],
+                [
+                    Except(
+                        "ToolError",
+                        [Assign("observation", Const("The tool call failed. Use another tool, or finish."))],
+                    )
+                ],
+            ),
+            SetIndex("trajectory", journal("observation_"), Var("observation")),
+        ]
+        return Forward(
+            inputs,
+            [
+                Assign("trajectory", Dict()),
+                For("idx", loop_body, range=self.max_iters),
+                Assign("final", CallPredict("extract", **step_kwargs, trajectory=Var("trajectory"))),
+                Return(Var("final")),
+            ],
         )
-        bind_generated_forward(self, source, tag="react")
 
     def _react_signature(self, specs):
         signature = self.signature
