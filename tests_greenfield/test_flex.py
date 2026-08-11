@@ -325,35 +325,38 @@ class TestDemoValueValidation:
 
 class TestExceptionSafeUnwind:
     def test_evaluate_crash_reverts_applied_edits(self):
-        # A metric that explodes on the CANDIDATE evaluation (call 2;
-        # the baseline is call 1) kills compile loudly — but the applied
-        # instruction edit AND the structural wrap must both be unwound:
-        # an exception path may not strand unscored candidate state.
+        # A NON-catchable crash inside the candidate evaluation (an engine
+        # error, not a metric raise — metric raises now score 0.0 and
+        # continue, brief 1.f) kills compile loudly. The applied instruction
+        # edit AND the structural wrap must both be unwound: an exception
+        # path may not strand unscored candidate state. Here the task LM
+        # raises RuntimeError the moment the poisoned instruction reaches it,
+        # so the crash originates on the candidate run, not the baseline.
         program = Solo()
         before = program.solver.signature.instructions
         original_solver = program.solver
-        calls = {"count": 0}
+        poison = "POISONED UNSCORED STATE"
 
-        def exploding_metric(example, prediction):
-            calls["count"] += 1
-            if calls["count"] > 1:
-                raise RuntimeError("metric exploded")
-            return example.answer == prediction.answer
+        def exploding_task(messages):
+            rendered = "\n".join(str(message["content"]) for message in messages)
+            if poison in rendered:
+                raise RuntimeError("engine exploded on the poisoned candidate")
+            return task_pilot(messages)
 
         reflection = dspy.DummyLM(
             [
                 reflection_reply(
                     [
-                        {"op": "set_instructions", "path": "solver", "text": "POISONED UNSCORED STATE"},
+                        {"op": "set_instructions", "path": "solver", "text": poison},
                         {"op": "wrap_best_of_n", "path": "solver", "N": 2},
                     ]
                 )
             ]
         )
-        optimizer = optim.FlexIR(reflection, exploding_metric, iterations=1, reward=capital_reward)
-        dspy.configure(lm=dspy.DummyLM(task_pilot))
+        optimizer = optim.FlexIR(reflection, exact_answer, iterations=1, reward=capital_reward)
+        dspy.configure(lm=dspy.DummyLM(exploding_task))
 
-        with pytest.raises(RuntimeError, match="metric exploded"):
+        with pytest.raises(RuntimeError, match="engine exploded"):
             optimizer.compile(program, trainset=devset_of("France"))
 
         assert program.solver is original_solver  # the wrap is unwound
