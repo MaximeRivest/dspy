@@ -1,7 +1,7 @@
 """ReActV2: the v2 agent shape — history events, submit, termination_reason.
 
-The v2 loop differs from ReAct in its channels, and this rebuild keeps
-that shape inside the v0.3 subset:
+The v2 loop differs from ReAct in its channels, authored as PLAIN
+readable forwards (node-set v0.4, the inputs-bag envelope, D-041):
 
 - each turn the step predictor sees the HISTORY (a plain list of event
   dicts: thought, tool calls, results) instead of a flat trajectory;
@@ -14,11 +14,16 @@ that shape inside the v0.3 subset:
   record — engine records carry declared outputs only (PIR-013), so the
   v2 channels are contract, not exhaust.
 
-The forward is BUILT with the typed node constructors; the native twin
-is the printer's rendering of the same tree (linecache-registered, bound
-on the instance). A toolless ReActV2 is legal (pure submit agent): its
-tree swaps the dispatch arm for an in-forward answer, since an empty
-tools table cannot be declared.
+The forward is signature-polymorphic: `def forward(self, **inputs)` splats
+the module's own input record into the step predictor (`**inputs`, the
+v0.4 record envelope), and the turn cap is a baked literal
+(`range`-free `while turn < self.max_iters`, `max_iters` in `ir_literals`).
+
+A toolless ReActV2 is legal (a pure submit agent). It cannot declare an
+empty tools table, so it reads a SECOND plain forward (`_forward_toolless`)
+that answers any non-submit call in-forward instead of dispatching. Both
+forwards are authored Python the compiler reads directly, and the one
+`__init__` picks binds on the instance.
 
 Deliberate trims from the legacy experimental ReActV2 (noted in
 BUILD-STATE): no `dspy.History`/`ToolCalls` typed channels (plain
@@ -28,34 +33,10 @@ and no forced-submit second pass.
 
 from __future__ import annotations
 
+from dspy.core.errors import AdapterParseError, ToolError
 from dspy.modules._generate import ToolTable, build_dispatch_tool, normalize_tools
 from dspy.modules.module import Module
 from dspy.modules.predict import Predict
-from dspy.programir.build import (
-    Assign,
-    Attr,
-    BinOp,
-    Break,
-    Builtin,
-    CallPredict,
-    CallToolDynamic,
-    Compare,
-    Const,
-    Dict,
-    Do,
-    Except,
-    For,
-    Forward,
-    If,
-    Index,
-    List,
-    Method,
-    Return,
-    Try,
-    Var,
-    While,
-)
-from dspy.programir.printer import bind_forward
 from dspy.signatures.field import InputField, OutputField
 from dspy.signatures.signature import ensure_signature, make_signature
 
@@ -73,7 +54,7 @@ class ReActV2(Module):
         tools: A list of plain named functions or `dspy.Tool` values (the
             same declared-leaf rules as `ReAct`). May be empty — a pure
             submit agent is legal in v2.
-        max_iters: The turn cap, baked into the built forward as a
+        max_iters: The turn cap, baked into the compiled forward as a
             literal (named in `ir_literals` so edits recompile).
 
     The prediction carries the signature's outputs plus the v2 channels
@@ -81,11 +62,15 @@ class ReActV2(Module):
     `"empty_tool_calls"`, `"parse_error"`, or `"max_iters"`).
     """
 
-    ir_literals = ("max_iters",)
+    #: max_iters bakes as the turn cap; output_fields bakes as the list of
+    #: declared output-field names the forward iterates to build the final
+    #: record (the output side; the v0.4 record envelope covers inputs).
+    ir_literals = ("max_iters", "output_fields")
 
     def __init__(self, signature, tools=(), max_iters: int = 20):
         self.signature = signature = ensure_signature(signature)
         self.max_iters = max_iters
+        self.output_fields = list(signature.output_fields)
 
         collisions = sorted(set(signature.fields) & set(_RESERVED_FIELDS))
         if collisions:
@@ -99,91 +84,91 @@ class ReActV2(Module):
 
         self.react = Predict(self._react_signature(specs))
 
-        self.build_forward_ir()
+        # A toolless agent has no tools table to declare, so it cannot
+        # dispatch; it reads the second plain forward, which answers any
+        # non-submit call in-forward. The one __init__ picks; both are
+        # authored Python the compiler reads.
+        if not specs:
+            self.forward = self._forward_toolless
 
-    def build_forward_ir(self):
-        """Build the forward tree (current literals) and refresh the twin."""
-        tree = self._forward_tree()
-        bind_forward(self, tree, tag="react_v2")
-        return tree
+    def forward(self, **inputs):
+        history = []
+        outputs = {}
+        termination_reason = "max_iters"
+        turn = 0
+        while turn < self.max_iters:
+            turn = turn + 1
+            try:
+                pred = self.react(**inputs, history=history)
+            except AdapterParseError:  # the engine's typed error table
+                termination_reason = "parse_error"
+                break
+            calls = pred.tool_calls
+            if len(calls) == 0:
+                termination_reason = "empty_tool_calls"
+                break
+            results = []
+            for call in calls:
+                name = call["name"]
+                args = call["args"]
+                if name == "submit":
+                    outputs = args
+                    termination_reason = "submit"
+                    results.append({"name": "submit", "value": "submitted"})
+                else:
+                    try:
+                        value = self.tools[name](args=args)
+                    except ToolError:  # the engine's typed error table
+                        value = "The tool call failed. Use another tool, or submit."
+                    results.append({"name": name, "value": value})
+            event = {"thought": pred.next_thought, "tool_calls": calls, "results": results}
+            history.append(event)
+            if termination_reason == "submit":
+                break
+        final = {}
+        for field in self.output_fields:
+            final[field] = outputs.get(field, "")
+        final["history"] = history
+        final["termination_reason"] = termination_reason
+        return final
 
-    def _forward_tree(self):
-        signature = self.signature
-        inputs = list(signature.input_fields)
-        step_kwargs = {name: Var(name) for name in inputs}
-        call_name = Index(Var("call"), Const("name"))
-        call_args = Index(Var("call"), Const("args"))
-
-        if self._tool_specs:
-            dispatch = [
-                Try(
-                    [Assign("value", CallToolDynamic(call_name, args=call_args))],
-                    [
-                        Except(
-                            "ToolError", [Assign("value", Const("The tool call failed. Use another tool, or submit."))]
-                        )
-                    ],
-                )
-            ]
-        else:
-            # A pure submit agent declares no tools table; any non-submit
-            # call is answered in-forward.
-            dispatch = [Assign("value", Const("Unknown tool. The only valid call is submit."))]
-
-        per_call = If(
-            Compare("eq", call_name, Const("submit")),
-            [
-                Assign("outputs", call_args),
-                Assign("termination_reason", Const("submit")),
-                Do(Method(Var("results"), "append", Dict({"name": "submit", "value": "submitted"}))),
-            ],
-            [
-                *dispatch,
-                Do(Method(Var("results"), "append", Dict({"name": call_name, "value": Var("value")}))),
-            ],
-        )
-        turn_body = [
-            Assign("turn", BinOp("add", Var("turn"), Const(1))),
-            Try(
-                [Assign("pred", CallPredict("react", **step_kwargs, history=Var("history")))],
-                [Except("AdapterParseError", [Assign("termination_reason", Const("parse_error")), Break()])],
-            ),
-            Assign("calls", Attr("pred", "tool_calls")),
-            If(
-                Compare("eq", Builtin("len", Var("calls")), Const(0)),
-                [Assign("termination_reason", Const("empty_tool_calls")), Break()],
-            ),
-            Assign("results", List()),
-            For("call", [per_call], iter=Var("calls")),
-            Assign(
-                "event",
-                Dict({"thought": Attr("pred", "next_thought"), "tool_calls": Var("calls"), "results": Var("results")}),
-            ),
-            Do(Method(Var("history"), "append", Var("event"))),
-            If(Compare("eq", Var("termination_reason"), Const("submit")), [Break()]),
-        ]
-        final = Dict(
-            [
-                *[
-                    (Const(name), Method(Var("outputs"), "get", Const(name), Const("")))
-                    for name in signature.output_fields
-                ],
-                (Const("history"), Var("history")),
-                (Const("termination_reason"), Var("termination_reason")),
-            ]
-        )
-        return Forward(
-            inputs,
-            [
-                Assign("history", List()),
-                Assign("outputs", Dict()),
-                Assign("termination_reason", Const("max_iters")),
-                Assign("turn", Const(0)),
-                While(Compare("lt", Var("turn"), Const(self.max_iters)), turn_body),
-                Assign("final", final),
-                Return(Var("final")),
-            ],
-        )
+    def _forward_toolless(self, **inputs):
+        history = []
+        outputs = {}
+        termination_reason = "max_iters"
+        turn = 0
+        while turn < self.max_iters:
+            turn = turn + 1
+            try:
+                pred = self.react(**inputs, history=history)
+            except AdapterParseError:  # the engine's typed error table
+                termination_reason = "parse_error"
+                break
+            calls = pred.tool_calls
+            if len(calls) == 0:
+                termination_reason = "empty_tool_calls"
+                break
+            results = []
+            for call in calls:
+                name = call["name"]
+                args = call["args"]
+                if name == "submit":
+                    outputs = args
+                    termination_reason = "submit"
+                    results.append({"name": "submit", "value": "submitted"})
+                else:
+                    value = "Unknown tool. The only valid call is submit."
+                    results.append({"name": name, "value": value})
+            event = {"thought": pred.next_thought, "tool_calls": calls, "results": results}
+            history.append(event)
+            if termination_reason == "submit":
+                break
+        final = {}
+        for field in self.output_fields:
+            final[field] = outputs.get(field, "")
+        final["history"] = history
+        final["termination_reason"] = termination_reason
+        return final
 
     def _react_signature(self, specs):
         signature = self.signature

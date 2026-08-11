@@ -1,15 +1,19 @@
-"""RLM: the mini recursive-language-model loop, grown honest.
+"""RLM: the mini recursive-language-model loop, authored plain.
 
 The model writes Python; a DECLARED interpreter leaf runs it; the loop
 repeats until a round produces a value (or the literal cap breaks it);
 the extract predictor finishes. The corpus MiniRLM's architecture, made
-a usable module:
+a usable module and written as an ordinary readable forward (node-set
+v0.4, the inputs-bag envelope, D-041):
 
+- the forward is signature-polymorphic: `def forward(self, **inputs)`
+  splats the module's own input record into the gen and extract
+  predictors (`**inputs`, the v0.4 record envelope);
 - the interpreter is a declared leaf (a D-033 structural profile in
   component 7); the default runtime is `InProcessInterpreter` — exec,
   empty builtins, `result`-variable convention;
-- the loop is a While with a LITERAL cap: `max_iters` bakes in when the
-  forward tree is built (named in `ir_literals` so edits recompile);
+- the loop is a While with a LITERAL cap: `max_iters` bakes in at compile
+  time (named in `ir_literals` so edits recompile);
 - a failed round is the typed `InterpreterError`, caught in-forward and
   turned into a transcript note the next round can read;
 - the transcript is a plain string grown by concatenation — every round
@@ -17,35 +21,16 @@ a usable module:
 
 This is deliberately NOT the 817-line legacy RLM (sub-LM tools, batched
 queries, sandbox marshaling); it is the smallest RLM that earns its
-name. The forward is BUILT with the typed node constructors; the native
-twin is the printer's rendering of the same tree.
+name. The forward below IS the artifact's forward, and the equivalence
+test's control arm runs this exact Python.
 """
 
 from __future__ import annotations
 
-from functools import reduce
-
+from dspy.core.errors import InterpreterError
 from dspy.modules.module import Module
 from dspy.modules.predict import Predict
-from dspy.programir.build import (
-    Assign,
-    Attr,
-    BinOp,
-    Break,
-    CallInterpreter,
-    CallPredict,
-    Compare,
-    Const,
-    Except,
-    Forward,
-    If,
-    Return,
-    Try,
-    Var,
-    While,
-)
 from dspy.programir.interpreters import InProcessInterpreter
-from dspy.programir.printer import bind_forward
 from dspy.signatures.field import InputField, OutputField
 from dspy.signatures.signature import ensure_signature, make_signature
 
@@ -60,7 +45,7 @@ class RLM(Module):
     Args:
         signature: The task's signature (`"question -> answer"` or a
             `dspy.Signature`).
-        max_iters: The round cap, baked into the built forward as a
+        max_iters: The round cap, baked into the compiled forward as a
             literal (named in `ir_literals` so edits recompile).
         interpreter: The interpreter runtime — any object with a D-033
             `programir_profile()` and a `__call__(code=...)` contract.
@@ -92,51 +77,27 @@ class RLM(Module):
         self.gen = Predict(self._gen_signature())
         self.extract = Predict(self._extract_signature())
 
-        self.build_forward_ir()
-
-    def build_forward_ir(self):
-        """Build the forward tree (current literals) and refresh the twin."""
-        tree = self._forward_tree()
-        bind_forward(self, tree, tag="rlm")
-        return tree
-
-    def _forward_tree(self):
-        inputs = list(self.signature.input_fields)
-        step_kwargs = {name: Var(name) for name in inputs}
-
-        def concat(*parts):
-            return reduce(lambda left, right: BinOp("add", left, right), parts)
-
-        note = (Var("transcript"), Const("\n>>> "), Attr("step", "code"))
-        round_body = [
-            If(Compare("eq", Var("rounds"), Const(self.max_iters)), [Break()]),
-            Assign("rounds", BinOp("add", Var("rounds"), Const(1))),
-            Assign("step", CallPredict("gen", **step_kwargs, transcript=Var("transcript"))),
-            Try(
-                [Assign("output", CallInterpreter("interp", code=Attr("step", "code")))],
-                [Except("InterpreterError", [Assign("output", Const(""))])],
-            ),
-            If(
-                Compare("eq", Var("output"), Const("")),
-                [Assign("transcript", concat(*note, Const("\n(error: the code failed; fix it and try again)")))],
-                [Assign("transcript", concat(*note, Const("\n"), Var("output")))],
-            ),
-            Assign("result", Var("output")),
-        ]
-        return Forward(
-            inputs,
-            [
-                Assign("result", Const("")),
-                Assign("transcript", Const("")),
-                Assign("rounds", Const(0)),
-                While(Compare("eq", Var("result"), Const("")), round_body),
-                Assign(
-                    "final",
-                    CallPredict("extract", **step_kwargs, transcript=Var("transcript"), result=Var("result")),
-                ),
-                Return(Var("final")),
-            ],
-        )
+    def forward(self, **inputs):
+        result = ""
+        transcript = ""
+        rounds = 0
+        while result == "":
+            if rounds == self.max_iters:
+                break
+            rounds = rounds + 1
+            step = self.gen(**inputs, transcript=transcript)
+            try:
+                output = self.interp(code=step.code)
+            except InterpreterError:  # the engine's typed error table
+                output = ""
+            note = transcript + "\n>>> " + step.code
+            if output == "":
+                transcript = note + "\n(error: the code failed; fix it and try again)"
+            else:
+                transcript = note + "\n" + output
+            result = output
+        final = self.extract(**inputs, transcript=transcript, result=result)
+        return final
 
     def _gen_signature(self):
         signature = self.signature

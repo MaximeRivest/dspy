@@ -177,12 +177,20 @@ class _DSPyCompiler:
                 leaves[child_name] = LeafRef("interpreter", interpreter_name)
                 uses_interpreter = True
 
-        # IR-first door: a module that BUILDS its forward (build.py
-        # constructors) hands the tree over directly — no source parse.
+        # IR-first door (MACROS ONLY): a module that BUILDS its forward
+        # programmatically (build.py constructors) hands the tree over
+        # directly — no source parse. This is the macro substrate: BestOfN
+        # and Refine wrap an ARBITRARY inner module and inject a loop, so
+        # their forward shape is assembled at construction, not authored.
         # `build_forward_ir` bakes the current declared-literal values and
-        # refreshes the printed native twin; the shared admission runs
-        # here with the declared leaf table, exactly as compile_forward
-        # runs it on parsed source.
+        # refreshes the printed native twin; the shared admission runs here
+        # with the declared leaf table.
+        #
+        # The signature-polymorphic modules (ReAct, ReActV2, RLM) went the
+        # OTHER way in A9: they are PLAIN authored forwards (the v0.4
+        # inputs-bag envelope, D-041) the compiler reads from source below,
+        # threading the module's declared input signature so the record
+        # envelope resolves.
         builder = getattr(module, "build_forward_ir", None)
         if callable(builder):
             self.forwards[path] = admit_forward(builder(), leaves)
@@ -428,13 +436,28 @@ def _declared_literals(module: Module) -> dict[str, Any]:
                 f"{type(module).__name__}.ir_literals names {name!r}, but the instance has no such attribute"
             )
         value = getattr(module, name)
-        if not (value is None or isinstance(value, (str, int, float, bool))):
+        if not _is_bakeable(value):
             raise ValueError(
                 f"{type(module).__name__}.{name} is declared in ir_literals and must be a JSON scalar "
-                f"to bake into the forward, got {type(value).__name__}"
+                f"or a list of JSON scalars to bake into the forward, got {type(value).__name__}"
             )
         literals[name] = value
     return literals
+
+
+def _is_bakeable(value: Any) -> bool:
+    """A declared literal bakes when it is a JSON scalar or scalar list.
+
+    Scalars bake to `Const` (a loop cap); a list of scalars bakes to a
+    `List` of `Const`s (the signature-polymorphic OUTPUT field names a
+    v2-style forward iterates — the output side the v0.4 record envelope,
+    an input mechanism, does not reach). Nesting is not admitted.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(item is None or isinstance(item, (str, int, float, bool)) for item in value)
+    return False
 
 
 def _declared_signature(module: Module) -> list[str] | None:

@@ -12,9 +12,14 @@ Two jobs live here:
   source verbatim, so the tool leaf the artifact carries is exactly what
   runs — no closures, no registry, no reach-back.
 
-The old forward string templates are gone: signature-polymorphic modules
-now BUILD their forward trees (`dspy.programir.build`) and derive the
-native twin from the printer (`dspy.programir.printer.bind_forward`).
+The signature-polymorphic modules (ReAct, ReActV2, RLM) are PLAIN
+authored forwards now (the v0.4 inputs-bag envelope, D-041) — the
+compiler reads their source directly, no tree builder. `load_generated`
+survives for the tool/reward wrappers and the macro substrate: BestOfN
+and Refine still BUILD their forward trees (`dspy.programir.build`) and
+derive the native twin from the printer (`bind_forward`), because a
+macro wraps an ARBITRARY inner module and injects a loop — genuine
+programmatic tree construction the inputs-bag does not obsolete.
 """
 
 from __future__ import annotations

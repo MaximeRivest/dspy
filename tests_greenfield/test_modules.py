@@ -160,10 +160,17 @@ class TestReAct:
 
         manifest = react.to_manifest()
         forward = manifest["components"]["5_forward"]["self"]
-        assert forward["args"] == ["question"]
+        # The v0.4 record envelope (D-041): the forward is
+        # signature-polymorphic — one record binding, not plain names.
+        assert forward["args"] == [{"name": "inputs", "record": "self"}]
         loop = forward["body"][1]
         assert loop["node"] == "For"
         assert loop["range"] == 5  # the cap is a LITERAL in the artifact
+        # The step and extract calls splat the input record (D-041).
+        step_call = loop["body"][0]["body"][0]["value"]
+        assert step_call["leaf"]["ref"] == "react"
+        assert step_call["splat"] == "inputs"
+        assert list(step_call["kwargs"]) == ["trajectory"]
 
         assert set(manifest["components"]["6_tools"]) == {"lookup"}
         assert manifest["components"]["6_tools"]["lookup"]["language"] == "python"
@@ -464,7 +471,8 @@ class TestRLM:
         assert manifest["components"]["1_module_tree"]["uses_interpreter"] is True
 
         forward = manifest["components"]["5_forward"]["self"]
-        assert forward["args"] == ["question"]
+        # The v0.4 record envelope (D-041): signature-polymorphic forward.
+        assert forward["args"] == [{"name": "inputs", "record": "self"}]
         assert any(node["node"] == "While" for node in forward["body"])
 
     def test_rlm_engine_run_with_interpreter_rounds(self):
@@ -551,10 +559,28 @@ class TestDispatchMachinery:
         with pytest.raises(ValueError, match="must be a Python identifier"):
             dspy.ReActV2("question -> answer", tools=[dspy.Tool(lookup, name="look up")])
 
-    def test_module_forwards_are_built_ir_not_parsed_source(self):
-        # The compiler takes the BUILT tree straight through the shared
-        # admission; the manifest's forward is byte-identical to it.
+    def test_module_forwards_are_authored_python_not_generated(self):
+        # A9: the three signature-polymorphic modules are PLAIN forwards
+        # now — real authored Python the compiler reads (the v0.4
+        # inputs-bag envelope, D-041), not a built tree with a printed
+        # native twin. `forward_native` is the AUTHOR'S own method, so the
+        # equivalence oracle compares engine-vs-authored-Python — two
+        # genuine implementations.
+        import inspect
+
         dspy.configure(lm=dspy.DummyLM(["unused"]))
-        react = dspy.ReAct("question -> answer", tools=[lookup], max_iters=5)
-        manifest_forward = react.to_manifest()["components"]["5_forward"]["self"]
-        assert json.dumps(manifest_forward) == json.dumps(react._forward_tree())
+        for module in (
+            dspy.ReAct("question -> answer", tools=[lookup], max_iters=5),
+            dspy.ReActV2("question -> answer", tools=[lookup], max_iters=4),
+            dspy.RLM("question -> answer", max_iters=3),
+        ):
+            # No generated-forward machinery survives on these modules.
+            assert not hasattr(module, "_forward_tree")
+            assert not hasattr(module, "build_forward_ir")
+            # forward is the authored source method (readable in the file).
+            source = inspect.getsource(module.forward)
+            assert "def forward(self, **inputs):" in source
+            # The engine reads THIS source; the record envelope is what
+            # makes it signature-polymorphic.
+            forward = module.to_manifest()["components"]["5_forward"]["self"]
+            assert forward["args"] == [{"name": "inputs", "record": "self"}]

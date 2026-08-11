@@ -24,6 +24,13 @@ from typing import Any
 __all__ = ["Module"]
 
 
+def _hashable(value: Any) -> Any:
+    """Coerce a declared-literal value into a hashable fingerprint part."""
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return value
+
+
 class Module:
     """Base class for IR-native dspy programs.
 
@@ -110,7 +117,10 @@ class Module:
         for path, module in self._named_modules():
             names = getattr(type(module), "ir_literals", ())
             if names:
-                parts.append((path, tuple((name, getattr(module, name, None)) for name in names)))
+                # A declared literal may be a scalar or a scalar list;
+                # coerce list values to tuples so the fingerprint stays
+                # hashable (edits to a baked output-name list recompile).
+                parts.append((path, tuple((name, _hashable(getattr(module, name, None))) for name in names)))
         return tuple(parts)
 
     def _named_modules(self) -> list[tuple[str, Module]]:

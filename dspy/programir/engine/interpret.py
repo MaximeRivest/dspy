@@ -90,6 +90,33 @@ class _ReturnSignal(Exception):  # noqa: N818 - control-flow signal, not an erro
         self.value = value
 
 
+class _ReadOnlyRecord(dict):
+    """The v0.4 input record: reads like a dict, refuses mutation (D-041).
+
+    The record parameter is shallowly immutable (SEM-5 as amended v0.4):
+    reads (`Attr`, `Index`, `get`/`keys`/`values`/`items`, the `**splat`
+    merge) all work, but any mutation reached through an alias
+    (`x = inputs; x[k] = v`, `inputs.pop(...)`, `inputs.update(...)`) —
+    which no standalone compile can see — raises `InterpreterTypeError` at
+    runtime. Values the record holds follow the ordinary aliasing rules;
+    only the record's own top level is frozen.
+    """
+
+    def _frozen(self, *_args: Any, **_kwargs: Any):
+        raise InterpreterTypeError(
+            "the input record is read-only (D-041; SEM-5 as amended v0.4) — a mutation reached "
+            "through an alias is refused at runtime"
+        )
+
+    __setitem__ = _frozen
+    __delitem__ = _frozen
+    pop = _frozen
+    popitem = _frozen
+    clear = _frozen
+    update = _frozen
+    setdefault = _frozen
+
+
 def _is_number(v: Any) -> bool:
     """True for int/float, excluding bool (a distinct JSON type here)."""
     return isinstance(v, (int, float)) and type(v) is not bool
@@ -531,7 +558,23 @@ def run_forward(
     top = spec.get("body")
     if not isinstance(top, list):
         raise MalformedNodeError(f"forward[{key}] has no statement list")
-    env = dict(inputs)
+
+    # The v0.4 record envelope (D-041): when `args` is one record binding
+    # ({"name", "record": "self"}), bind that ONE name to the whole input
+    # record — the module's own inputs — instead of spreading them as
+    # individual names. A leaf call's `splat` then re-expands the record's
+    # keys. The record is read-only (compile refuses direct writes,
+    # PIR-E-NODE-004; the shallow-immutability guard below catches alias
+    # writes at runtime, SEM-5 as amended v0.4).
+    args_spec = spec.get("args", [])
+    record_name: str | None = None
+    if len(args_spec) == 1 and isinstance(args_spec[0], dict) and args_spec[0].get("record") == "self":
+        record_name = args_spec[0]["name"]
+        if not isinstance(record_name, str) or not record_name:
+            raise MalformedNodeError("record envelope binding needs a string name (D-041)")
+        env = {record_name: _ReadOnlyRecord(inputs)}
+    else:
+        env = dict(inputs)
 
     def require_bool(v: Any, where: str) -> bool:
         if type(v) is not bool:
@@ -725,7 +768,23 @@ def run_forward(
         kwargs_spec = e.get("kwargs", {})
         if not isinstance(kwargs_spec, dict):
             raise MalformedNodeError("Call kwargs must be an object")
-        kw = {k: ev(v) for k, v in kwargs_spec.items()}
+        # The v0.4 record-splat (D-041): the record's keys merge in FIRST
+        # (declared field order), then the explicit kwargs (authored order).
+        # A collision is refused at compile (PIR-E-NODE-003), so no
+        # last-writer ambiguity survives to here.
+        kw: dict[str, Any] = {}
+        if "splat" in e:
+            splat_name = e["splat"]
+            if not isinstance(splat_name, str) or splat_name not in env:
+                raise MalformedNodeError(f"Call splat {splat_name!r} names no bound record (D-041)")
+            record = env[splat_name]
+            if not isinstance(record, dict):
+                raise InterpreterTypeError(
+                    f"Call splat {splat_name!r} is not a record, got {type(record).__name__} (D-041)"
+                )
+            kw.update(record)
+        for k, v in kwargs_spec.items():
+            kw[k] = ev(v)
         if kind in ("predict", "module"):
             ref = leaf.get("ref")
             if not isinstance(ref, str) or not ref:

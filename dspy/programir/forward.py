@@ -864,8 +864,12 @@ class _Compiler:
             if node.value.id == "self":
                 if node.attr in self.literals:
                     # The declared-literal door: the instance value is baked
-                    # into the artifact as a constant at compile time.
-                    return {"node": "Const", "value": self.literals[node.attr]}
+                    # into the artifact at compile time — a scalar as a
+                    # Const, a scalar list as a List of Consts (the latter
+                    # is the signature-polymorphic output-name list a
+                    # v2-style forward iterates; the record envelope covers
+                    # inputs, this covers the output side).
+                    return self._bake_literal(self.literals[node.attr])
                 self.refuse(
                     node,
                     f"self.{node.attr} reads module state — the zero-reach-back rule; "
@@ -1543,6 +1547,16 @@ class _Compiler:
         return {"node": "Raise", "exc": call.func.id, "message": value}
 
     # -- helpers ----------------------------------------------------------
+
+    def _bake_literal(self, value: Any) -> dict[str, Any]:
+        """Bake a declared literal: a scalar as Const, a scalar list as List.
+
+        `_declared_literals` (the frontend) already validated the value is
+        a JSON scalar or a list of JSON scalars; this renders the node.
+        """
+        if isinstance(value, (list, tuple)):
+            return {"node": "List", "items": [{"node": "Const", "value": item} for item in value]}
+        return {"node": "Const", "value": value}
 
     def _range_literal(self, node: ast.expr) -> int | None:
         """Return the literal count for `range(<literal>)`, else None.

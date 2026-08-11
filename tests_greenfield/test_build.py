@@ -15,7 +15,6 @@ Three claims, tested hard:
    the two frontends cannot drift.
 """
 
-import inspect
 import json
 
 import pytest
@@ -328,7 +327,12 @@ class TestRoundTripLaw:
     def test_all_call_kinds(self):
         assert_roundtrip(all_calls_tree())
 
-    def test_the_three_migrated_modules(self):
+    def test_the_three_plain_forward_modules(self):
+        # A9: the three signature-polymorphic modules are PLAIN forwards
+        # (the v0.4 record envelope, D-041) — their COMPILED forward, splat
+        # and all, obeys the round-trip law. The compiled tree comes from
+        # the manifest now (no _forward_tree builder).
+        dspy.configure(lm=dspy.DummyLM(["unused"]))
         modules = [
             dspy.ReAct("question -> answer", tools=[lookup], max_iters=5),
             dspy.ReActV2("question -> answer", tools=[lookup], max_iters=4),
@@ -336,7 +340,10 @@ class TestRoundTripLaw:
             dspy.RLM("question -> answer", max_iters=3),
         ]
         for module in modules:
-            assert_roundtrip(module.build_forward_ir())
+            forward = module.to_manifest()["components"]["5_forward"]["self"]
+            # Each carries the record envelope; the round trip reproduces it.
+            assert forward["args"] == [{"name": "inputs", "record": "self"}]
+            assert_roundtrip(forward)
 
     def test_every_corpus_forward(self):
         # The suite's own programs: branchy composite, desugar-heavy
@@ -400,18 +407,36 @@ class TestRoundTripLaw:
         parsed = compile_forward(load_generated(source, tag="negzero", name="forward"), {})
         assert repr(parsed["body"][0]["message"]) == "0.0"
 
-    def test_printed_source_is_the_native_twin(self):
-        # The instance-bound forward IS the printer's rendering of the
-        # built tree: one source, two arms.
-        react = dspy.ReAct("question -> answer", tools=[lookup], max_iters=5)
-        assert inspect.getsource(react.forward.__func__) == printer.render_forward(react._forward_tree())
-        assert "for idx in range(5):" in inspect.getsource(react.forward.__func__)
+    def test_record_splat_round_trips(self):
+        # THE SPLAT LAW: the v0.4 record envelope + `**inputs` splat prints
+        # and reparses to the SAME tree (D-041). A synthetic tree drives
+        # both call forms — static leaf splat and dynamic-tool splat — plus
+        # the splat-first-then-kwargs merge order.
+        b = build
+        tree = b.Forward(
+            [],
+            record="inputs",
+            body=[
+                b.Assign("pred", b.CallPredict("step", splat="inputs", trajectory=b.Var("t"))),
+                b.Assign("more", b.CallModule("inner", splat="inputs")),
+                b.Assign("obs", b.CallToolDynamic(b.Attr("pred", "tool"), splat="inputs", args=b.Var("a"))),
+                b.Return(b.Var("pred")),
+            ],
+        )
+        assert tree["args"] == [{"name": "inputs", "record": "self"}]
+        assert tree["body"][0]["value"]["splat"] == "inputs"
+        assert_roundtrip(tree)
 
-    def test_native_twin_refreshes_with_the_literal(self):
+    def test_literal_cap_bakes_into_the_compiled_forward(self):
+        # The literal loop cap survives the plain-forward move: max_iters
+        # bakes as the For range in the compiled artifact, and an edit
+        # recompiles it (ir_literals; the mechanism is orthogonal to the
+        # record envelope, D-041).
+        dspy.configure(lm=dspy.DummyLM(["unused"]))
         react = dspy.ReAct("question -> answer", tools=[lookup], max_iters=5)
+        assert react.to_manifest()["components"]["5_forward"]["self"]["body"][1]["range"] == 5
         react.max_iters = 2
-        react.build_forward_ir()
-        assert "for idx in range(2):" in inspect.getsource(react.forward.__func__)
+        assert react.to_manifest()["components"]["5_forward"]["self"]["body"][1]["range"] == 2
 
 
 # ---------------------------------------------------------------------------
