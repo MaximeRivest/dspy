@@ -392,6 +392,39 @@ class TestRoundTripLaw:
                 checked += 1
         assert checked == len(programs)
 
+    def test_v03_forward_compiles_byte_identical(self):
+        # The v0.4 inputs-bag admission (D-041) must not perturb v0.3
+        # lowering: a plain-named forward compiles to the SAME tree — plain
+        # string args, no record binding, no splat — that it did at v0.3.
+        # Compiled here against the CURRENT (v0.4) compiler and pinned.
+        def forward(self, question, hint):
+            answer = self.solve(question=question, hint=hint)
+            return answer
+
+        leaves = {"solve": LeafRef("predict", "solve")}
+        tree = compile_forward(forward, leaves)
+        assert tree == {
+            "language": "restricted-python-ast",
+            "args": ["question", "hint"],  # plain strings — NOT a record binding
+            "body": [
+                {
+                    "node": "Assign",
+                    "target": "answer",
+                    "value": {
+                        "node": "Call",
+                        "leaf": {"kind": "predict", "ref": "solve"},
+                        "kwargs": {
+                            "question": {"node": "Var", "name": "question"},
+                            "hint": {"node": "Var", "name": "hint"},
+                        },
+                    },
+                },
+                {"node": "Return", "value": {"node": "Var", "name": "answer"}},
+            ],
+        }
+        # No splat field anywhere in a v0.3 forward.
+        assert "splat" not in json.dumps(tree)
+
     def test_raise_with_negative_numeric_message(self):
         # `raise LMError(-3)` prints from an admitted tree, and `-3` parses
         # as USub(Constant(3)); the parser must fold it back or the law

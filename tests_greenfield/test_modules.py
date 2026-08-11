@@ -443,6 +443,28 @@ class TestReActV2:
         assert_identical_calls(engine_lm, native_lm)
         assert engine_prediction.toDict() == native_record
 
+    def test_v2_save_load_run(self, tmp_path):
+        # The v0.4 record forward plus the baked output-name list survive
+        # serialization: the saved forward carries the record binding, and
+        # a reload replays byte-identically.
+        script = [
+            v2_step("Look it up.", [{"name": "lookup", "args": {"country": "france"}}]),
+            v2_step("Submit.", [{"name": "submit", "args": {"answer": "Paris"}}]),
+        ]
+        dspy.configure(lm=dspy.DummyLM(script))
+        agent = dspy.ReActV2("question -> answer", tools=[lookup], max_iters=4)
+        direct = agent(question="capital?")
+
+        target = tmp_path / "artifact"
+        agent.save(target)
+        manifest = json.loads((target / "manifest.json").read_text())
+        assert manifest["components"]["5_forward"]["self"]["args"] == [{"name": "inputs", "record": "self"}]
+
+        loaded = dspy.load(target, bindings={"lm": {"dummy": dspy.DummyLM(script)}})
+        replayed = loaded(question="capital?")
+        assert replayed.toDict() == direct.toDict()
+        assert replayed.answer == "Paris"
+
 
 # ---------------------------------------------------------------------------
 # RLM
@@ -527,6 +549,34 @@ class TestRLM:
             interpreter(code="x = 1")
         with pytest.raises(InterpreterError, match="code execution failed"):
             interpreter(code="result = open('x')")  # no builtins in the namespace
+
+    def test_rlm_save_load_run(self, tmp_path):
+        # The v0.4 record forward survives serialization: the saved
+        # artifact's forward carries the record binding, and a reloaded
+        # program replays byte-identically (declared interpreter leaf and
+        # all).
+        dspy.configure(lm=dspy.DummyLM(rlm_script("42")))
+        rlm = dspy.RLM("question -> answer", max_iters=3)
+        direct = rlm(question="What is 6 * 7?")
+
+        target = tmp_path / "artifact"
+        rlm.save(target)
+        import json as _json
+
+        manifest = _json.loads((target / "manifest.json").read_text())
+        assert manifest["components"]["5_forward"]["self"]["args"] == [{"name": "inputs", "record": "self"}]
+
+        # The interpreter is a structural profile (D-033): its runtime is
+        # re-bound at load, exactly as the LM is.
+        loaded = dspy.load(
+            target,
+            bindings={
+                "lm": {"dummy": dspy.DummyLM(rlm_script("42"))},
+                "interpreter": {"interp": dspy.InProcessInterpreter()},
+            },
+        )
+        replayed = loaded(question="What is 6 * 7?")
+        assert replayed.toDict() == direct.toDict()
 
 
 # ---------------------------------------------------------------------------
