@@ -144,7 +144,10 @@ class TestBestOfNStructure:
         assert manifest["components"]["6_tools"]["reward"]["source"] == "tools/reward.py"
         sidecar = best.compile_ir().sidecars["tools/reward.py"].decode("utf-8")
         assert "def table_reward(outputs) -> float:" in sidecar
-        assert '"""Declared reward leaf for BestOfN' in sidecar
+        # Owner-independent on purpose: the same user reward must yield
+        # a byte-identical wrapper under BestOfN and Refine, so nested
+        # macros sharing one reward dedupe in the tool pool.
+        assert '"""Declared reward leaf: score one attempt' in sidecar
 
     def test_without_threshold_has_no_break(self):
         dspy.configure(lm=dspy.DummyLM(["unused"]))
@@ -417,6 +420,71 @@ class TestBestOfNWrapsReAct:
         assert replayed.toDict() == direct.toDict()
         calls = replayed._trajectory["predictor_calls"]
         assert [call["predictor"] for call in calls] == ["inner.react", "inner.react", "inner.extract"]
+
+
+# ---------------------------------------------------------------------------
+# Macro tool leaves: fixed pool names, collision teaching errors
+# ---------------------------------------------------------------------------
+
+
+def reward(query: str) -> str:
+    """A user tool that happens to wear the macro's reward leaf name."""
+    return query
+
+
+def describe_attempt(text: str) -> str:
+    """A user tool that happens to wear the feedback leaf's name."""
+    return text
+
+
+class TestMacroToolLeafCollisions:
+    def test_nested_macros_on_one_reward_share_one_leaf(self):
+        # Refine(BestOfN) and BestOfN(BestOfN) on the SAME reward
+        # function dedupe into ONE pooled reward leaf and compile clean —
+        # the wrapper source carries no owner-class text.
+        dspy.configure(lm=dspy.DummyLM(["unused"]))
+        outer = dspy.Refine(
+            dspy.BestOfN(dspy.Predict("question -> answer"), 2, table_reward), 2, table_reward, threshold=1.0
+        )
+        manifest = outer.to_manifest()
+        assert list(manifest["components"]["6_tools"]) == ["reward"]
+
+        doubled = dspy.BestOfN(dspy.BestOfN(dspy.Predict("question -> answer"), 2, table_reward), 2, table_reward)
+        assert list(doubled.to_manifest()["components"]["6_tools"]) == ["reward"]
+
+    def test_nested_macros_with_different_rewards_refuse_at_construction(self):
+        inner = dspy.BestOfN(dspy.Predict("question -> answer"), 2, table_reward)
+        with pytest.raises(ValueError, match="already owns a different tool"):
+            dspy.BestOfN(inner, 2, capital_reward)
+
+    def test_inner_tool_named_reward_refuses_at_construction(self):
+        react = dspy.ReAct("question -> answer", tools=[reward], max_iters=2)
+        with pytest.raises(ValueError, match="tool leaf named 'reward'.*the inner ReAct"):
+            dspy.BestOfN(react, 2, capital_reward)
+
+    def test_collision_error_names_the_owning_submodule(self):
+        class Agent(dspy.Module):
+            def __init__(self):
+                self.react = dspy.ReAct("question -> answer", tools=[reward], max_iters=2)
+
+            def forward(self, question):
+                result = self.react(question=question)
+                return result
+
+        with pytest.raises(ValueError, match="sub-module at path 'react'"):
+            dspy.BestOfN(Agent(), 2, capital_reward)
+
+    def test_inner_describe_attempt_refuses_under_feedback_only(self):
+        # feedback=True claims the describe_attempt leaf; without
+        # feedback the macro claims no such name and the tool passes.
+        react = dspy.ReAct("question, hints -> answer", tools=[describe_attempt], max_iters=2)
+        with pytest.raises(ValueError, match="tool leaf named 'describe_attempt'"):
+            dspy.Refine(react, 2, digit_reward, threshold=1.0, feedback=True)
+
+        dspy.configure(lm=dspy.DummyLM(["unused"]))
+        plain = dspy.ReAct("question -> answer", tools=[describe_attempt], max_iters=2)
+        best = dspy.BestOfN(plain, 2, digit_reward)  # no feedback claim, no collision
+        assert set(best.to_manifest()["components"]["6_tools"]) == {"describe_attempt", "reward"}
 
 
 # ---------------------------------------------------------------------------

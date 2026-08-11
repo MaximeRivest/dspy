@@ -187,6 +187,11 @@ class BestOfN(Module):
         if feedback:
             self.describe_attempt = load_generated(_DESCRIBE_SOURCE, tag="describe-attempt", name="describe_attempt")
 
+        claimed = {"reward": extract_tool(self.reward, name="reward")}
+        if feedback:
+            claimed["describe_attempt"] = extract_tool(self.describe_attempt, name="describe_attempt")
+        _check_tool_collisions(module, claimed, owner=owner)
+
         self.build_forward_ir()
 
     def build_forward_ir(self):
@@ -257,6 +262,77 @@ class BestOfN(Module):
         return Forward(self._macro_args, body)
 
 
+def _check_tool_collisions(module, claimed, *, owner) -> None:
+    """Refuse at construction when the inner tree owns a colliding tool.
+
+    The macro's generated leaves use fixed pool names — `reward`, plus
+    `describe_attempt` under feedback. ProgramIR pools tools by NAME,
+    one function identity per name per program, so an inner tool wearing
+    one of those names with a DIFFERENT identity would refuse deep
+    inside the first compile with the pool's non-teaching identity
+    error. Refuse HERE instead, naming the owning module and the remedy.
+    An inner tool with the IDENTICAL identity — a nested macro built on
+    the same reward function — dedupes in the pool and passes.
+
+    Args:
+        module: The inner module whose tree is walked.
+        claimed: The macro's own leaves, as `{name: AuthoredLeaf}`.
+        owner: The macro class name, for the teaching error.
+    """
+    for path, tool_name, tool in _owned_tools(module):
+        macro_leaf = claimed.get(tool_name)
+        if macro_leaf is None:
+            continue
+        try:
+            inner_leaf = extract_tool(tool, name=tool_name)
+            identical = inner_leaf.entry == macro_leaf.entry and inner_leaf.source == macro_leaf.source
+        except ValueError:
+            identical = False
+        if identical:
+            continue
+        where = f"the inner {type(module).__name__}" if path == "self" else f"its sub-module at path {path!r}"
+        remedy = (
+            "pass the SAME reward function so the leaves dedupe, or rename the inner tool"
+            if tool_name == "reward"
+            else "rename the inner tool"
+        )
+        raise ValueError(
+            f"{owner} declares its own generated tool leaf named {tool_name!r}, but {where} already owns "
+            f"a different tool with that name; ProgramIR pools tools by name (one function identity per "
+            f"program), so the first compile would refuse. To wrap this module, {remedy}."
+        )
+
+
+def _owned_tools(module):
+    """Every tool leaf a module tree owns, as `(path, name, tool)` triples.
+
+    Mirrors the compiler's child classification exactly: a `Tool` or
+    plain-function attribute is a tool named by the attribute; a
+    non-empty dict of those (ReAct's dispatch table) contributes one
+    tool per key.
+    """
+    from dspy.adapters.types.tool import Tool
+
+    for path, owner_module in module._named_modules():
+        for attribute, child in owner_module.__dict__.items():
+            if not (attribute.isidentifier() and attribute.isascii()):
+                continue
+            if isinstance(child, Tool) or inspect.isfunction(child):
+                yield path, attribute, child
+            elif (
+                isinstance(child, dict)
+                and child
+                and all(
+                    isinstance(key, str)
+                    and key.isidentifier()
+                    and key.isascii()
+                    and (isinstance(value, Tool) or inspect.isfunction(value))
+                    for key, value in child.items()
+                )
+            ):
+                yield from ((path, key, value) for key, value in child.items())
+
+
 def _inner_input_names(module, *, owner) -> list[str]:
     """The inner module's input names: its signature, else its forward."""
     signature = getattr(module, "signature", None)
@@ -322,9 +398,13 @@ def _build_reward_tool(reward, *, owner):
     if not tree.body or not isinstance(tree.body[0], ast.FunctionDef):
         raise ValueError(f"{owner} reward {reward.__name__!r} must be a plain named function definition")
     inner_name = tree.body[0].name
+    # The wrapper source deliberately carries NO owner-class text: the
+    # pool dedupes tools by identity, so the SAME user reward must yield
+    # byte-identical wrappers under BestOfN and Refine alike — otherwise
+    # Refine(BestOfN(...)) on one shared reward would collide at compile.
     source = (
         "def reward(outputs: dict) -> float:\n"
-        f'    """Declared reward leaf for {owner}: score one attempt\'s outputs."""\n'
+        '    """Declared reward leaf: score one attempt\'s outputs."""\n'
         f"{textwrap.indent(original, '    ')}\n"
         "    from dspy.core.errors import ToolError\n"
         "    try:\n"
@@ -332,7 +412,7 @@ def _build_reward_tool(reward, *, owner):
         "    except ToolError:\n"
         "        raise\n"
         "    except Exception as error:\n"
-        f'        raise ToolError("Execution error in {owner} reward: " + str(error)) from error\n'
+        '        raise ToolError("Execution error in declared reward: " + str(error)) from error\n'
         "    if isinstance(result, bool) or not isinstance(result, (int, float)):\n"
         '        raise ToolError("reward must return a number, got " + type(result).__name__)\n'
         "    return float(result)\n"
