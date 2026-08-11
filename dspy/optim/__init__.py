@@ -17,6 +17,7 @@ from dspy.optim.base import (
     snapshot_state,
 )
 from dspy.optim.bootstrap import BootstrapFewShot
+from dspy.optim.flex import FlexIR
 from dspy.optim.labeled_fewshot import LabeledFewShot
 from dspy.optim.random_search import BootstrapFewShotWithRandomSearch
 
@@ -25,6 +26,7 @@ __all__ = [
     "BootstrapFewShotWithRandomSearch",
     "Checkpointer",
     "EvaluationResult",
+    "FlexIR",
     "LabeledFewShot",
     "Optimizer",
     "ProgramState",
