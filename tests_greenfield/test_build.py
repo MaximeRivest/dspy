@@ -589,6 +589,96 @@ class TestBadTreeRefusalParity:
         assert "Goto" in str(refusal)
 
 
+class TestSharedNameHygiene:
+    """Findings of the A7 adversarial review: name hygiene is ONE law.
+
+    The schema's identifier pattern admits dunders, keywords, and
+    'self'; only the builder refused them, so the two frontends drifted
+    (parse admitted `rec.__class__`) and foreign trees printed to
+    unloadable or unreparsable source. `admit_forward` now carries the
+    builder's rule over every identifier position.
+    """
+
+    def test_dunder_attr_same_refusal_on_both_frontends(self):
+        source_side = _parse_refusal("def forward(self, rec):\n    y = rec.__class__\n    return y\n")
+        tree_side = _admit_refusal(
+            _wrap({"node": "Assign", "target": "y", "value": {"node": "Attr", "obj": "rec", "attr": "__class__"}})
+        )
+        with pytest.raises(ProgramIRRefusal, match="is a dunder") as built:
+            build.Attr("rec", "__class__")
+        assert source_side.code == tree_side.code == built.value.code == "PIR-E-NODE-001"
+        assert "__class__" in str(source_side) and "is a dunder" in str(source_side)
+        assert tree_side.detail["name"] == built.value.detail["name"] == "__class__"
+
+    def test_dunder_variable_names_refuse_at_parse(self):
+        refusal = _parse_refusal("def forward(self, x):\n    __weird__ = x\n    return __weird__\n")
+        assert refusal.code == "PIR-E-NODE-001"
+        assert "is a dunder" in str(refusal)
+
+    @pytest.mark.parametrize(
+        ("statement", "offender", "problem"),
+        [
+            ({"node": "Return", "value": {"node": "Var", "name": "class"}}, "class", "Python keyword"),
+            ({"node": "Assign", "target": "pass", "value": {"node": "Const", "value": 1}}, "pass", "Python keyword"),
+            ({"node": "Return", "value": {"node": "Attr", "obj": "self", "attr": "x"}}, "self", "module receiver"),
+            ({"node": "Return", "value": {"node": "Var", "name": "__dict__"}}, "__dict__", "is a dunder"),
+            (
+                {"node": "For", "target": "in", "iter": {"node": "Var", "name": "x"}, "body": [{"node": "Pass"}]},
+                "in",
+                "Python keyword",
+            ),
+        ],
+    )
+    def test_schema_legal_hostile_names_refuse_at_admission(self, statement, offender, problem):
+        # Every one of these trees passes the raw schema (the pattern
+        # matches) but would print to source that cannot load or cannot
+        # reparse; the shared admission refuses it by name.
+        refusal = _admit_refusal(_wrap(statement))
+        assert refusal.code == "PIR-E-NODE-001"
+        assert refusal.detail["name"] == offender
+        assert problem in str(refusal)
+
+    def test_keyword_forward_argument_refuses_at_admission(self):
+        tree = {
+            "language": "restricted-python-ast",
+            "args": ["class"],
+            "body": [{"node": "Return", "value": {"node": "Const", "value": 1}}],
+        }
+        refusal = _admit_refusal(tree)
+        assert "Python keyword" in str(refusal)
+        assert refusal.detail["role"] == "forward argument"
+
+    def test_hostile_leaf_ref_and_kwarg_key_refuse_at_admission(self):
+        bad_ref = _wrap(
+            {
+                "node": "Assign",
+                "target": "y",
+                "value": {"node": "Call", "leaf": {"kind": "predict", "ref": "__init__"}, "kwargs": {}},
+            }
+        )
+        assert "is a dunder" in str(_admit_refusal(bad_ref))
+        bad_key = _wrap(
+            {
+                "node": "Assign",
+                "target": "y",
+                "value": {
+                    "node": "Call",
+                    "leaf": {"kind": "predict", "ref": "step"},
+                    "kwargs": {"__proto__": {"node": "Var", "name": "x"}},
+                },
+            }
+        )
+        assert "is a dunder" in str(_admit_refusal(bad_key))
+
+    def test_the_self_leaf_convention_stays_admitted(self):
+        # A bare Predict IS its own leaf: ref 'self' is the compiler's
+        # convention, prints as `self.self(...)`, and round-trips.
+        dspy.configure(lm=dspy.DummyLM(["unused"]))
+        tree = dspy.Predict("question -> answer").to_manifest()["components"]["5_forward"]["self"]
+        assert tree["body"][0]["value"]["leaf"]["ref"] == "self"
+        assert_roundtrip(tree)
+
+
 # ---------------------------------------------------------------------------
 # The printer refuses shapes no source lowers to
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import ast
 import inspect
 import textwrap
 from dataclasses import dataclass
+from keyword import iskeyword
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -152,10 +153,14 @@ def admit_forward(
     (known node kinds, closed builtin/method tables, shapes, the
     For-range literal rule) via `contract_validate`, the serde-profile
     arity rule the schema cannot express (json_dumps/json_parse take
-    exactly one argument), and — when `leaves` is given — resolution of
-    every static leaf ref against the declared leaf table. The parse
-    compiler calls this on its output; `build.Forward` calls it at
-    finalize; the two paths cannot drift.
+    exactly one argument), builder-grade name hygiene over every
+    identifier position (keywords, 'self', and dunders refuse — the
+    schema's identifier pattern cannot carry those rules, and a tree
+    holding one would print to source that cannot load or reparse), and
+    — when `leaves` is given — resolution of every static leaf ref
+    against the declared leaf table. The parse compiler calls this on
+    its output; `build.Forward` calls it at finalize; the two paths
+    cannot drift.
 
     Args:
         forward: The forward record (language/args/body envelope).
@@ -182,6 +187,8 @@ def admit_forward(
     refusal = contract_validate.forward_refusal(forward, declared)
     if refusal is None:
         refusal = _json_arity_refusal(forward, ())
+    if refusal is None:
+        refusal = _hygiene_refusal(forward)
     if refusal is not None:
         detail = {key: value for key, value in refusal.items() if key not in ("code", "component", "message", "detail")}
         detail.update(refusal.get("detail", {}))
@@ -223,6 +230,121 @@ def _json_arity_refusal(value: Any, path: tuple) -> dict[str, Any] | None:
             if found is not None:
                 return found
     return None
+
+
+def name_refusal(value: Any, role: str) -> str | None:
+    """The identifier-hygiene law, one rule for every name position.
+
+    The builder's constructors check it at construction; `admit_forward`
+    checks it over whole trees (parsed and foreign alike). The schema's
+    identifier pattern admits keywords, 'self', and dunders — but a tree
+    carrying one would print to source that cannot load (keywords are
+    SyntaxErrors) or cannot reparse ('self' reads are zero-reach-back
+    refusals; dunders are Python's protocol namespace).
+
+    Args:
+        value: The candidate name.
+        role: The position being checked, named in the teaching error.
+
+    Returns:
+        The refusal message, or None when the name is admissible.
+    """
+    if not isinstance(value, str):
+        return f"{role} must be a name string, got {type(value).__name__}: {value!r}"
+    if not (value.isidentifier() and value.isascii()):
+        return (
+            f"{role} {value!r} is not a Python identifier; IR names must print back "
+            "as source, so a name the parser would refuse refuses here, at build time"
+        )
+    if iskeyword(value):
+        return f"{role} {value!r} is a Python keyword; printed source could never bind it — pick another name"
+    if value == "self":
+        return f"{role} 'self' is the module receiver, never a value name"
+    if len(value) >= 4 and value.startswith("__") and value.endswith("__"):
+        return f"{role} {value!r} is a dunder — Python's protocol namespace, not a program name"
+    return None
+
+
+#: Identifier positions per node kind: (field, role) pairs; a list-valued
+#: field checks every element.
+_NAME_ROLES = {
+    "Assign": (("target", "Assign target"),),
+    "AssignTuple": (("targets", "AssignTuple target"),),
+    "SetIndex": (("target", "SetIndex target"),),
+    "For": (("target", "For target"),),
+    "Var": (("name", "Var name"),),
+    "Attr": (("obj", "Attr obj"), ("attr", "Attr field")),
+}
+
+
+def _hygiene_refusal(forward: Any) -> dict[str, Any] | None:
+    """Builder-grade name hygiene over every identifier position.
+
+    Runs after the schema check inside `admit_forward`, so shapes are
+    already valid; this pass carries only the rules the schema pattern
+    cannot express (`name_refusal`). First offender wins, named by role
+    and location — the identical teaching error the builder gives.
+
+    One exemption: a leaf ref of 'self' is the compiler's leaf-module
+    convention (a bare Predict IS its own leaf; the printer spells it
+    `self.self(...)`, which reparses against the leaf table) — it is
+    not a value name, so the 'self' rule does not apply there.
+    """
+    from dspy.programir import contract_validate
+
+    def refusal(name: Any, role: str, path: tuple) -> dict[str, Any] | None:
+        message = name_refusal(name, role)
+        if message is None:
+            return None
+        return {
+            "code": "PIR-E-NODE-001",
+            "component": "5_forward",
+            "role": role,
+            "name": name,
+            "location": contract_validate.render_path(path),
+            "message": message,
+        }
+
+    def walk(value: Any, path: tuple) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            for field, role in _NAME_ROLES.get(value.get("node"), ()):
+                names = value.get(field)
+                if isinstance(names, list):
+                    for index, name in enumerate(names):
+                        found = refusal(name, role, path + (field, index))
+                        if found is not None:
+                            return found
+                else:
+                    found = refusal(names, role, path + (field,))
+                    if found is not None:
+                        return found
+            if value.get("node") == "Call" and isinstance(value.get("leaf"), dict):
+                leaf = value["leaf"]
+                kind = leaf.get("kind", "leaf")
+                if "ref" in leaf and leaf["ref"] != "self":
+                    found = refusal(leaf["ref"], f"{kind} leaf name", path + ("leaf", "ref"))
+                    if found is not None:
+                        return found
+                for key in value.get("kwargs", {}):
+                    found = refusal(key, f"{kind} call keyword", path + ("kwargs", key))
+                    if found is not None:
+                        return found
+            for key, sub in value.items():
+                found = walk(sub, path + (key,))
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for index, sub in enumerate(value):
+                found = walk(sub, path + (index,))
+                if found is not None:
+                    return found
+        return None
+
+    for index, argument in enumerate(forward.get("args", [])):
+        found = refusal(argument, "forward argument", ("args", index))
+        if found is not None:
+            return found
+    return walk(forward.get("body", []), ("body",))
 
 
 def compile_forward(

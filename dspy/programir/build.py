@@ -18,7 +18,6 @@ the envelope and runs the SAME structural admission the compiler runs
 
 from __future__ import annotations
 
-import keyword
 import math
 from typing import Any, Iterable, Mapping
 
@@ -163,38 +162,21 @@ def _refuse(code: str, detail: dict[str, Any], message: str) -> None:
 
 
 def _name(value: Any, role: str) -> str:
-    """Admit one identifier, or refuse with a teaching error naming it."""
-    if not isinstance(value, str):
-        _refuse(
-            "PIR-E-NODE-001",
-            {"role": role, "got": type(value).__name__},
-            f"{role} must be a name string, got {type(value).__name__}: {value!r}",
-        )
-    if not (value.isidentifier() and value.isascii()):
-        _refuse(
-            "PIR-E-NODE-001",
-            {"role": role, "name": value},
-            f"{role} {value!r} is not a Python identifier; IR names must print back "
-            "as source, so a name the parser would refuse refuses here, at build time",
-        )
-    if keyword.iskeyword(value):
-        _refuse(
-            "PIR-E-NODE-001",
-            {"role": role, "name": value},
-            f"{role} {value!r} is a Python keyword; printed source could never bind it — pick another name",
-        )
-    if value == "self":
-        _refuse(
-            "PIR-E-NODE-001",
-            {"role": role, "name": value},
-            f"{role} 'self' is the module receiver, never a value name",
-        )
-    if len(value) >= 4 and value.startswith("__") and value.endswith("__"):
-        _refuse(
-            "PIR-E-NODE-001",
-            {"role": role, "name": value},
-            f"{role} {value!r} is a dunder — Python's protocol namespace, not a program name",
-        )
+    """Admit one identifier, or refuse with a teaching error naming it.
+
+    The rule is `forward.name_refusal` — the SAME law `admit_forward`
+    runs over whole trees, so a name that refuses here refuses
+    identically for parsed and foreign trees.
+    """
+    from dspy.programir.forward import name_refusal
+
+    message = name_refusal(value, role)
+    if message is not None:
+        if isinstance(value, str):
+            detail = {"role": role, "name": value}
+        else:
+            detail = {"role": role, "got": type(value).__name__}
+        _refuse("PIR-E-NODE-001", detail, message)
     return value
 
 
