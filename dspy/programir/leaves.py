@@ -65,9 +65,17 @@ def extract_tool(value: Tool | Callable[..., Any], *, name: str) -> AuthoredLeaf
     # is NOT yet expressible in this engine — see BUILD-STATE A10 fix wave,
     # "enforced-isolation owed"; this delivers the consent gate, not the
     # sandbox rung.
+    # The rung is PARAMETRIC but the default is the law above: an
+    # optimizer-authored leaf is isolation-required unless the function
+    # carries an explicit `_dspy_placement_rung = "in_process"` stamp —
+    # the optimizing USER's own recorded choice (FlexIR code_trust). Like
+    # `_dspy_authored_by`, the stamp lives on the function so the choice
+    # survives every recompile, and `authored_by` stays in the entry
+    # either way so a receiver can audit or re-place the leaf.
+    placement_rung = getattr(function, "_dspy_placement_rung", None)
     placement = (
         _isolation_required_placement("call(kwargs)->result")
-        if authored_by == "optimizer"
+        if authored_by == "optimizer" and placement_rung != "in_process"
         else _in_process_placement("call(kwargs)->result")
     )
     entry = {

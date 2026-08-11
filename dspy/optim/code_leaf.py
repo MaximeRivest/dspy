@@ -148,6 +148,8 @@ def admit_tool_source(
     signature: Any,
     *,
     partial: bool,
+    extra_imports: frozenset[str] | None = None,
+    code_trust: str = "isolated",
 ) -> AdmittedCode:
     """Admit optimizer-authored source as a tool leaf, or refuse loudly.
 
@@ -157,9 +159,29 @@ def admit_tool_source(
             here beyond the one admitted def.
         signature: The replaced predict's `dspy.Signature`; the io-contract
             derives from its input/output fields (the unified-leaf law).
+            `None` admits a FREE tool (FlexIR v3 `add_tool`): the
+            io-contract then derives from the source's own hints — every
+            parameter type-hinted, return annotation `dict` — and
+            `partial` must be False (a free tool has no LM to decline to).
         partial: `False` for `replace_predict_with_code` (return `dict`);
             `True` for the partial op (return `dict | None`; None declines
             to the LM).
+        extra_imports: Additional module names admitted ALONGSIDE
+            `ADMITTED_IMPORTS` for this call only. Widening the allowlist
+            widens what generated code can do — the caller (the optimizing
+            user, via `FlexIR(extra_imports=...)`) owns that choice. The
+            denied builtins and dunder walks stay denied regardless; the
+            module-level frozenset is never mutated.
+        code_trust: `"isolated"` (the default) keeps the trust pairing
+            rule: the leaf carries the isolation-required rung and fails
+            closed at load unless the receiver grants it.
+            `"in_process"` stamps the function so the leaf gets the
+            in-process placement — the optimizing user's own loop and
+            saved artifact run WITHOUT a grant ceremony. This is NOT a
+            sandbox: in-process optimizer-authored code runs with full
+            ambient authority; the caller makes that choice for their own
+            loop. `authored_by: "optimizer"` survives in the entry either
+            way, so a receiver can audit or re-place the leaf.
 
     Returns:
         An `AdmittedCode` (leaf entry + sidecar + live callable).
@@ -172,6 +194,10 @@ def admit_tool_source(
     """
     if not isinstance(python_source, str) or not python_source.strip():
         raise ValueError(f"tool {name!r}: python_source must be a non-empty string of one function definition")
+    if code_trust not in ("isolated", "in_process"):
+        raise ValueError(f"tool {name!r}: code_trust must be 'isolated' or 'in_process', got {code_trust!r}")
+    if signature is None and partial:
+        raise ValueError(f"tool {name!r}: a free tool (no replaced signature) has no LM to decline to; partial refuses")
 
     subject = f"tool {name!r}"
     # Step 1: exactly one undecorated function def (reuse the leaves check,
@@ -208,7 +234,7 @@ def admit_tool_source(
     # allowlist walk alone cannot catch them and `_check_self_contained`
     # admits them (they live in `dir(builtins)`). This is the only layer
     # that closes those builtin-mediated escapes.
-    _refuse_disallowed_imports(tree, subject=subject)
+    _refuse_disallowed_imports(tree, subject=subject, extra_imports=extra_imports)
     _refuse_builtin_escapes(definition, subject=subject)
     deps = parse_deps(python_source)
     if deps:
@@ -229,6 +255,11 @@ def admit_tool_source(
     # carries `authored_by: "optimizer"` into the entry at EVERY recompile,
     # not only this one — the compiler re-extracts from the live function.
     function._dspy_authored_by = "optimizer"
+    if code_trust == "in_process":
+        # The optimizing user's recorded choice (see the Args note): the
+        # leaf gets the in-process placement instead of the fail-closed
+        # isolation rung. Provenance above survives regardless.
+        function._dspy_placement_rung = "in_process"
     leaf = extract_tool(function, name=name)
     return AdmittedCode(leaf=leaf, function=function)
 
@@ -248,8 +279,14 @@ class _SourceOnly:
         self.__name__ = name
 
 
-def _refuse_disallowed_imports(tree: ast.Module, *, subject: str) -> None:
-    """Refuse any import outside the pure-stdlib allowlist (risk 2)."""
+def _refuse_disallowed_imports(tree: ast.Module, *, subject: str, extra_imports: frozenset[str] | None = None) -> None:
+    """Refuse any import outside the pure-stdlib allowlist (risk 2).
+
+    `extra_imports` widens the allowlist for THIS call only — a per-
+    optimizer-instance grant the user made explicitly. The module-level
+    `ADMITTED_IMPORTS` frozenset is never mutated.
+    """
+    allowed = ADMITTED_IMPORTS | (extra_imports or frozenset())
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names = [alias.name.split(".")[0] for alias in node.names]
@@ -257,11 +294,11 @@ def _refuse_disallowed_imports(tree: ast.Module, *, subject: str) -> None:
             names = [(node.module or "").split(".")[0]]
         else:
             continue
-        disallowed = sorted({module for module in names if module not in ADMITTED_IMPORTS})
+        disallowed = sorted({module for module in names if module not in allowed})
         if disallowed:
             raise ValueError(
                 f"ProgramIR {subject} imports {disallowed}, which is outside the optimizer allowlist "
-                f"{sorted(ADMITTED_IMPORTS)}; network/process/reflection modules refuse (a code leaf may not "
+                f"{sorted(allowed)}; network/process/reflection modules refuse (a code leaf may not "
                 "hide an LM call or a side effect)"
             )
 
@@ -334,16 +371,20 @@ def _check_io_contract(definition: ast.FunctionDef, signature: Any, *, subject: 
     predict's signature. Parameters are exactly the signature's input
     fields, each type-hinted; the return annotation is `dict` (full
     replace) or `dict | None` (partial — None declines to the LM).
+
+    With `signature=None` (a FREE tool, FlexIR v3 `add_tool`), the
+    io-contract derives from the source's OWN hints: every parameter must
+    carry a type hint, and the return annotation must be `dict`.
     """
-    inputs = list(signature.input_fields)
+    inputs = list(signature.input_fields) if signature is not None else None
     args = definition.args
     if args.posonlyargs or args.vararg or args.kwarg:
+        wanted = f"exactly the signature's input fields {inputs}" if inputs is not None else "plain typed parameters"
         raise ValueError(
-            f"ProgramIR {subject} must take exactly the signature's input fields {inputs} as plain "
-            "parameters — no positional-only, *args, or **kwargs"
+            f"ProgramIR {subject} must take {wanted} as plain parameters — no positional-only, *args, or **kwargs"
         )
     names = [argument.arg for argument in (*args.args, *args.kwonlyargs)]
-    if names != inputs:
+    if inputs is not None and names != inputs:
         raise ValueError(
             f"ProgramIR {subject} parameters {names} must be exactly the replaced signature's input "
             f"fields {inputs}, in order (the unified-leaf law: the code's interface IS the signature)"
@@ -353,10 +394,12 @@ def _check_io_contract(definition: ast.FunctionDef, signature: Any, *, subject: 
         raise ValueError(f"ProgramIR {subject} parameters {untyped} need type hints (every leaf parameter is typed)")
     if definition.returns is None:
         expected = "dict | None" if partial else "dict"
-        raise ValueError(
-            f"ProgramIR {subject} needs a return annotation of `{expected}` — the output record "
+        record = (
             f"(one key per signature output field: {list(signature.output_fields)})"
+            if signature is not None
+            else "(the tool's output record)"
         )
+        raise ValueError(f"ProgramIR {subject} needs a return annotation of `{expected}` — the output record {record}")
     got = ast.unparse(definition.returns).replace(" ", "")
     allowed = {"dict|None", "Optional[dict]", "None|dict"} if partial else {"dict"}
     if got not in allowed:

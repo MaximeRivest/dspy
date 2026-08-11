@@ -953,7 +953,9 @@ class TestVocabularyParity:
         assert len(refusals) == 1
         assert "missing ['python_source']" in refusals[0]
 
-    def test_the_catalog_lists_exactly_the_seven_ops(self):
+    def test_the_catalog_is_the_closed_pinned_list(self):
+        # v3 extended the CLOSED list with the three structure ops; the
+        # pin moves with the law — anything outside this set refuses.
         from dspy.optim.flex import _VOCABULARY
 
         assert set(_VOCABULARY) == {
@@ -964,6 +966,9 @@ class TestVocabularyParity:
             "replace_predict_with_code",
             "replace_predict_with_code_partial",
             "delete_dead_leaf",
+            "add_predict",
+            "add_tool",
+            "rewrite_forward",
         }
 
     def test_splat_bearing_call_site_refuses_with_a_teaching_error(self):

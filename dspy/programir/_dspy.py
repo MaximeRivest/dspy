@@ -145,34 +145,24 @@ class _DSPyCompiler:
         module_tools: list[str] = []
         uses_interpreter = False
         for child_name, child in module.__dict__.items():
-            if not _is_identifier(child_name) or child_name == "forward":
-                continue
-            if isinstance(child, Module):
+            kind = _child_leaf_kind(child_name, child)
+            if kind == "predict":
                 child_path = child_name if path == "self" else f"{path}.{child_name}"
-                if isinstance(child, Predict):
-                    children.append(self.predict_node(child, path=child_path, name=child_name))
-                    leaves[child_name] = LeafRef("predict", child_name)
-                else:
-                    children.append(self.module_node(child, path=child_path, name=child_name))
-                    leaves[child_name] = LeafRef("module", child_name)
-            elif isinstance(child, Tool) or inspect.isfunction(child):
+                children.append(self.predict_node(child, path=child_path, name=child_name))
+                leaves[child_name] = LeafRef("predict", child_name)
+            elif kind == "module":
+                child_path = child_name if path == "self" else f"{path}.{child_name}"
+                children.append(self.module_node(child, path=child_path, name=child_name))
+                leaves[child_name] = LeafRef("module", child_name)
+            elif kind == "tool":
                 tool_name = self.register_tool(child, name=child_name)
                 leaves[child_name] = LeafRef("tool", tool_name)
                 module_tools.append(tool_name)
-            elif (
-                isinstance(child, dict)
-                and child
-                and all(
-                    isinstance(key, str)
-                    and _is_identifier(key)
-                    and (isinstance(value, Tool) or inspect.isfunction(value))
-                    for key, value in child.items()
-                )
-            ):
+            elif kind == "tool_table":
                 for tool_name, tool in child.items():
                     module_tools.append(self.register_tool(tool, name=tool_name))
                 leaves[child_name] = LeafRef("tool")
-            elif _is_interpreter(child):
+            elif kind == "interpreter":
                 interpreter_name = self.register_interpreter(child, name=child_name)
                 leaves[child_name] = LeafRef("interpreter", interpreter_name)
                 uses_interpreter = True
@@ -474,6 +464,57 @@ def _declared_signature(module: Module) -> list[str] | None:
     if signature is None or not hasattr(signature, "input_fields"):
         return None
     return list(signature.input_fields)
+
+
+def _child_leaf_kind(name: str, child: Any) -> str | None:
+    """Classify one module attribute as a leaf kind, or None.
+
+    THE one classification both the compiler's `module_node` and
+    `leaf_table` (the FlexIR rewrite path) run — the mapping logic must
+    never drift between them.
+    """
+    if not _is_identifier(name) or name == "forward":
+        return None
+    if isinstance(child, Predict):
+        return "predict"
+    if isinstance(child, Module):
+        return "module"
+    if isinstance(child, Tool) or inspect.isfunction(child):
+        return "tool"
+    if (
+        isinstance(child, dict)
+        and child
+        and all(
+            isinstance(key, str) and _is_identifier(key) and (isinstance(value, Tool) or inspect.isfunction(value))
+            for key, value in child.items()
+        )
+    ):
+        return "tool_table"
+    if _is_interpreter(child):
+        return "interpreter"
+    return None
+
+
+def leaf_table(module: Module) -> dict[str, LeafRef]:
+    """The module's declared leaf table, exactly as compile builds it.
+
+    FlexIR's `rewrite_forward` compiles an optimizer-authored forward
+    source against the SAME leaf mapping the normal compile path passes
+    to `compile_forward` — this helper is that mapping, factored out of
+    `module_node` via the shared `_child_leaf_kind` classifier. Tool and
+    interpreter refs use the attribute name (the pool name the compiler
+    allocates for a module-owned leaf).
+    """
+    leaves: dict[str, LeafRef] = {}
+    for child_name, child in module.__dict__.items():
+        kind = _child_leaf_kind(child_name, child)
+        if kind in ("predict", "module", "interpreter"):
+            leaves[child_name] = LeafRef(kind, child_name)
+        elif kind == "tool":
+            leaves[child_name] = LeafRef("tool", child_name)
+        elif kind == "tool_table":
+            leaves[child_name] = LeafRef("tool")
+    return leaves
 
 
 def _is_identifier(value: str) -> bool:

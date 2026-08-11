@@ -41,8 +41,14 @@ The program IS the IR; the engine IS the executor; adapters ARE data.
    history preserves them; this branch is the clean world.
 2. **The program is the IR.** `Module.__init_subclass__`/export
    compiles `forward` (v0.3 subset — forwards MUST compile clean;
-   no `**kwargs` envelopes, no self-attr reads in forward, declared
-   leaves only). `program(**inputs)` executes THROUGH the engine
+   no self-attr reads in forward, declared leaves only).
+   **AMENDED by D-041 (2026-08-11, ratified): node-set 0.4 adds the
+   inputs-bag** — `def forward(self, inputs)` bound to the module's
+   own signature + signature-record splat into leaf calls (LM-decided
+   kwargs stay refused). Once the 0.4 propagation reaches this tree,
+   ReAct/ReActV2/RLM are REWRITTEN as hand-written forwards and the
+   generated-forward machinery is deleted. Program makers stay
+   CLASSES (makers-as-functions deferred by Maxime's ruling). `program(**inputs)` executes THROUGH the engine
    interpreter by default. `program.save(path)` = the artifact;
    `dspy.load(path, bindings=...)` = read+link+materialize. One path.
 3. **Adapters v2 = the adapter-ir-stage design, implemented**: parser

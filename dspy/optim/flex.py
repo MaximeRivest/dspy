@@ -38,12 +38,27 @@ optimizer itself. An injection-shaped source is admitted only as a tool
 leaf's carried source (and refuses if it is not self-contained or reaches
 a disallowed import); it is never executed here.
 
+v3 generalizes the closed vocabulary from "swap one leaf" to "restructure
+the program": `add_predict` and `add_tool` bind NEW leaves on an owner
+module, and `rewrite_forward` replaces a module's whole forward with an
+authored source in the printer's dialect, lowered through the SAME
+`compile_forward` admission the normal compile path runs. The reflection
+LM can now do anything to the ProgramIR — but every path stays gated by
+the same wisdom: the dispatch table stays closed, code and forwards enter
+only through admission, every batch applies-on-copy and unwinds whole,
+the holdout gate covers every candidate, and cheapness is priced by
+`lm_calls`. Security is tunable, not silent: `code_trust` chooses whether
+authored leaves fail closed at load (`"isolated"`, the default) or run
+in-process for the optimizing user's own loop; `extra_imports` widens the
+import allowlist per instance, never globally.
+
 Everything is sequential and deterministic under a scripted reflection
 DummyLM; the optimizer performs exactly `iterations` reflection calls.
 """
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import types
@@ -75,6 +90,9 @@ from dspy.programir.build import (
     Try,
     Var,
 )
+from dspy.programir.errors import ProgramIRRefusal
+from dspy.programir.forward import compile_forward
+from dspy.programir.printer import render_forward
 from dspy.programir.tools.cost import build_text as cost_build_text
 from dspy.signatures.field import InputField, OutputField
 from dspy.signatures.signature import make_signature
@@ -95,6 +113,13 @@ _VOCABULARY = {
     "replace_predict_with_code": frozenset({"path", "tool_name", "python_source"}),
     "replace_predict_with_code_partial": frozenset({"path", "tool_name", "python_source"}),
     "delete_dead_leaf": frozenset({"path"}),
+    # v3 general structure edits: the reflection LM can add leaves and
+    # rewrite whole forwards — every path still gated by the same wisdom
+    # (closed dispatch, admission, apply-on-copy + unwind, holdout gate,
+    # cheapness channel, the teaching-refusal ledger).
+    "add_predict": frozenset({"path", "name", "signature", "instructions"}),
+    "add_tool": frozenset({"path", "name", "python_source"}),
+    "rewrite_forward": frozenset({"path", "python_source"}),
 }
 
 _CODE_OPS = frozenset({"replace_predict_with_code", "replace_predict_with_code_partial"})
@@ -107,7 +132,16 @@ Reply in `proposals` with a JSON array. Each element must be EXACTLY one of:
 - {"op": "wrap_best_of_n", "path": "<sub-module path>", "N": <attempts>}
 - {"op": "replace_predict_with_code", "path": "<predictor path>", "tool_name": "<new tool name>", "python_source": "def <fn>(<input fields>) -> dict: ..."}
 - {"op": "replace_predict_with_code_partial", "path": "<predictor path>", "tool_name": "<name>", "python_source": "def <fn>(<input fields>) -> dict | None: ..."}
-- {"op": "delete_dead_leaf", "path": "<predictor path with zero call sites>"}
+- {"op": "delete_dead_leaf", "path": "<predictor or authored-tool path with zero call sites>"}
+- {"op": "add_predict", "path": "<owner module path, 'self' for the root>", "name": "<new attribute name>", "signature": "<'input_a, input_b -> output_c'>", "instructions": "<the new leaf's prompt — required>"}
+- {"op": "add_tool", "path": "<owner module path, 'self' for the root>", "name": "<new attribute name>", "python_source": "def <fn>(<typed params>) -> dict: ..."}
+- {"op": "rewrite_forward", "path": "<owner module path, 'self' for the root>", "python_source": "def forward(self, <args>): ..."}
+For rewrite_forward, write the forward EXACTLY in the dialect shown in the program report; paths and leaf
+names come from the report; the node set is CLOSED — unsupported Python refuses. A new predict or tool is
+only reachable after a rewrite_forward in the SAME proposal list wires a call to it.
+Use add_predict + rewrite_forward to DECOMPOSE a step; use add_tool + rewrite_forward to insert
+deterministic code; small data edits first when the failure is about WHAT, structure edits when it is
+about HOW.
 Replace a predict with code when the failures and the cost view show the step needs NO LM judgment
 (a deterministic transform, a lookup). The code's parameters must be EXACTLY the predict's input fields,
 each type-hinted; it returns a dict with one key per output field. Use the _partial op when most inputs
@@ -119,7 +153,7 @@ key, or a source that fails admission is refused, and the refusal is shown to yo
 Propose an empty array to change nothing."""
 
 
-def _reflection_signature():
+def _reflection_signature(extra_imports: frozenset[str] | None = None):
     fields = {
         "program_report": (
             str,
@@ -127,7 +161,8 @@ def _reflection_signature():
         ),
         "proposals": (list, OutputField(desc="a JSON array of edit operations from the closed vocabulary")),
     }
-    instructions = _REFLECTION_INSTRUCTIONS.replace("ALLOWLIST", ", ".join(sorted(ADMITTED_IMPORTS)))
+    allowlist = ADMITTED_IMPORTS | (extra_imports or frozenset())
+    instructions = _REFLECTION_INSTRUCTIONS.replace("ALLOWLIST", ", ".join(sorted(allowlist)))
     return make_signature(fields, instructions, signature_name="FlexReflection")
 
 
@@ -154,6 +189,23 @@ class FlexIR(Optimizer):
             disable the guard. Without a holdout, candidates carry no
             held-quality guarantee and the trajectory records that.
         eps: Score tolerance for the two-channel acceptance rule.
+        code_trust: `"isolated"` (the default) keeps the trust pairing
+            rule: every optimizer-authored code leaf carries the
+            isolation-required rung and FAILS CLOSED at load unless the
+            receiver grants it a reviewed callable. `"in_process"` gives
+            authored leaves the in-process placement, so the optimizing
+            user's own loop and saved artifact run WITHOUT a grant
+            ceremony. This is NOT a sandbox and claims none: in-process
+            optimizer-authored code runs with FULL AMBIENT AUTHORITY (your
+            filesystem, your process); it is a choice you make for your
+            own loop. The `authored_by: "optimizer"` provenance survives
+            in the pool entry either way, so a receiver can audit or
+            re-place the leaf.
+        extra_imports: Additional module names appended to the stdlib
+            import allowlist for THIS optimizer instance only (the
+            module-level `ADMITTED_IMPORTS` is never mutated). Widening
+            the allowlist widens what generated code can do; the
+            denylisted builtins and dunder walks stay denied regardless.
 
     Attributes:
         trajectory: After `compile`, one record per round (plus the
@@ -179,15 +231,25 @@ class FlexIR(Optimizer):
         reward: Callable[[Any], float] | None = None,
         holdout: Any = None,
         eps: float = 1e-9,
+        code_trust: str = "isolated",
+        extra_imports: frozenset[str] | None = None,
     ):
         if isinstance(iterations, bool) or not isinstance(iterations, int) or iterations < 1:
             raise ValueError(f"FlexIR iterations must be an int >= 1, got {iterations!r}")
+        if code_trust not in ("isolated", "in_process"):
+            raise ValueError(f"FlexIR code_trust must be 'isolated' or 'in_process', got {code_trust!r}")
+        if extra_imports is not None and (
+            isinstance(extra_imports, str) or not all(isinstance(name, str) for name in extra_imports)
+        ):
+            raise ValueError(f"FlexIR extra_imports must be an iterable of module-name strings, got {extra_imports!r}")
         self.metric = metric
         self.iterations = iterations
         self.reward = reward
         self.holdout = holdout
         self.eps = eps
-        self.reflect = Predict(_reflection_signature(), lm=reflection_lm)
+        self.code_trust = code_trust
+        self.extra_imports = frozenset(extra_imports) if extra_imports is not None else None
+        self.reflect = Predict(_reflection_signature(self.extra_imports), lm=reflection_lm)
         self.trajectory: list[dict[str, Any]] = []
 
     def compile(self, program: Module, *, trainset: Any, checkpoint_dir: Any = None) -> Module:
@@ -418,6 +480,13 @@ class FlexIR(Optimizer):
         manifest = program.to_manifest()
         lines = ["== current program =="]
         lines.append(program.explain())
+        lines.append("== forwards (the rewrite_forward dialect — write yours exactly like these) ==")
+        for path in sorted(manifest["components"]["5_forward"]):
+            lines.append(f"# forward of {path}")
+            try:
+                lines.append(render_forward(manifest["components"]["5_forward"][path]).rstrip())
+            except ProgramIRRefusal:
+                lines.append("(this forward has no printed spelling)")
         lines.append("== cost view ==")
         lines.append(cost_build_text(manifest))
         lines.append(f"measured last run: {lm_calls} LM call(s) over {len(results)} example(s)")
@@ -473,6 +542,12 @@ class FlexIR(Optimizer):
             return self._apply_code(program, proposal, tag, undo_structural, partial=op.endswith("partial"))
         if op == "delete_dead_leaf":
             return self._apply_delete(program, proposal, tag, undo_structural)
+        if op == "add_predict":
+            return self._apply_add_predict(program, proposal, tag, undo_structural)
+        if op == "add_tool":
+            return self._apply_add_tool(program, proposal, tag, undo_structural)
+        if op == "rewrite_forward":
+            return self._apply_rewrite_forward(program, proposal, tag, undo_structural)
 
         path = proposal["path"]
         if not isinstance(path, str):
@@ -579,7 +654,14 @@ class FlexIR(Optimizer):
             return f"refused {tag}: found no CallPredict site for {path!r} in its owning forward"
 
         try:
-            admitted = admit_tool_source(tool_name, source, predictor.signature, partial=partial)
+            admitted = admit_tool_source(
+                tool_name,
+                source,
+                predictor.signature,
+                partial=partial,
+                extra_imports=self.extra_imports,
+                code_trust=self.code_trust,
+            )
         except ValueError as error:
             return f"refused {tag}: python_source rejected by admission — {error}"
 
@@ -615,28 +697,37 @@ class FlexIR(Optimizer):
         return None
 
     def _apply_delete(self, program: Module, proposal: dict, tag: str, undo_structural: list) -> str | None:
-        """Remove a predictor leaf with ZERO call sites across all forwards.
+        """Remove a predict or authored-tool leaf with ZERO call sites.
 
-        The clean converse of the code ops: after a full replace, the old
-        predict is dead. Count its call sites across every module's forward
-        first; refuse (with the site list) if any remain. Link would refuse
-        a dangling ref anyway; this keeps accepted artifacts orphan-free.
+        The clean converse of the code and structure ops: after a full
+        replace or a rewrite, the old leaf is dead. Count its call sites
+        (CallPredict for a predict, CallTool for a tool) across every
+        module's forward first; refuse if any remain. Link would refuse a
+        dangling ref anyway; this keeps accepted artifacts orphan-free.
         """
         path = proposal["path"]
         if not isinstance(path, str):
-            return f"refused {tag}: path must be a STRING predictor path, got {type(path).__name__}"
+            return f"refused {tag}: path must be a STRING leaf path, got {type(path).__name__}"
         predictors = dict(program.named_predictors())
-        if path not in predictors:
-            return f"refused {tag}: no predictor at path {path!r} (predictor paths: {sorted(predictors)})"
         owner, attribute = self._owner_of(program, path)
+        if path in predictors:
+            kind, noun = "predict", "predictor"
+        elif (
+            owner is not None
+            and callable(owner.__dict__.get(attribute))
+            and not isinstance(owner.__dict__.get(attribute), Module)
+        ):
+            kind, noun = "tool", "tool"
+        else:
+            return f"refused {tag}: no predictor or tool leaf at path {path!r} (predictor paths: {sorted(predictors)})"
         if owner is None:
             return f"refused {tag}: cannot delete the root program leaf {path!r}"
 
-        remaining = self._count_sites(program, attribute)
+        remaining = self._count_sites(program, attribute, kind=kind)
         if remaining:
             return (
-                f"refused {tag}: predictor {path!r} still has {remaining} live call site(s); replace them "
-                "with code (or remove the calls) before deleting the leaf"
+                f"refused {tag}: {noun} {path!r} still has {remaining} live call site(s); replace them "
+                "with code (or rewrite the forward to remove the calls) before deleting the leaf"
             )
         previous = owner.__dict__.get(attribute, _ABSENT)
         if previous is _ABSENT:
@@ -646,13 +737,174 @@ class FlexIR(Optimizer):
         undo_structural.append((owner, attribute, previous))
         return None
 
-    def _count_sites(self, program: Module, attribute: str) -> int:
-        """Count live CallPredict sites naming `attribute` across all forwards."""
+    def _count_sites(self, program: Module, attribute: str, *, kind: str = "predict") -> int:
+        """Count live Call sites of one leaf kind naming `attribute`."""
         manifest = program.to_manifest()
         total = 0
         for forward in manifest["components"]["5_forward"].values():
-            total += len(_find_predict_sites(forward, attribute))
+            total += len(_find_leaf_sites(forward, attribute, kind=kind))
         return total
+
+    # ------------------------------------------------------------------
+    # v3 structure ops: add leaves, rewrite whole forwards
+    # ------------------------------------------------------------------
+
+    def _module_at(self, program: Module, path: Any, tag: str) -> tuple[Module | None, str | None]:
+        """Resolve an OWNER-module path for the v3 ops, or refuse teaching.
+
+        The v3 ops name the module that OWNS the edit ('self' for the
+        root composite), never a predictor. A bare-Predict root has no
+        forward of its own and no attribute table worth editing, so it
+        refuses; so does a path that lands on a Predict leaf.
+        """
+        if not isinstance(path, str):
+            return None, (
+                f"refused {tag}: path must be a STRING module path ('self' for the root), got {type(path).__name__}"
+            )
+        modules = dict(program._named_modules())
+        owner = modules.get(path)
+        if owner is None:
+            return None, f"refused {tag}: no module at path {path!r} (module paths: {sorted(modules)})"
+        if isinstance(owner, Predict):
+            if path == "self":
+                return None, (
+                    f"refused {tag}: the root program is a bare Predict — it has no forward of its own to "
+                    "rewrite and no attribute table to extend; wrap it in a composite Module first"
+                )
+            return None, (
+                f"refused {tag}: {path!r} is a Predict leaf, not a composite module — name the module that "
+                "OWNS the forward ('self' for the root)"
+            )
+        return owner, None
+
+    def _apply_add_predict(self, program: Module, proposal: dict, tag: str, undo_structural: list) -> str | None:
+        """Bind a NEW Predict leaf on an owner module.
+
+        The leaf starts with zero call sites — a later `rewrite_forward`
+        in the SAME proposal list wires it. If it still has zero sites at
+        evaluate time it is dead weight, not a refusal: the cheapness
+        channel prices it (an accepted candidate must still win a
+        channel), and `delete_dead_leaf` cleans it.
+        """
+        owner, refusal = self._module_at(program, proposal["path"], tag)
+        if refusal is not None:
+            return refusal
+        name = proposal["name"]
+        if not isinstance(name, str) or not name.isidentifier() or not name.isascii():
+            return f"refused {tag}: add_predict name must be a Python identifier, got {name!r}"
+        if name in owner.__dict__:
+            return f"refused {tag}: attribute {name!r} already exists on the module at {proposal['path']!r}"
+        instructions = proposal["instructions"]
+        if not isinstance(instructions, str) or not instructions:
+            return (
+                f"refused {tag}: add_predict instructions must be a non-empty string — the instructions ARE "
+                "the new leaf's prompt; an uninstructed predict is an unteachable one"
+            )
+        signature = proposal["signature"]
+        if not isinstance(signature, str) or not signature:
+            return f"refused {tag}: add_predict signature must be an 'input_a, input_b -> output_c' string"
+        try:
+            predictor = Predict(signature)
+        except Exception as error:
+            return (
+                f"refused {tag}: signature {signature!r} does not build — {type(error).__name__}: {error}; "
+                "write it as 'input_a, input_b -> output_c'"
+            )
+        predictor.signature = predictor.signature.with_instructions(instructions)
+        setattr(owner, name, predictor)
+        program.invalidate_ir()
+        undo_structural.append((owner, name, _ABSENT))
+        return None
+
+    def _apply_add_tool(self, program: Module, proposal: dict, tag: str, undo_structural: list) -> str | None:
+        """Bind a NEW admitted code leaf on an owner module (a free tool).
+
+        Same admission chain as the replace ops, WITHOUT a replaced
+        signature: the io-contract derives from the source's own type
+        hints (every parameter hinted; return annotation `dict`). Wire it
+        with a `rewrite_forward` in the same proposal list; the cheapness
+        channel prices dead weight.
+        """
+        owner, refusal = self._module_at(program, proposal["path"], tag)
+        if refusal is not None:
+            return refusal
+        name = proposal["name"]
+        if not isinstance(name, str) or not name.isidentifier() or not name.isascii():
+            return f"refused {tag}: add_tool name must be a Python identifier, got {name!r}"
+        if name in owner.__dict__:
+            return f"refused {tag}: attribute {name!r} already exists on the module at {proposal['path']!r}"
+        try:
+            admitted = admit_tool_source(
+                name,
+                proposal["python_source"],
+                None,
+                partial=False,
+                extra_imports=self.extra_imports,
+                code_trust=self.code_trust,
+            )
+        except ValueError as error:
+            return f"refused {tag}: python_source rejected by admission — {error}"
+        setattr(owner, name, admitted.function)
+        program.invalidate_ir()
+        undo_structural.append((owner, name, _ABSENT))
+        return None
+
+    def _apply_rewrite_forward(self, program: Module, proposal: dict, tag: str, undo_structural: list) -> str | None:
+        """Replace an owner module's forward with an authored source — gated.
+
+        THE general op. The source is one `def forward(self, ...)` in the
+        printer's dialect; it becomes a live function only via the
+        `to_function` linecache convention (register + exec the single
+        def), then `compile_forward` lowers it against the module's OWN
+        leaf table, declared literals, and declared signature — exactly
+        the mapping the normal compile path uses. Any compiler refusal
+        (an unknown leaf ref, an unsupported construct) surfaces verbatim
+        into the ledger. On success the tree attaches through the same
+        macro door the code ops use, with a correct undo entry.
+        """
+        from dspy.modules._generate import load_generated
+        from dspy.programir._dspy import _declared_literals, _declared_signature, leaf_table
+
+        owner, refusal = self._module_at(program, proposal["path"], tag)
+        if refusal is not None:
+            return refusal
+        source = proposal["python_source"]
+        if not isinstance(source, str) or not source.strip():
+            return f"refused {tag}: python_source must be a non-empty string holding one `def forward(self, ...)`"
+        try:
+            parsed = ast.parse(source)
+        except SyntaxError as error:
+            return (
+                f"refused {tag}: python_source does not parse as Python ({error.msg} at line {error.lineno}); "
+                "write one valid `def forward(self, ...)` in the report's dialect"
+            )
+        if len(parsed.body) != 1 or not isinstance(parsed.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return (
+                f"refused {tag}: python_source must be EXACTLY one function definition "
+                "(no second def, no decorators, no statements around it)"
+            )
+        definition = parsed.body[0]
+        if definition.decorator_list:
+            return f"refused {tag}: rewrite_forward source uses decorators; write the undecorated def"
+        if definition.name != "forward":
+            return f"refused {tag}: the def must be named 'forward', got {definition.name!r}"
+        function = load_generated(source, tag=f"flex-rewrite-{proposal['path']}", name=definition.name)
+        try:
+            tree = compile_forward(
+                function,
+                leaf_table(owner),
+                literals=_declared_literals(owner),
+                signature=_declared_signature(owner),
+            )
+        except ProgramIRRefusal as error:
+            return f"refused {tag}: rewrite_forward rejected by the forward compiler — {error.code}: {error}"
+        except ValueError as error:
+            return f"refused {tag}: rewrite_forward rejected — {error}"
+        previous_builder = _bound_builder(owner)
+        _attach_forward(owner, tree)
+        program.invalidate_ir()
+        undo_structural.append((owner, "build_forward_ir", previous_builder))
+        return None
 
     def _owner_of(self, program: Module, path: str) -> tuple[Module | None, str]:
         """The module owning a dotted predictor path, and the attribute name.
@@ -773,14 +1025,19 @@ def _iter_leaf_calls(tree: dict):
     return iter_calls(tree)
 
 
-def _find_predict_sites(tree: dict, attribute: str) -> list[tuple[tuple, dict]]:
-    """Every `CallPredict(attribute)` site in a forward tree, with its path."""
+def _find_leaf_sites(tree: dict, attribute: str, *, kind: str) -> list[tuple[tuple, dict]]:
+    """Every `Call({kind}, attribute)` site in a forward tree, with its path."""
     sites = []
     for path, call in _iter_leaf_calls(tree):
         leaf = call.get("leaf", {})
-        if leaf.get("kind") == "predict" and leaf.get("ref") == attribute:
+        if leaf.get("kind") == kind and leaf.get("ref") == attribute:
             sites.append((path, call))
     return sites
+
+
+def _find_predict_sites(tree: dict, attribute: str) -> list[tuple[tuple, dict]]:
+    """Every `CallPredict(attribute)` site in a forward tree, with its path."""
+    return _find_leaf_sites(tree, attribute, kind="predict")
 
 
 def _rewrite_full(tree: dict, attribute: str, tool_name: str) -> None:
