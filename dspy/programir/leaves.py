@@ -47,6 +47,29 @@ def extract_tool(value: Tool | Callable[..., Any], *, name: str) -> AuthoredLeaf
     source = _source(function, subject=f"tool {name!r}")
     _check_self_contained(function, source, subject=f"tool {name!r}")
     path = f"tools/{name}.py"
+    # PIR-014: machine-written code carries its provenance into the
+    # artifact. A function tagged `_dspy_authored_by` (FlexIR stamps
+    # "optimizer" on generated code leaves) surfaces it here so the
+    # provenance survives every recompile — a receiver can audit or
+    # re-place the leaf before trusting it.
+    authored_by = getattr(function, "_dspy_authored_by", None)
+    # The trust pairing rule (spec/trust.md): authored-origin code runs at
+    # an isolation rung the placement ENFORCES, not one admission promises.
+    # Optimizer-authored code therefore does NOT get the in-process
+    # placement a builtin tool gets — its placement records that it must be
+    # placed under isolation the receiver supplies. `materialize` fails
+    # closed on this rung: it refuses to run such a leaf in-process from its
+    # sidecar unless the receiver explicitly GRANTS it (binds a callable
+    # under `bindings["tool"][name]`). The binding IS the grant. NOTE: true
+    # sandbox isolation (subprocess/wasm, no ambient network/host globals)
+    # is NOT yet expressible in this engine — see BUILD-STATE A10 fix wave,
+    # "enforced-isolation owed"; this delivers the consent gate, not the
+    # sandbox rung.
+    placement = (
+        _isolation_required_placement("call(kwargs)->result")
+        if authored_by == "optimizer"
+        else _in_process_placement("call(kwargs)->result")
+    )
     entry = {
         "name": name,
         "description": tool.desc or "",
@@ -55,14 +78,8 @@ def extract_tool(value: Tool | Callable[..., Any], *, name: str) -> AuthoredLeaf
         "source": path,
         "deps": parse_deps(source),
         "language": "python",
-        "placement": _in_process_placement("call(kwargs)->result"),
+        "placement": placement,
     }
-    # PIR-014: machine-written code carries its provenance into the
-    # artifact. A function tagged `_dspy_authored_by` (FlexIR stamps
-    # "optimizer" on generated code leaves) surfaces it here so the
-    # provenance survives every recompile — a receiver can audit or
-    # re-place the leaf before trusting it.
-    authored_by = getattr(function, "_dspy_authored_by", None)
     if authored_by is not None:
         entry["authored_by"] = authored_by
     return AuthoredLeaf(name=name, entry=entry, source_path=path, source=source.encode("utf-8"))
@@ -156,12 +173,31 @@ def _check_self_contained(function: Callable[..., Any], source: str, *, subject:
         )
 
 
+#: The placement rung an optimizer-authored code leaf carries. It is NOT
+#: `in_process`: the trust pairing rule (spec/trust.md) says authored code
+#: must run at a rung whose isolation the placement ENFORCES. `materialize`
+#: fails closed on this rung — it refuses to rebuild-and-run such a leaf
+#: from its sidecar in-process unless the receiver explicitly grants it a
+#: live callable. (Full sandbox isolation is owed, not yet delivered.)
+ISOLATION_REQUIRED_RUNG = "isolation_required"
+
+
 def _in_process_placement(contract: str) -> dict[str, Any]:
     return {
         "rung": "in_process",
         "contract": contract,
         "endpoint_ref": None,
         "isolation": "none",
+        "credential_ref": None,
+    }
+
+
+def _isolation_required_placement(contract: str) -> dict[str, Any]:
+    return {
+        "rung": ISOLATION_REQUIRED_RUNG,
+        "contract": contract,
+        "endpoint_ref": None,
+        "isolation": "required",
         "credential_ref": None,
     }
 

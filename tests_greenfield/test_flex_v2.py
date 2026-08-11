@@ -163,13 +163,26 @@ class TestReplacePredictWithCode:
         assert prediction.tag == "HELLO"
         assert (prediction._trajectory.get("predictor_calls") or []) == []
 
-    def test_checkpoint_loads_and_runs_without_an_lm(self, tmp_path):
+    def test_checkpoint_loads_only_when_the_authored_leaf_is_granted(self, tmp_path):
         self.run(tmp_path)
         scores = json.loads((tmp_path / "run" / "scores.json").read_text())
         assert [record["label"] for record in scores] == ["baseline", "iteration-0"]
-        # The accepted candidate loads with an EMPTY LM binding — it needs
-        # no model at all — and runs the pure-Python leaf.
-        loaded = dspy.load(tmp_path / "run" / "candidate-001", bindings={"lm": {}})
+        # The trust pairing rule (spec/trust.md): an optimizer-authored code
+        # leaf is placed at the `isolation_required` rung, so `materialize`
+        # FAILS CLOSED — a receiver cannot silently run it in-process from
+        # its sidecar. Loading with only an (empty) LM binding refuses,
+        # naming the tool and teaching the grant.
+        candidate = tmp_path / "run" / "candidate-001"
+        with pytest.raises(ValueError, match="requires isolation"):
+            dspy.load(candidate, bindings={"lm": {}})
+
+        # The receiver GRANTS the reviewed leaf by binding a callable under
+        # its pool name (the binding IS the grant). Then it loads and runs
+        # the pure-Python leaf with no model at all.
+        def tag_code(text: str) -> dict:
+            return {"tag": text.upper()}
+
+        loaded = dspy.load(candidate, bindings={"lm": {}, "tool": {"tag_code": tag_code}})
         assert loaded(text="world").tag == "WORLD"
 
     def test_authored_by_provenance_survives_the_artifact(self, tmp_path):
@@ -178,6 +191,24 @@ class TestReplacePredictWithCode:
         self.run(tmp_path)
         entry = json.loads((tmp_path / "run" / "candidate-001" / "manifest.json").read_text())
         assert entry["components"]["6_tools"]["tag_code"]["authored_by"] == "optimizer"
+
+    def test_optimizer_authored_leaf_carries_the_isolation_required_rung(self, tmp_path):
+        # Critical 1(b), the trust pairing rule (spec/trust.md): an
+        # optimizer-authored code leaf is NOT placed in-process like a
+        # builtin tool — its placement records that it must run under
+        # isolation the receiver supplies. The fact is recorded honestly
+        # (recording is passive); `materialize` enforces the deliverable
+        # half (the consent gate) by failing closed on an ungranted
+        # sidecar load — pinned by the checkpoint-grant test above.
+        program, _ = self.run(tmp_path)
+        placement = program.to_manifest()["components"]["6_tools"]["tag_code"]["placement"]
+        assert placement["rung"] == "isolation_required"
+        assert placement["rung"] != "in_process"
+        assert placement["isolation"] == "required"
+        # It survives to the on-disk artifact too — a receiver/auditor sees
+        # the isolation requirement without executing anything.
+        entry = json.loads((tmp_path / "run" / "candidate-001" / "manifest.json").read_text())
+        assert entry["components"]["6_tools"]["tag_code"]["placement"]["rung"] == "isolation_required"
 
     def test_diff_names_the_swap(self):
         _, optimizer = self.run()
@@ -329,10 +360,25 @@ class TestPartialReplace:
             holdout=[dspy.Example(country="Germany", capital="Berlin").with_inputs("country")],
         )
         optimizer.compile(program, trainset=devset, checkpoint_dir=tmp_path / "run")
-        # Load the candidate; bind an LM for the fallback arm.
+        candidate = tmp_path / "run" / "candidate-001"
+        # The authored fast-path leaf requires an explicit grant even when
+        # the LM fallback is bound — binding the LM alone still refuses.
+        with pytest.raises(ValueError, match="requires isolation"):
+            dspy.load(candidate, bindings={"lm": {"dummy": dspy.DummyLM([chat_completion(capital="Tokyo")])}})
+
+        # Grant the reviewed fast-path code AND bind an LM for the fallback arm.
+        def solve_partial(country: str) -> dict | None:
+            table = {"France": "Paris", "Canada": "Ottawa"}
+            if country in table:
+                return {"capital": table[country]}
+            return None
+
         loaded = dspy.load(
-            tmp_path / "run" / "candidate-001",
-            bindings={"lm": {"dummy": dspy.DummyLM([chat_completion(capital="Tokyo")])}},
+            candidate,
+            bindings={
+                "lm": {"dummy": dspy.DummyLM([chat_completion(capital="Tokyo")])},
+                "tool": {"solve_partial": solve_partial},
+            },
         )
         assert loaded(country="France").capital == "Paris"  # code arm, no LM
         assert loaded(country="Japan").capital == "Tokyo"  # fallback arm

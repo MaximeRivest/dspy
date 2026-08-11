@@ -35,6 +35,7 @@ from dspy.lm.lm import LM
 from dspy.modules.predict import Predict
 from dspy.programir.engine import interpret
 from dspy.programir.engine.errors import InterpreterError, ToolError
+from dspy.programir.leaves import ISOLATION_REQUIRED_RUNG
 from dspy.programir.link import link
 from dspy.programir.model import ProgramIR
 from dspy.signatures.field import InputField, OutputField
@@ -213,10 +214,32 @@ def _resolve_tools(
     resolved: dict[str, Callable[..., Any]] = {}
     for name, entry in pool.items():
         if name in bound:
+            # A receiver binding IS the grant. It supersedes the sidecar for
+            # any tool — and it is the ONLY lawful way to run a tool whose
+            # placement demands isolation (below): the receiver consciously
+            # supplies a live callable at a rung of its choosing.
             if not callable(bound[name]):
                 raise ValueError(f"binding for tool pool entry {name!r} must be callable")
             resolved[name] = bound[name]
             continue
+        # The trust pairing rule (spec/trust.md): authored-origin code runs
+        # at a rung whose isolation the placement ENFORCES. An optimizer-
+        # authored leaf carries the `isolation_required` rung, and this is
+        # where `materialize` KEEPS that promise: it FAILS CLOSED rather
+        # than rebuild-and-run the sidecar in-process. Running it would be
+        # exactly the silent in-process execution of unreviewed machine-
+        # written code the rule forbids. The receiver must GRANT it (bind a
+        # callable) after reviewing the sidecar. (Owed: a true sandbox rung
+        # that runs it under enforced isolation without a full-trust grant —
+        # BUILD-STATE A10 fix wave, "enforced-isolation owed".)
+        if isinstance(entry, dict) and entry.get("placement", {}).get("rung") == ISOLATION_REQUIRED_RUNG:
+            raise ValueError(
+                f"programir.materialize() refuses to run tool pool entry {name!r} in-process: it is "
+                f"{entry.get('authored_by', 'authored')}-authored code whose placement requires isolation "
+                "(the trust pairing rule — authored code runs at an isolation rung, never silently in-process "
+                f"from its sidecar). Review tools/{name}.py, then GRANT it explicitly with "
+                "bindings={'tool': {" + repr(name) + ": <reviewed callable>}}."
+            )
         source_path = entry.get("source")
         source = sidecars.get(source_path) if isinstance(source_path, str) else None
         if source is None:
