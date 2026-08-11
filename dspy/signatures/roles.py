@@ -64,37 +64,39 @@ ALL_ROLE_MARKERS = {
 # Role resolution (derivation + explicit declarations)
 # ---------------------------------------------------------------------------
 
-_DERIVED: dict[Any, str] | None = None
+#: Registered type -> role derivations. The signature layer owns the role
+#: vocabulary but not the types that imply roles: the layer that defines a
+#: semantic type (the adapters' type frontend) registers its derivation here
+#: at import time. Starts empty, so signature construction never imports the
+#: adapter world.
+_DERIVED: dict[Any, str] = {}
+
+
+def register_role_derivation(annotation: Any, role: str) -> None:
+    """Declare that a type annotation implies a semantic role.
+
+    Args:
+        annotation: The type (or generic alias) whose presence in a field's
+            annotation derives the role. Subclasses of a registered type
+            derive the same role.
+        role: One of the closed role vocabulary; unknown names refuse.
+
+    Raises:
+        ValueError: When `role` is not in the vocabulary, or the type is
+            already registered with a different role.
+    """
+    if role not in SEMANTIC_ROLES:
+        raise ValueError(f"Unknown semantic role {role!r}. Valid roles: {sorted(SEMANTIC_ROLES)}.")
+    existing = _DERIVED.get(annotation)
+    if existing is not None and existing != role:
+        raise ValueError(
+            f"Type {annotation!r} is already registered with role {existing!r}; "
+            f"refusing the conflicting registration {role!r}."
+        )
+    _DERIVED[annotation] = role
 
 
 def _derivation_table() -> dict[Any, str]:
-    # Lazy: the adapter types layer imports this module's markers, so the
-    # table can only be built after dspy finishes importing. Fields with no
-    # explicit role declaration never need it at class-construction time.
-    global _DERIVED
-    if _DERIVED is None:
-        from dspy.adapters.types.audio import Audio
-        from dspy.adapters.types.citation import Citations
-        from dspy.adapters.types.code import Code
-        from dspy.adapters.types.document import Document
-        from dspy.adapters.types.file import File
-        from dspy.adapters.types.history import History
-        from dspy.adapters.types.image import Image
-        from dspy.adapters.types.reasoning import Reasoning
-        from dspy.adapters.types.tool import Tool, ToolCalls
-
-        _DERIVED = {
-            Reasoning: "reasoning",
-            Tool: "tools",
-            ToolCalls: "tool_calls",
-            Citations: "citations",
-            History: "history",
-            Image: "media",
-            Audio: "media",
-            File: "media",
-            Document: "media",
-            Code: "code",
-        }
     return _DERIVED
 
 
@@ -235,6 +237,7 @@ def validate_declared_roles(field_info: Any, *, field_name: str, owner: str) -> 
 __all__ = [
     "ALL_ROLE_MARKERS",
     "SemanticRole",
+    "register_role_derivation",
     "citations",
     "code",
     "explicit_roles",

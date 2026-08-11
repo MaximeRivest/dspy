@@ -11,8 +11,6 @@ But it's generally better to use the make_signature function.
 
 If you are not sure if your input is a string representation, (like "input1, input2 -> output1, output2"),
 or a signature, you can use the ensure_signature function.
-
-For compatibility with the legacy dsp format, you can use the signature_to_template function.
 """
 
 import ast

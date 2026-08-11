@@ -1,6 +1,6 @@
 import warnings
 
-from dspy.primitives.example import Example
+from dspy.core.example import Example
 
 
 class Prediction(Example):

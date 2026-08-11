@@ -1,15 +1,35 @@
 """dspy rebuilt on the IR foundation (branch greenfield-ir).
 
-Stage A1 stub: signatures + roles only. Core, LM, adapters v2, the
-execution spine, modules, and optimizers land in later stages.
+Stage A1: core (signatures, examples, predictions, typed errors) and
+lm (LM, DummyLM, explicit bindings). Adapters v2, the execution spine,
+modules, and optimizers land in later stages.
 """
 
-from dspy.signatures import (
+from dspy.core import (
+    CATCHABLE_NAMES,
+    HANDLER_NAMES,
+    RAISEABLE,
+    AdapterParseError,
+    CatchableError,
+    Completions,
+    Example,
     InputField,
+    InterpreterArithmeticError,
+    InterpreterError,
+    InterpreterKeyError,
+    InterpreterTypeError,
+    LMError,
+    LoopCapError,
+    MalformedNodeError,
     OutputField,
+    PirError,
+    Prediction,
     Signature,
     SignatureMeta,
+    ToolError,
+    UncatchableError,
     ensure_signature,
+    handler_matches,
     make_signature,
 )
 from dspy import roles

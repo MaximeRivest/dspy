@@ -79,14 +79,7 @@ class Example:
         >>> example.get("city", "Unknown")
         'Unknown'
 
-    See Also:
-        [`dspy.Evaluate`][dspy.Evaluate]: Evaluate a program on a list of
-            `Example`s.
-        [`Metrics`](../../learn/evaluation/metrics.md): Write metric functions
-            that compare an `Example` with a prediction.
     """
-    # TODO: Add a `dspy.datasets.DataLoader` API link once the datasets API
-    # pages exist.
 
     def __init__(self, base=None, **kwargs):
         """Create an `Example` from fields or from an existing record.
