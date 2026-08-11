@@ -197,6 +197,8 @@ def admit_forward(
         refusal = _json_arity_refusal(forward, ())
     if refusal is None:
         refusal = _hygiene_refusal(forward)
+    if refusal is None:
+        refusal = _splat_refusal(forward)
     if refusal is not None:
         detail = {key: value for key, value in refusal.items() if key not in ("code", "component", "message", "detail")}
         detail.update(refusal.get("detail", {}))
@@ -237,6 +239,68 @@ def _json_arity_refusal(value: Any, path: tuple) -> dict[str, Any] | None:
             found = _json_arity_refusal(sub, path + (index,))
             if found is not None:
                 return found
+    return None
+
+
+def _forward_record_name(forward: Any) -> str | None:
+    """The record parameter's name, or None for the plain-form envelope.
+
+    The record envelope (v0.4, D-041) is exactly one binding
+    ``{"name": <str>, "record": "self"}`` in ``args``; the plain form is a
+    list of identifier strings. Structural read only — the schema check
+    (run first inside ``admit_forward``) already pinned the shape.
+    """
+    if not isinstance(forward, dict):
+        return None
+    args = forward.get("args")
+    if isinstance(args, list) and len(args) == 1 and isinstance(args[0], dict) and args[0].get("record") == "self":
+        name = args[0].get("name")
+        if isinstance(name, str):
+            return name
+    return None
+
+
+def _splat_refusal(forward: Any) -> dict[str, Any] | None:
+    """The record-splat law, enforced in the shared gate (D-041).
+
+    A leaf call's ``splat`` field is lawful ONLY when it names the
+    forward's declared record parameter. The parse compiler checks this in
+    ``_leaf_splat``, but that alone let the builder frontend
+    (``CallToolDynamic(splat=<var>)``) and the printer-reparse path bypass
+    it — the shared gate never re-checked it. Checking here (over the
+    schema-valid tree, via the same ``iter_calls`` walk both frontends
+    share) closes the builder bypass AND the round-trip drift: a tree
+    holding a splat of a non-record name refuses at admission, so
+    ``build.Forward`` cannot admit it and ``compile(print(tree))`` on a
+    lawful tree round-trips.
+
+    Splatting the LM-decided dict is the line PIR-E-NODE-002 holds: splat
+    what the signature declares, never what the model decides.
+    """
+    from dspy.programir import contract_validate
+
+    record = _forward_record_name(forward)
+    for path, call in contract_validate.iter_calls(forward):
+        if "splat" not in call:
+            continue
+        splat = call["splat"]
+        if record is None or splat != record:
+            declares = (
+                "names no declared record — this forward's envelope is the plain form"
+                if record is None
+                else f"is not the forward's record parameter {record!r}"
+            )
+            return {
+                "code": "PIR-E-NODE-002",
+                "component": "5_forward",
+                "node": "Call",
+                "location": contract_validate.render_path(path),
+                "reason": "splat",
+                "target": splat if isinstance(splat, str) else str(splat),
+                "message": f"leaf-call `**{splat}` splat {declares} — splat what the "
+                "signature declares, never what the model decides (D-041; the LM-decided-dict "
+                "form stays refused). Only `**<record>` on the module's own signature record is lawful.",
+            }
     return None
 
 

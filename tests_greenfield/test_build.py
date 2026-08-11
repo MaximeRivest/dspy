@@ -460,6 +460,63 @@ class TestRoundTripLaw:
         assert tree["body"][0]["value"]["splat"] == "inputs"
         assert_roundtrip(tree)
 
+    def test_record_splat_rule_is_enforced_in_the_shared_gate(self):
+        # THE D-041 LINE THAT MUST HOLD (PIR-E-NODE-002): a leaf-call splat
+        # is lawful ONLY when it names the forward's record. The parse
+        # compiler checked this, but the builder frontend and the
+        # printer-reparse path bypassed it — the shared gate (admit_forward)
+        # never re-checked. It does now, so both frontends agree.
+        b = build
+
+        # (1) The builder bypass: splat='pred' names an LM-produced value,
+        # not the record. This is exactly the LM-decided-dict form the
+        # source compiler refuses; the builder must refuse it too.
+        with pytest.raises(ProgramIRRefusal, match="PIR-E-NODE-002|not the forward's record"):
+            b.Forward(
+                [],
+                record="inputs",
+                body=[
+                    b.Assign("pred", b.CallPredict("step", splat="inputs")),
+                    b.Assign("obs", b.CallToolDynamic(b.Attr("pred", "tool"), splat="pred")),
+                ],
+            )
+
+        # (2) A splat in a plain-form forward (no record envelope) names no
+        # declared record — unlawful.
+        with pytest.raises(ProgramIRRefusal, match="PIR-E-NODE-002|no declared record"):
+            b.Forward(
+                ["question"],
+                body=[b.Assign("pred", b.CallPredict("step", splat="question"))],
+            )
+
+        # (3) Round-trip drift closed: a lawful record-splat tree prints and
+        # reparses (already covered above); the shared gate refuses the
+        # unlawful shape at admission, so compile(print(tree)) can never
+        # disagree with the builder on it — both raise the same code.
+        function = printer.to_function(
+            b.Forward([], record="inputs", body=[b.Assign("pred", b.CallPredict("step", splat="inputs"))]),
+            tag="splatlaw",
+        )
+        # A hand-built tree whose splat names a non-record — the exact shape
+        # the round-trip claim guards — refuses at admission (via the shared
+        # gate directly).
+        with pytest.raises(ProgramIRRefusal) as excinfo:
+            admit_forward(
+                {
+                    "language": "restricted-python-ast",
+                    "args": [{"name": "inputs", "record": "self"}],
+                    "body": [
+                        {
+                            "node": "Assign",
+                            "target": "obs",
+                            "value": {"node": "Call", "leaf": {"kind": "tool", "ref": "t"}, "kwargs": {}, "splat": "pred"},
+                        }
+                    ],
+                }
+            )
+        assert excinfo.value.code == "PIR-E-NODE-002"
+        assert function  # the lawful print produced source
+
     def test_literal_cap_bakes_into_the_compiled_forward(self):
         # The literal loop cap survives the plain-forward move: max_iters
         # bakes as the For range in the compiled artifact, and an edit
