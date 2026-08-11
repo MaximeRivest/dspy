@@ -153,3 +153,188 @@ callbacks — everything in it belonged to removed machinery),
 - `dspy.core.types` stream/delta types survive unused until a stage
   needs them; deleting the streaming subset is A2's call.
 - Old `tests/` tree untouched and expected red — not the target.
+
+## 2026-08-10 — A2: adapters v2 (agent A2)
+
+**Status: GREEN. `uv run --extra dev pytest tests_greenfield/ -q` → 185
+passed (A1's 68 + 117 new: `test_adapters.py`, `test_parser_data.py`,
+`test_strategies.py`).** The adapter-ir-stage design is implemented: the
+entry IS the adapter.
+
+### What exists now
+
+- `dspy/adapters/adapter.py` — ONE entry-backed `Adapter`:
+  `format(signature, inputs, demos, lm=|capabilities=) -> AdapterCall
+  (messages, request)`, `parse(signature, completion, channels=, ...)`,
+  `preview()`/`parse_preview()` (the same two functions, pure, no LM),
+  `dump_entry(for_signature=)`, `lens()`, `explain_strategies()`, and
+  the `with_parser`/`with_strategies`/`with_codecs` doors (hybrid:
+  callable on the class or an instance).
+- `dspy/adapters/presets.py` — `ChatAdapter()`, `JSONAdapter()`,
+  `XMLAdapter()` as thin constructors over preset entries (templates
+  verbatim from the old preset data), plus `make_adapter(name=,
+  template=, parser=, engine_controls=, requires=, ...)`.
+  `ChatAdapter().dump_entry()` reproduces example 01's file
+  byte-for-byte.
+- `dspy/adapters/lens.py` — the centerpiece: `{"kind":"lens","of":
+  "template"}` derived mechanically from the template. Derivation
+  source order: demos-directive assistant pattern → authored assistant
+  message → any outputs loop/`json_object` aggregate → the last user
+  message's INPUTS loop (the labeling-convention fallback examples
+  05-07's two-message template needs) → full_text degenerate. Modes:
+  labeled (boundary regex with a `name` hole; xml suffixes cut; unknown
+  labels ignored — the completed marker terminates for free),
+  json_object (fenced-block preference, strict-then-repair, exhaust
+  unknown keys), full_text (exactly one output field). One output field
+  with no labels in the completion degenerates to full_text. A loop
+  attribute the lens cannot invert (`{f.desc}` etc.) refuses at
+  construction with a teaching error (`LensError`).
+- `dspy/adapters/parse.py` — the combinator vocabulary
+  (`parse_combinators` 0.1.0): `fenced_block`, `alternatives`,
+  `json_object` (repair none|json_repair), `fields_from_object`
+  (unknown_keys exhaust|ignore|refuse), `regex` (RE2-subset validated:
+  refuses lookaround/backrefs/atomic/conditional, plus non-compiling),
+  `fields_from_groups`, `coerce`, and the typed terminals `tool_calls`
+  and `citations`. Authoring helpers emit the examples' exact dict
+  spellings; `run_pipeline` is pure and tracks consumed spans;
+  `remove_spans` is the consume mechanic. ONE vocabulary for entry
+  parsers and strategy routings.
+- `dspy/adapters/strategy.py` + `strategies.py` — rules as data:
+  predicate over DECLARED `LMCapabilities` facts (vocabulary: instruct,
+  completion, native_reasoning, native_function_calling,
+  native_citations, image_input; `completion` = not instruct; None
+  facts = all False), `hides`, `transforms` (rename), `fragments`,
+  `engine_controls` (request_patch with the `{"$from": "field:name"}`
+  splice — tools lower to litellm function schemas), `routings`
+  (channel and text forms). Builtin rules are the example trios
+  VERBATIM (05/06/07): reasoning native/prefix_cot/interleaved, tools
+  native_fc/cli_text/xml_blocks, citations native/inline.
+  `register_strategy(role, name, rule)` is the role-keyed public door;
+  `strategies={"reasoning": "prefix_cot"}` binding syntax preserved;
+  `"auto"` resolves first-predicate-pass in registration order and
+  records `auto->name` (surfaced by `explain_strategies`); an
+  explicitly named/inline rule whose predicate fails refuses naming the
+  capability.
+- `dspy/adapters/codecs.py` — families `text_pythonish`,
+  `pydantic_json`, `schema_prose` (the ported BAML codec body), `json`;
+  `register_codec` door; shape codecs (`image` at base64/png wire; PIL
+  optional-import; `frontend_bindings` annotation); `coerce_shape` —
+  the one coercion door (str/int/float/bool/json/ToolCalls/Citations).
+- `dspy/adapters/serde.py` — the 0.3.0-draft entry, exact:
+  `load_entry`/`build_entry` (as `Adapter.dump_entry`). ENTRY_KEYS + optional
+  `requires`; unknown keys refuse; dangling refs refuse naming
+  themselves; version tags (`-draft`) parse; 0.x minor-strict, 1.x
+  entry-newer-than-engine refuses. Conditional versions block:
+  roles/strategies/codecs/template_language always; parse_combinators/
+  lm_capabilities/shapes present exactly when used (used-but-missing
+  refuses; present-but-unused tolerated). **All 14 data-level example
+  entries (01–09, both/all trio members) load and round-trip exactly;
+  10/11/12 refuse with named requirements** ("requires python>=3.12
+  sidecar for `4_adapter/ledger_recovery/parser` — unbound; refuse or
+  bind one").
+- `dspy/adapters/types/` — Tool/ToolCalls (settings- and callback-free;
+  async `__call__` refuses toward `acall`; from_mcp_tool/from_langchain
+  deleted), History, Image, trimmed `Type` base (content-part markers;
+  streaming/native hooks gone), and a NEW neutral `Citations`
+  (span + 1-based doc index) replacing the anthropic-shaped one.
+  Importing the package registers the role derivations
+  (Tool→tools, ToolCalls→tool_calls, Citations→citations,
+  History→history, Image→media).
+- `dspy/__init__.py` now exports the adapter surface (ChatAdapter,
+  JSONAdapter, XMLAdapter, make_adapter, Adapter, load_entry, Tool,
+  ToolCalls, Citations, History, Image) and `dspy.adapters` carries the
+  `parse` / `strategy` authoring modules.
+
+### Decisions taken (deviations from the 12 examples flagged)
+
+1. **String parsers refuse** (open question 1 resolved hard): the four
+   builtins ARE lens entries; `"parser": "chat"` gets a teaching error.
+2. **Fragment dialect** (open question 5): fragments speak literal text
+   plus `{field('name')}` slots ONLY; bare braces are literal. Forced
+   by example 06's own bytes (`{"arg": ...}` beside `{field('tools')}`
+   in one fragment string).
+3. **Rule faces**: canonical order kind, predicate, hides,
+   [transforms], fragments, engine_controls, routings; empty faces are
+   spelled empty (as in the files); `transforms` present only when
+   non-empty (as in 07-native).
+4. **Builtin strategy names** replace the legacy vocabulary words:
+   native/prefix_cot/interleaved, native_fc/cli_text/xml_blocks,
+   native/inline (the examples' authoring intent). Structural bindings
+   with no rule: media native_parts|url_reference, history
+   directive_turns|inline.
+5. **Rules name fields literally** (as drawn in the examples): a rule
+   hiding `reasoning` against a signature whose reasoning-role field is
+   named `thoughts` refuses loudly. Role-relative field resolution is a
+   future nicety, not implemented.
+6. **Missing channel → None**, not a parse refusal: a native-FC model
+   answering without tool calls is a legitimate completion (A4's ReAct
+   needs this). Text routings with zero findall matches yield empty
+   values, same logic. Everything else missing refuses.
+7. **`requires` is authored-or-derived** (open question 7): loaded
+   entries reproduce their stated block verbatim (or its absence);
+   python-authored adapters derive `lm_capabilities` from rule
+   predicate atoms at dump.
+8. **Versions computed at dump**: strategies 1.1.0-draft iff any rule
+   object; codecs 1.1.0-draft iff family/leaf per_field entries. This
+   reproduces every example file's block exactly.
+9. **`with_strategies` keeps the preset entry name** (`chat`); the
+   examples' per-entry names (chat_reasoning_native) come from
+   `make_adapter`/`load_entry`, which is where names are authored.
+10. **engine_controls**: `stop_sequences` maps to request `stop`;
+    everything else (e.g. `completion_mode`) passes through the request
+    dict verbatim — the executor's concern (A3).
+11. **LMCapabilities grew `image_input`** (additive, per the examples'
+    vocabulary) — one A1 test updated for the new to_dict key. And
+    **Signature got `arbitrary_types_allowed`** so host types
+    (`photo: PIL.Image.Image`) are legal annotations (example 09's
+    core power); `dump_entry(for_signature=)` lowers media-role
+    PIL/Image fields to the shape+wire+binding triple.
+12. **Media is structural**: media-role input values lower to image
+    parts (the custom-type marker + `split_message_content_for_custom_types`)
+    whenever present; `url_reference` unimplemented.
+13. Inline-citation spans are captured from the RAW completion (the
+    routing runs before the lens), so a first-sentence span can include
+    the field marker — the drawn pipeline's own semantics, kept as-is.
+
+### Scope trims (honest)
+
+- No authored (level-3) parser EXECUTION, no leaf codecs, no
+  `materialize.interpreter` — all three refuse with the named-
+  requirement error, so examples 10/11/12 refuse exactly as receivers
+  without the capability should. `python_literal` codec family not
+  implemented (10 refuses on the family name first).
+- Template capacity checks (`_engine/template/capacity.py`) survive but
+  nothing calls them yet; ADP-006-style bake checks (e.g. example 04's
+  stop-sequence/field-name collision) are not wired.
+- TwoStep/BAML adapter pairings gone; the schema_prose codec family
+  carries the BAML value/schema spelling for whoever rebuilds the
+  pairing as an entry.
+
+### Notes for A3 (execution spine)
+
+- **The Predict leaf's exchange is four lines:**
+  ```python
+  lm = resolve("lm", overrides)           # dspy.lm.bindings
+  adapter = resolve("adapter", overrides) # default: dspy.ChatAdapter()
+  call = adapter.format(signature, inputs=inputs, demos=demos, lm=lm)
+  outputs = lm(messages=call.messages, **call.request)
+  fields = adapter.parse(signature, outputs[0], lm=lm)
+  # -> Prediction(**fields)
+  ```
+  `call.request` may carry `stop`, `tools`, `tool_choice`, `reasoning`,
+  `citations`, `completion_mode` — pass them through to the LM call;
+  the bindings table accepts an `"adapter"` binding name already.
+- `parse(..., channels={...})` is the native-channel door. A1's LM
+  returns bare `list[str]`, so native reasoning/FC/citations strategies
+  only fully work once the LM layer surfaces response channels — parse
+  fills channel-routed fields with None until then. DummyLM tests pass
+  channels explicitly.
+- `preview()`/`parse_preview()` are pure and byte-stable — use them for
+  explain/lint surfaces; `adapter.lens()` and
+  `adapter.explain_strategies(signature, lm=)` return data views.
+- The adapter entry (`dump_entry()`) is JSON-able and exact — embed it
+  in the ProgramIR artifact as component 4; `load_entry` is the link
+  step and refuses dangling/unversioned entries loudly.
+- `dspy/programir/` remains dormant and still imports deleted modules
+  (`dspy.predict.predict`, old primitives Module) — rewire per A1's
+  notes; nothing in the new `dspy/adapters` imports it.
