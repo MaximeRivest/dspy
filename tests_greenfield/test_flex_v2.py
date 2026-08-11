@@ -337,6 +337,57 @@ class TestPartialReplace:
         assert loaded(country="France").capital == "Paris"  # code arm, no LM
         assert loaded(country="Japan").capital == "Tokyo"  # fallback arm
 
+    def test_partial_on_a_return_site_refuses_instead_of_no_oping(self):
+        # The partial Try/If shape only wraps a top-level
+        # `result = self.<leaf>(...)` Assign. On a `return self.<leaf>(...)`
+        # site the rewrite matched nothing yet the op was reported as
+        # applied and no cheapness landed (lm_calls stayed at the pre-swap
+        # count). It must REFUSE the site with a teaching error, never claim
+        # a silent no-op as success.
+        class SolverReturn(dspy.Module):
+            def __init__(self):
+                self.solver = dspy.Predict("country -> capital")
+
+            def forward(self, country):
+                return self.solver(country=country)  # one-line return, not an Assign
+
+        program = SolverReturn()
+        devset = [
+            dspy.Example(country=c, capital=CAPITALS[c]).with_inputs("country")
+            for c in ("France", "Canada", "Japan", "Peru")
+        ]
+        holdout = [dspy.Example(country="Germany", capital="Berlin").with_inputs("country")]
+        reflection = dspy.DummyLM(
+            [
+                reflection_reply(
+                    [
+                        {
+                            "op": "replace_predict_with_code_partial",
+                            "path": "solver",
+                            "tool_name": "solve_partial",
+                            "python_source": PARTIAL_CODE,
+                        }
+                    ]
+                )
+            ]
+        )
+        dspy.configure(lm=dspy.DummyLM(capital_task))
+        optimizer = optim.FlexIR(reflection, exact_capital, iterations=1, holdout=holdout)
+        optimizer.compile(program, trainset=devset)
+
+        entry = optimizer.trajectory[1]
+        # The op did NOT silently claim success; it refused with teaching text.
+        assert entry["applied"] == []
+        assert len(entry["refusals"]) == 1
+        assert "not a top-level" in entry["refusals"][0]
+        assert "replace_predict_with_code" in entry["refusals"][0]
+        # The forward is untouched: still the bare Return, still an LM call,
+        # and no tool leaked onto the module.
+        body = program.to_manifest()["components"]["5_forward"]["self"]["body"]
+        assert [statement.get("node") for statement in body] == ["Return"]
+        assert program.to_manifest()["components"]["6_tools"] == {}
+        assert not hasattr(program, "solve_partial")
+
 
 # ---------------------------------------------------------------------------
 # (3) The reward-hacking guard: overfit dev, regress holdout -> rejected

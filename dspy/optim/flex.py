@@ -565,7 +565,21 @@ class FlexIR(Optimizer):
         new_tree = copy.deepcopy(tree)
         counter = _counter_start(new_tree)
         if partial:
-            _rewrite_partial(new_tree, attribute, tool_name, counter)
+            rewritten = _rewrite_partial(new_tree, attribute, tool_name, counter)
+            if rewritten == 0:
+                # A predict site EXISTS (checked above) but none is a
+                # top-level `Assign(target, CallPredict)` — the only shape
+                # the partial Try/If wraps. A `return self.leaf(...)` or a
+                # nested site would silently no-op while `applied` claimed
+                # success and no cheapness landed. Refuse with a teaching
+                # error so the reflection LM sees the mismatch and can
+                # reshape the call site or use the full replace op instead.
+                return (
+                    f"refused {tag}: {path!r}'s predict call site is not a top-level "
+                    "`result = self.<leaf>(...)` assignment (e.g. it is `return self.<leaf>(...)` or a nested "
+                    "call), which the partial fast-path/fallback shape cannot wrap. Rewrite the forward to "
+                    "assign the call to a variable first, or use `replace_predict_with_code` for a full swap."
+                )
         else:
             _rewrite_full(new_tree, attribute, tool_name)
 
@@ -760,7 +774,7 @@ def _rewrite_full(tree: dict, attribute: str, tool_name: str) -> None:
         call["leaf"] = {"kind": "tool", "ref": tool_name}
 
 
-def _rewrite_partial(tree: dict, attribute: str, tool_name: str, counter: list[int]) -> None:
+def _rewrite_partial(tree: dict, attribute: str, tool_name: str, counter: list[int]) -> int:
     """Wrap each `target = CallPredict(attribute)(**kw)` in a Try/If fallback.
 
     The exact tree shape (brief section 2):
@@ -777,12 +791,16 @@ def _rewrite_partial(tree: dict, attribute: str, tool_name: str, counter: list[i
 
     `F` is a fresh hygienic name (`_flex_fast_<n>`). Both arms bind
     `target` to a field-addressable record, so downstream reads are
-    unchanged. Rewriting statement lists in place preserves order.
+    unchanged. Rewriting statement lists in place preserves order. Returns
+    the number of sites actually wrapped, so the applier can refuse a
+    proposal whose predict site is not a rewritable top-level Assign
+    (rather than silently no-op while reporting the op as applied).
     """
-    _rewrite_partial_body(tree["body"], attribute, tool_name, counter)
+    return _rewrite_partial_body(tree["body"], attribute, tool_name, counter)
 
 
-def _rewrite_partial_body(body: list, attribute: str, tool_name: str, counter: list[int]) -> None:
+def _rewrite_partial_body(body: list, attribute: str, tool_name: str, counter: list[int]) -> int:
+    rewritten = 0
     index = 0
     while index < len(body):
         statement = body[index]
@@ -790,13 +808,15 @@ def _rewrite_partial_body(body: list, attribute: str, tool_name: str, counter: l
         if replacement is not None:
             body[index : index + 1] = replacement
             index += len(replacement)
+            rewritten += 1
             continue
         for key in ("body", "orelse"):
             if isinstance(statement.get(key), list):
-                _rewrite_partial_body(statement[key], attribute, tool_name, counter)
+                rewritten += _rewrite_partial_body(statement[key], attribute, tool_name, counter)
         for handler in statement.get("handlers", []) or []:
-            _rewrite_partial_body(handler["body"], attribute, tool_name, counter)
+            rewritten += _rewrite_partial_body(handler["body"], attribute, tool_name, counter)
         index += 1
+    return rewritten
 
 
 def _partial_replacement(statement: dict, attribute: str, tool_name: str, counter: list[int]) -> list | None:
