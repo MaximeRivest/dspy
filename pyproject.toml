@@ -119,7 +119,7 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-include = ["dspy/**/*.py", "tests/**/*.py"]
+include = ["dspy/**/*.py", "tests/**/*.py", "tests_greenfield/**/*.py", "examples_greenfield/**/*.py"]
 exclude = [
   "dspy/__metadata__.py",
   "tests/reliability/*.py",
@@ -180,6 +180,12 @@ ban-relative-imports = "all"
     "S101",    # Allow assert statements in tests
     "TID252",  # Allow relative imports in tests
     "ARG001",  # Allow unused arguments in tests (like pytest fixtures)
+]
+"tests_greenfield/**/*.py" = [
+    "S101",    # Allow assert statements in tests
+    "ARG001",  # Allow unused arguments in tests (like pytest fixtures)
+    "RUF043",  # match= patterns quote the teaching errors verbatim
+    "N806",    # local Signature classes and imported-module aliases are capitalized
 ]
 "__init__.py" = ["F401"]  # Init files can be empty
 "dspy/__init__.py" = [

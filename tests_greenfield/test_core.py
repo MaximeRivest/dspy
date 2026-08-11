@@ -1,7 +1,6 @@
 """Stage A1 tests: signature authoring, Example, Prediction, typed errors."""
 
 import importlib.util
-import warnings
 from pathlib import Path
 
 import pytest
@@ -9,7 +8,6 @@ import pytest
 import dspy
 from dspy.signatures import roles as roles_module
 from dspy.signatures.roles import register_role_derivation, resolve_semantic_role, semantic_role_for
-
 
 # ---------------------------------------------------------------------------
 # Signature authoring — class-based
