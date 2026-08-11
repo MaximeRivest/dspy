@@ -9,8 +9,9 @@ bytes) and minimal: it prints the plain spelling of each node, in the
 style of the module library's forwards, and it never prints a construct
 whose reparse would desugar into a DIFFERENT tree. The few node shapes
 no Python source can reproduce (a Log outside print's separator
-convention, a neg on a literal number the parser would fold) refuse with
-a teaching error instead of printing a lie.
+convention, a neg on a literal number the parser would fold, a Slice
+carrying an explicit step of 1 the parser would normalize away) refuse
+with a teaching error instead of printing a lie.
 
 `to_function` registers the printed source in `linecache` and execs it,
 so the result is a genuine Python function: `inspect.getsource` returns
@@ -193,6 +194,13 @@ def _expr(node: dict[str, Any]) -> tuple[str, int]:
     if kind == "Index":
         return f"{_receiver(node['obj'])}[{_at(node['key'], _IFEXP)}]", _ATOM
     if kind == "Slice":
+        if node.get("step") == 1:
+            _unprintable(
+                "Slice",
+                "with an explicit step of 1 has no printed spelling — the parser normalizes "
+                "`[start:stop:1]` to a step-less Slice, so printing would silently drop the key; "
+                "omit step (absent means 1)",
+            )
         start = _at(node["start"], _IFEXP) if "start" in node else ""
         stop = _at(node["stop"], _IFEXP) if "stop" in node else ""
         step = ":-1" if node.get("step") == -1 else ""

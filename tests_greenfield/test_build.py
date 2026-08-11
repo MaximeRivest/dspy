@@ -700,3 +700,21 @@ class TestPrinterHonesty:
         )
         with pytest.raises(ProgramIRRefusal, match="folded Const"):
             printer.render_forward(tree)
+
+    def test_slice_with_explicit_step_1_refuses(self):
+        # The schema enum admits step 1, but source `[a:b:1]` reparses to
+        # a step-less Slice — printing would silently MUTATE the tree.
+        slice_node = {
+            "node": "Slice",
+            "obj": {"node": "Var", "name": "x"},
+            "start": {"node": "Const", "value": 1},
+            "stop": {"node": "Const", "value": 5},
+            "step": 1,
+        }
+        tree = _wrap({"node": "Return", "value": slice_node})
+        admit_forward(tree)  # schema-legal: the refusal is the PRINTER's
+        with pytest.raises(ProgramIRRefusal, match="explicit step of 1"):
+            printer.render_forward(tree)
+        # The step-less spelling of the same slice still round-trips.
+        without_step = {key: value for key, value in slice_node.items() if key != "step"}
+        assert_roundtrip(_wrap({"node": "Return", "value": without_step}))
