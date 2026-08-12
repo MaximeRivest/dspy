@@ -61,11 +61,12 @@ from dspy.modules import RLM, BestOfN, ChainOfThought, Module, Predict, ReAct, R
 from dspy.programir.interpreters import InProcessInterpreter
 from dspy import optim
 from dspy.optim import BootstrapFewShot, BootstrapFewShotWithRandomSearch, LabeledFewShot
+from dspy.tooling import Broker, Envelope, SecretFromEnv, Session, confined, retrust, tool
 
 from dspy.__metadata__ import __author__, __author_email__, __description__, __name__, __url__, __version__
 
 
-def load(path, bindings=None):
+def load(path, bindings=None, *, envelope=None):
     """Load a saved program artifact: read + link + materialize.
 
     Args:
@@ -74,6 +75,10 @@ def load(path, bindings=None):
             `"tool"`, `"interpreter"`), then by pool entry name. LM and
             interpreter entries always need a binding; a missing one
             refuses naming the entry.
+        envelope: An optional `dspy.Envelope` — the receiver's isolation
+            envelope (D-042). An envelope meeting an `isolation_required`
+            leaf's floor IS the grant, so the leaf runs from its sidecar
+            without a hand-bound callable.
 
     Returns:
         A callable program running the artifact through the engine.
@@ -86,7 +91,7 @@ def load(path, bindings=None):
     """
     from dspy.programir import load as _load
 
-    return _load(path, bindings)
+    return _load(path, bindings, envelope=envelope)
 
 
 def diff(old, new):

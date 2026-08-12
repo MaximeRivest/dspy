@@ -283,6 +283,80 @@ session leaf granted one predictor, run over N forwards, reports total
 > bytes today, a straight remap when the contract lands a `leaf` grant
 > kind.
 
+## The authoring surface
+
+Everything above is reachable through the optimizer's knobs and the
+engine's bindings. For a human author, the same intent reads as a small
+set of decorators and objects — `dspy.tool`, `dspy.Session`,
+`dspy.Envelope`, `dspy.Broker`, `dspy.SecretFromEnv`, `dspy.retrust`,
+`dspy.confined`. A decorated function stays a normal callable and a
+normal tool everywhere a tool is accepted; the decorator only attaches
+declared metadata.
+
+**Declaration vs enforcement — stated honestly.** Some declarations bite
+today; some are recorded intent whose mechanism is owed. Do not read a
+declaration as a guarantee:
+
+| Declares | Enforced today? |
+|---|---|
+| `isolation=` (the leaf's floor) | **Yes** — load fails closed below it |
+| `session=` / `grants=` | **Yes** — the real engine bridge |
+| `net=` (broker routes) | **Yes when run under a broker** — allowlist + inject |
+| `deps=` | **Yes** — validated + unioned into the artifact env |
+| `files=` (`ro`/`rw` scopes) | **No** — declared only; no Landlock wiring yet |
+| `memory=` / `cpus=` / `gpu=` | **No** — declared only; cgroup/device placement is detection-only |
+
+A worked example, top to bottom:
+
+```python
+import dspy
+
+# A tool that reaches the network — declared floor, declared route, real deps.
+@dspy.tool(isolation="sandbox", net=["api.weather.example"], deps=["httpx"])
+def weather(city: str) -> dict:
+    # deps: httpx
+    import httpx
+    return httpx.get(f"https://api.weather.example/{city}").json()
+
+# A GPU rerank tool — floor real, memory/gpu DECLARED (not enforced yet).
+@dspy.tool(isolation="fork_ratchet", memory="8G", gpu=True)
+def rerank(query: str, docs: list) -> dict:
+    return {"order": sorted(range(len(docs)), key=lambda i: docs[i])}
+
+# A session leaf that reaches its granted leaves through the bridge only.
+def research(bridge: object, question: str) -> dict:
+    hit = bridge.weather(city=question)   # only granted leaves are reachable
+    return {"answer": str(hit)}
+session = dspy.Session(research, grants=[weather], isolation="fork_ratchet")
+
+# ... build and save a program using these as tools, then:
+
+# A receiver raises isolation with an ENVELOPE (a binding — no artifact edit).
+broker = dspy.Broker(
+    allow=["api.weather.example"],
+    inject={"api.weather.example": dspy.SecretFromEnv("WEATHER_KEY")},  # read at serve time, never stored
+    log="egress.jsonl",
+)
+program = dspy.load("artifacts/agent", bindings={"lm": {...}},
+                    envelope=dspy.Envelope("sandbox", broker=broker))
+
+# A receiver who has read the code LOWERS a floor — a recorded edit.
+program = dspy.retrust(program, "weather", floor="fork", reason="reviewed 2026-08")
+# (retrust refuses to RAISE — raising is dspy.Envelope, not an edit.)
+
+# Run one arbitrary callable once, confined, without an artifact at all.
+total = dspy.confined(sum, [1, 2, 3], isolation="fork_ratchet")
+```
+
+Two limits worth stating in prose. **Broker credential injection is
+plain-HTTP only**: an HTTPS request goes through `CONNECT` as an opaque
+TLS tunnel the broker cannot rewrite, so a real `https://` endpoint
+reached by CONNECT gets no injected header — injection is for the
+localhost/plain-HTTP path. **`confined` needs a fork context** (the
+ratchet's `unshare(CLONE_NEWUSER)` wants a single-threaded fork); on
+Python 3.14 it uses an explicit `fork` start method, and the isolation
+backend refuses loudly if the host cannot build the requested level.
+
 ## Three postures
 
 **1. Paranoid (the default).** No knobs. Generated code is pure stdlib,

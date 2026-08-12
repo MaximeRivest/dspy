@@ -124,6 +124,15 @@ def build_dispatch_tool(tool: Tool, *, owner: str) -> Callable[..., Any]:
             f"{owner} tool {name!r} must be a plain named function (lambdas and callables have no declarable source)"
         )
     definition = tree.body[0]
+    # A `@dspy.tool(...)` DECLARATION decorator only attaches metadata and
+    # returns the same callable, so strip it before embedding the verbatim
+    # source (the same tolerance leaves._source applies). Any other
+    # decorator would wrap/replace the callable and is left to fail below.
+    from dspy.programir.leaves import _only_dspy_tool_decorators, _strip_decorators
+
+    if definition.decorator_list and _only_dspy_tool_decorators(definition):
+        original = _strip_decorators(original, definition)
+        definition = ast.parse(original).body[0]
     if definition.returns is None:
         raise ValueError(f"{owner} tool {name!r} is missing a return type hint; tool leaves declare their types")
     returns = ast.unparse(definition.returns)
