@@ -291,7 +291,8 @@ def _resolve_grants(
     PIR-021: `grants[]` is the closed static effect row — every capability
     the leaf may be handed, readable from the manifest without executing
     anything. Here the ENGINE resolves the pool-leaf bridge grants (the
-    `fd`/`leaf:<name>` shape, see leaves.leaf_grant): every named leaf must
+    contract `leaf` kind, plus the legacy `fd`/`leaf:<name>` overload on
+    read — see leaves.leaf_grant/granted_leaf_name): every named leaf must
     resolve against the predictor or tool pools, or load refuses by name —
     the same species as a dangling leaf ref, before any run. Returns
     `{tool_name: {granted_pool_name: "predict"|"tool"}}` — the bridge

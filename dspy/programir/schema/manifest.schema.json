@@ -145,6 +145,46 @@
             "null"
           ],
           "description": "Name of a declared credential (component 10 entry) this placement authenticates with, spec/placement.md + PIR-005 (names, never values)."
+        },
+        "isolation_floor": {
+          "enum": [
+            "none",
+            "namespace",
+            "fork",
+            "fork_cgroup",
+            "fork_ratchet",
+            "sandbox",
+            "remote"
+          ],
+          "description": "Optional D-042 isolation floor: the minimum level a receiver envelope must meet for this leaf (PIR-016). Absent means no explicit manifest-level floor (the authored-origin default still applies via the rung)."
+        },
+        "floor_lowered_by": {
+          "type": "object",
+          "description": "PIR-017: a recorded floor-lowering edit. Lowering an isolation floor is an artifact edit, never an engine flag; the provenance names who lowered it, when, and from/to.",
+          "properties": {
+            "by": {
+              "type": "string"
+            },
+            "date": {
+              "type": "string"
+            },
+            "old": {
+              "type": "string"
+            },
+            "new": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "by",
+            "date",
+            "old",
+            "new"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -646,14 +686,15 @@
         "kind": {
           "enum": [
             "fd",
-            "broker_route"
+            "broker_route",
+            "leaf"
           ],
-          "description": "Closed grant kind: 'fd' -- a passed/inherited file descriptor (sealed-memfd data plane, listening sockets); 'broker_route' -- a hostname route through the parent-owned broker proxy (D-043: credential injection, per-request log)."
+          "description": "Closed grant kind: 'fd' -- a passed/inherited file descriptor (sealed-memfd data plane, listening sockets); 'broker_route' -- a hostname route through the parent-owned broker proxy (D-043: credential injection, per-request log); 'leaf' -- a pool leaf the granted (session) leaf may call back into through the engine bridge (the PIR-021 grant-bridge byte shape; contract-sync wave 2026-08-12)."
         },
         "name": {
           "type": "string",
           "minLength": 1,
-          "description": "The grant's name: the FD's declared role, or the broker route's hostname pattern."
+          "description": "The grant's name: the FD's declared role, the broker route's hostname pattern, or the granted pool leaf's name ('leaf' kind)."
         }
       },
       "required": [

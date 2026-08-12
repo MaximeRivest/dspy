@@ -99,7 +99,7 @@ class TestRecordShapeAdditive:
         sess._dspy_leaf_grants = [leaf_grant("inner")]
         entry = extract_tool(sess, name="sess").entry
         assert entry["kind"] == "session"
-        assert entry["grants"] == [{"kind": "fd", "name": "leaf:inner"}]
+        assert entry["grants"] == [{"kind": "leaf", "name": "inner"}]
         assert granted_leaf_name(entry["grants"][0]) == "inner"
 
     def test_a_call_kind_stamp_stays_absent(self):
@@ -113,9 +113,12 @@ class TestRecordShapeAdditive:
 
     def test_grant_helpers_round_trip(self):
         grant = leaf_grant("solver")
-        assert grant == {"kind": "fd", "name": "leaf:solver"}
+        assert grant == {"kind": "leaf", "name": "solver"}
         assert granted_leaf_name(grant) == "solver"
         assert granted_leaf_name({"kind": "broker_route", "name": "api.x"}) is None
+        # The legacy pre-contract overload stays readable (write path retired).
+        assert granted_leaf_name({"kind": "fd", "name": "leaf:solver"}) == "solver"
+        assert granted_leaf_name({"kind": "fd", "name": "data-plane"}) is None
 
     def test_old_swap_manifest_is_unchanged(self):
         # A v2/v3 code swap produces a call-kind, grant-free tool exactly
@@ -355,7 +358,7 @@ class TestFlexAddToolKindGrants:
         assert refusal is None
         tool = program.to_manifest()["components"]["6_tools"]["wrapper"]
         assert tool["kind"] == "session"
-        assert tool["grants"] == [{"kind": "fd", "name": "leaf:solver"}]
+        assert tool["grants"] == [{"kind": "leaf", "name": "solver"}]
 
     def test_bad_kind_refuses(self):
         program = OneStep()

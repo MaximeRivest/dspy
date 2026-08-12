@@ -78,6 +78,16 @@ def extract_tool(value: Tool | Callable[..., Any], *, name: str) -> AuthoredLeaf
         if authored_by == "optimizer" and placement_rung != "in_process"
         else _in_process_placement("call(kwargs)->result")
     )
+    # D-042 floor (PIR-016): `@dspy.tool(isolation=...)` stamps
+    # `_dspy_isolation_floor` — the minimum level a receiver envelope must
+    # meet, recorded on the placement as a manifest-level floor. Absent =
+    # no explicit floor (the rung's authored-origin default still binds).
+    floor = getattr(function, "_dspy_isolation_floor", None)
+    if isinstance(floor, str):
+        placement = {**placement, "isolation_floor": floor}
+    lowered = getattr(function, "_dspy_floor_lowered_by", None)
+    if isinstance(lowered, dict):
+        placement = {**placement, "floor_lowered_by": dict(lowered)}
     entry = {
         "name": name,
         "description": tool.desc or "",
@@ -106,26 +116,33 @@ def extract_tool(value: Tool | Callable[..., Any], *, name: str) -> AuthoredLeaf
     return AuthoredLeaf(name=name, entry=entry, source_path=path, source=source.encode("utf-8"))
 
 
-#: The engine-internal grant kind for a pool-leaf bridge. The ratified
-#: contract's `$defs/grant` closes `kind` to `fd | broker_route`; a
-#: leaf-to-leaf callback bridge has NO contract byte shape yet (PIR-021
-#: records nested attribution as "law, no byte shape yet"). It rides as an
-#: `fd`-kind grant whose `name` is `"leaf:<pool_name>"` — contract-valid
-#: bytes (an in-process bridge IS an FD-like capability the parent hands
-#: over) that also names the granted pool leaf the engine bridges. The
-#: prefix is the seam the engine reads; when the contract lands a
-#: `leaf`-kind grant this maps straight onto it.
+#: Legacy prefix of the pre-contract bridge encoding: before the contract
+#: landed the `leaf` grant kind (contract-sync wave 2026-08-12), the
+#: bridge rode as an `fd`-kind grant named `"leaf:<pool_name>"`. New
+#: manifests emit the real `leaf` kind; the prefix survives read-side only
+#: so previously exported artifacts keep loading.
 LEAF_GRANT_PREFIX = "leaf:"
 
 
 def leaf_grant(pool_name: str) -> dict[str, str]:
-    """One pool-leaf bridge grant, in contract-valid `{kind, name}` bytes."""
-    return {"kind": "fd", "name": f"{LEAF_GRANT_PREFIX}{pool_name}"}
+    """One pool-leaf bridge grant, in contract `{kind: "leaf", name}` bytes.
+
+    The PIR-021 grant-bridge byte shape (contract-sync wave 2026-08-12):
+    a `leaf`-kind grant names a pool leaf the granted (session) leaf may
+    call back into through the engine bridge — never directly.
+    """
+    return {"kind": "leaf", "name": pool_name}
 
 
 def granted_leaf_name(grant: dict[str, Any]) -> str | None:
-    """The pool leaf a bridge grant names, or None for a non-bridge grant."""
+    """The pool leaf a bridge grant names, or None for a non-bridge grant.
+
+    Reads the contract `leaf` kind, plus the legacy `fd`/`"leaf:<name>"`
+    private overload (write path retired) so old artifacts keep loading.
+    """
     name = grant.get("name", "")
+    if grant.get("kind") == "leaf" and isinstance(name, str) and name:
+        return name
     if grant.get("kind") == "fd" and isinstance(name, str) and name.startswith(LEAF_GRANT_PREFIX):
         return name[len(LEAF_GRANT_PREFIX) :]
     return None
@@ -177,9 +194,36 @@ def _source(function: Callable[..., Any], *, subject: str) -> str:
     tree = ast.parse(source)
     if not tree.body or not isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
         raise ValueError(f"ProgramIR {subject} source is not one function definition")
-    if tree.body[0].decorator_list:
-        raise ValueError(f"ProgramIR {subject} uses decorators; bake the undecorated function instead")
+    definition = tree.body[0]
+    if definition.decorator_list:
+        # The `@dspy.tool(...)` marker is a DECLARATION decorator: it only
+        # attaches `_dspy_*` metadata this module already reads and returns
+        # the SAME callable unchanged. So it is not the "hidden behavior"
+        # the decorator rule forbids — strip it and keep the undecorated
+        # source (which reparses cleanly). Any OTHER decorator still
+        # refuses: it may wrap or replace the callable, so the baked source
+        # would not be what runs.
+        if not _only_dspy_tool_decorators(definition):
+            raise ValueError(f"ProgramIR {subject} uses decorators; bake the undecorated function instead")
+        source = _strip_decorators(source, definition)
     return source
+
+
+def _only_dspy_tool_decorators(definition: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when every decorator is the `@dspy.tool` / `@tool` marker."""
+    for decorator in definition.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", None)
+        if name != "tool":
+            return False
+    return True
+
+
+def _strip_decorators(source: str, definition: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """Drop the decorator lines, returning the bare `def ...:` source."""
+    lines = source.splitlines()
+    start = definition.lineno - 1  # 1-based to 0-based; the `def` line
+    return "\n".join(lines[start:]).strip() + "\n"
 
 
 def _check_self_contained(function: Callable[..., Any], source: str, *, subject: str) -> None:
