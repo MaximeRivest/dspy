@@ -132,6 +132,13 @@ _VOCABULARY = {
 
 _CODE_OPS = frozenset({"replace_predict_with_code", "replace_predict_with_code_partial"})
 
+#: Optional keys an op ACCEPTS beyond its required set (still closed — a
+#: key outside (required + optional) refuses). PIR-021: add_tool may carry
+#: the invocation discriminant `kind` and the static effect row `grants`.
+_OPTIONAL_KEYS = {
+    "add_tool": frozenset({"kind", "grants"}),
+}
+
 _REFLECTION_INSTRUCTIONS = """You are improving a dspy program by REWRITING ITS IR. Read the program report and propose edits.
 Reply in `proposals` with a JSON array. Each element must be EXACTLY one of:
 - {"op": "set_instructions", "path": "<predictor path>", "text": "<new instructions>"}
@@ -147,6 +154,9 @@ Reply in `proposals` with a JSON array. Each element must be EXACTLY one of:
 For rewrite_forward, write the forward EXACTLY in the dialect shown in the program report; paths and leaf
 names come from the report; the node set is CLOSED — unsupported Python refuses. A new predict or tool is
 only reachable after a rewrite_forward in the SAME proposal list wires a call to it.
+add_tool also takes optional "kind" ("call" default, or "session" for a stateful leaf) and "grants" (a list
+of existing leaf names a session leaf may call back into through its bridge — the session function then takes
+the grant bridge as its FIRST parameter and reaches only those leaves).
 Use add_predict + rewrite_forward to DECOMPOSE a step; use add_tool + rewrite_forward to insert
 deterministic code; small data edits first when the failure is about WHAT, structure edits when it is
 about HOW.
@@ -394,6 +404,7 @@ class FlexIR(Optimizer):
         best_score = baseline.score
         best_lm_calls = baseline.lm_calls
         best_results = baseline.results
+        self._best_attribution = baseline.attribution
         best_holdout = self._evaluate(program, holdout).score if holdout else None
         self.trajectory.append(
             {
@@ -486,6 +497,7 @@ class FlexIR(Optimizer):
                     best_score = result.score
                     best_lm_calls = result.lm_calls
                     best_results = result.results
+                    self._best_attribution = result.attribution
                     # The champion holdout baseline is a MONOTONIC CEILING:
                     # every accept passed the holdout gate above, so it
                     # never sinks below the prior champion. Raising it (max)
@@ -941,6 +953,12 @@ class FlexIR(Optimizer):
         lines.append("== cost view ==")
         lines.append(cost_build_text(manifest))
         lines.append(f"measured last run: {lm_calls} LM call(s) over {len(results)} example(s)")
+        # PIR-021 per-leaf attributed counts: a call through a session
+        # leaf's bridge shows under BOTH names (the total counts it once).
+        attribution = getattr(self, "_best_attribution", None)
+        if attribution:
+            attributed = "  ".join(f"{name}:{count}" for name, count in sorted(attribution.items()))
+            lines.append(f"measured per-leaf attribution: {attributed}")
         lines.append("== current score ==")
         lines.append(f"{score} over {len(results)} example(s)")
         lines.append("== failing examples (up to 3) ==")
@@ -1185,6 +1203,15 @@ class FlexIR(Optimizer):
                 f"refused {tag}: {noun} {path!r} still has {remaining} live call site(s); replace them "
                 "with code (or rewrite the forward to remove the calls) before deleting the leaf"
             )
+        # PIR-021: a grant reference is a live site too. A session leaf
+        # that grants this leaf would be left with a dangling bridge —
+        # refuse, naming the granting leaf, before the delete.
+        granting = self._grant_holders(program, attribute)
+        if granting:
+            return (
+                f"refused {tag}: {noun} {path!r} is granted by session leaf(s) {sorted(granting)}; a grant is a "
+                "live site — remove the grant (or delete the granting session leaf) before deleting this leaf"
+            )
         previous = owner.__dict__.get(attribute, _ABSENT)
         if previous is _ABSENT:
             return f"refused {tag}: the module owning {path!r} has no attribute {attribute!r} to delete"
@@ -1200,6 +1227,17 @@ class FlexIR(Optimizer):
         for forward in manifest["components"]["5_forward"].values():
             total += len(_find_leaf_sites(forward, attribute, kind=kind))
         return total
+
+    def _grant_holders(self, program: Module, attribute: str) -> set[str]:
+        """Names of tool leaves whose grants bridge into `attribute` (PIR-021)."""
+        from dspy.programir.leaves import granted_leaf_name
+
+        holders: set[str] = set()
+        for tool_name, entry in program.to_manifest()["components"]["6_tools"].items():
+            for grant in entry.get("grants", []) or []:
+                if isinstance(grant, dict) and granted_leaf_name(grant) == attribute:
+                    holders.add(tool_name)
+        return holders
 
     # ------------------------------------------------------------------
     # v3 structure ops: add leaves, rewrite whole forwards
@@ -1289,6 +1327,17 @@ class FlexIR(Optimizer):
             return f"refused {tag}: add_tool name must be a Python identifier, got {name!r}"
         if name in owner.__dict__:
             return f"refused {tag}: attribute {name!r} already exists on the module at {proposal['path']!r}"
+        # PIR-021: the optional `kind` (call | session) and `grants[]`
+        # (closed static effect row). Absent kind = "call" — exactly the
+        # prior free tool. Grants name existing pool leaves this leaf may
+        # bridge into; a session leaf reaches them through the bridge.
+        kind = proposal.get("kind", "call")
+        if kind not in ("call", "session"):
+            return f"refused {tag}: add_tool kind must be 'call' or 'session', got {kind!r}"
+        grants_spec = proposal.get("grants", [])
+        grant_refusal, grant_entries = self._validate_grants(program, grants_spec, kind, tag)
+        if grant_refusal is not None:
+            return grant_refusal
         try:
             admitted = admit_tool_source(
                 name,
@@ -1298,16 +1347,65 @@ class FlexIR(Optimizer):
                 extra_imports=self.extra_imports,
                 code_trust=self.code_trust,
                 allowed_deps=self.allowed_deps,
+                session=(kind == "session"),
             )
         except ValueError as error:
             return f"refused {tag}: python_source rejected by admission — {error}"
         install_refusal = self._ensure_leaf_deps(admitted, tag)
         if install_refusal is not None:
             return install_refusal
-        setattr(owner, name, admitted.function)
+        function = admitted.function
+        if kind == "session":
+            function._dspy_leaf_kind = "session"
+        if grant_entries:
+            function._dspy_leaf_grants = grant_entries
+        setattr(owner, name, function)
         program.invalidate_ir()
         undo_structural.append((owner, name, _ABSENT))
         return None
+
+    def _validate_grants(
+        self, program: Module, grants_spec: Any, kind: str, tag: str
+    ) -> tuple[str | None, list[dict[str, str]]]:
+        """Validate add_tool grants: a list naming EXISTING pool leaves.
+
+        Each grant is either a bare leaf-name string or `{"leaf": name}`.
+        A grant must resolve to a live predictor or tool leaf, or it
+        refuses (teaching). Grants require kind="session" — a call-kind
+        leaf with grants is a mis-shape (only a session holds a bridge).
+        Returns `(refusal, entries)` where entries are contract-valid
+        `{kind, name}` bridge grants via `leaves.leaf_grant`.
+        """
+        from dspy.programir.leaves import leaf_grant
+
+        if not grants_spec:
+            return None, []
+        if kind != "session":
+            return (
+                f"refused {tag}: add_tool grants require kind='session' — only a session leaf holds a grant "
+                "bridge (a call-kind leaf is a pure request/response with no callbacks)",
+                [],
+            )
+        if not isinstance(grants_spec, list):
+            return f"refused {tag}: add_tool grants must be a JSON array of leaf names", []
+        predictor_paths = {path for path, _ in program.named_predictors()}
+        tool_names = set(program.to_manifest()["components"]["6_tools"])
+        entries: list[dict[str, str]] = []
+        for grant in grants_spec:
+            leaf = grant if isinstance(grant, str) else (grant.get("leaf") if isinstance(grant, dict) else None)
+            if not isinstance(leaf, str) or not leaf:
+                return (
+                    f"refused {tag}: each add_tool grant names a leaf (a string or {{'leaf': name}}), got {grant!r}",
+                    [],
+                )
+            if leaf not in predictor_paths and leaf not in tool_names:
+                return (
+                    f"refused {tag}: grant names leaf {leaf!r}, which resolves to no predictor or tool "
+                    f"(predictors: {sorted(predictor_paths)}, tools: {sorted(tool_names)})",
+                    [],
+                )
+            entries.append(leaf_grant(leaf))
+        return None, entries
 
     def _apply_rewrite_forward(self, program: Module, proposal: dict, tag: str, undo_structural: list) -> str | None:
         """Replace an owner module's forward with an authored source — gated.

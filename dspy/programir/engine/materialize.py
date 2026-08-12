@@ -132,13 +132,13 @@ class _GrantBridge:
     def __getattr__(self, name: str) -> Any:
         table = object.__getattribute__(self, "_table")
         if name in table:
+
             def _bound(**kwargs: Any) -> Any:
                 return self.call(name, **kwargs)
 
             return _bound
         raise AttributeError(
-            f"session leaf reaches only its declared grants; {name!r} is not granted "
-            f"(granted: {sorted(table)})"
+            f"session leaf reaches only its declared grants; {name!r} is not granted (granted: {sorted(table)})"
         )
 
 

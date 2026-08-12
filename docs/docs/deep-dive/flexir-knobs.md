@@ -236,6 +236,53 @@ Which credential channel is live, stated plainly:
   the child reads from its inherited environment, or a private
   `DSPY_FLEX_LM_*` fallback var — still never on disk or argv.
 
+## One leaf substrate
+
+Tools and interpreters were always two spellings of the same thing: a
+leaf that runs a body under a profile. PIR-021 (D-043) makes that one
+record. Two additive fields carry it, both absent by default so every
+existing artifact is byte-identical.
+
+**`kind`** — the invocation discriminant. `call` (the default, absent
+from the manifest) is one request/response — exactly today's tool.
+`session` is a held stateful context whose lifetime is one **leaf span**:
+the callable is built once per forward and torn down after, so state is
+held *within* a forward and never leaks across forwards (at `fork_ratchet`
+and above the session is fork-scoped — the same ratchet rule).
+
+**`grants`** — the closed static effect row. A leaf's `grants[]` lists
+every capability it may be handed, readable from the manifest *without
+executing anything*. A session leaf reaches its granted pool leaves
+through a **bridge** it receives as its first parameter — never ambient
+pool access. Reaching a leaf it was not granted refuses; a grant that
+names no leaf refuses at load, the same species as a dangling leaf ref.
+
+In FlexIR, `add_tool` takes optional `kind` and `grants`:
+
+```python
+{"op": "add_tool", "path": "self", "name": "wrapper",
+ "kind": "session", "grants": ["solver"],
+ "python_source": "def wrapper(bridge: object, text: str) -> dict:\n    return bridge.solver(text=text)\n"}
+```
+
+Grants are live sites: `delete_dead_leaf` refuses to delete a leaf a
+session still grants, naming the granting leaf.
+
+**Nested attribution.** An LM call made through a session leaf's grant
+bridge attributes to **both** the session leaf and the predictor it
+reached, transitively. The attribution is a *labeling*, not a
+double-count: the total `lm_calls` still counts each real call once, and
+the per-leaf measured counts show the same call under both names. A
+session leaf granted one predictor, run over N forwards, reports total
+`lm_calls` N with per-leaf `session:N` and `predictor:N`.
+
+> Contract note: the ratified `$defs/grant` closes grant `kind` to `fd |
+> broker_route`; a pool-leaf callback bridge has no contract byte shape
+> yet (PIR-021 records nested attribution as "law, no byte shape yet"),
+> so it rides as an `fd`-kind grant named `leaf:<pool_name>` — valid
+> bytes today, a straight remap when the contract lands a `leaf` grant
+> kind.
+
 ## Three postures
 
 **1. Paranoid (the default).** No knobs. Generated code is pure stdlib,

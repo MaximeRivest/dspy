@@ -125,11 +125,18 @@ class EvaluationResult:
             `prediction` is None when the run raised a catchable error.
         lm_calls: Predictor exchanges recorded in the returned
             predictions' exhaust; a failed run's calls are not counted.
+        attribution: PIR-021 per-leaf measured call counts aggregated over
+            the devset (`name -> count`). A predictor reached through a
+            session leaf's grant bridge shows under BOTH the session leaf
+            and the predictor — the labeling, not the total (`lm_calls`
+            still counts each real call once). Empty when no session
+            leaf ran.
     """
 
     score: float
     results: list[tuple[Example, Any, float]]
     lm_calls: int
+    attribution: dict[str, int] = field(default_factory=dict)
 
 
 def evaluate(program: Any, devset: Any, metric: Callable[[Example, Any], Any]) -> EvaluationResult:
@@ -154,6 +161,7 @@ def evaluate(program: Any, devset: Any, metric: Callable[[Example, Any], Any]) -
         raise ValueError("evaluate() needs a non-empty devset; there is nothing to score")
     results: list[tuple[Example, Any, float]] = []
     lm_calls = 0
+    attribution: dict[str, int] = {}
     for example in devset:
         inputs = {key: example[key] for key in example.inputs().keys()}
         try:
@@ -162,6 +170,8 @@ def evaluate(program: Any, devset: Any, metric: Callable[[Example, Any], Any]) -
             results.append((example, None, 0.0))
             continue
         lm_calls += _count_lm_calls(prediction)
+        for name, count in (getattr(prediction, "_trajectory", None) or {}).get("leaf_attribution", {}).items():
+            attribution[name] = attribution.get(name, 0) + count
         # A metric that raises scores THAT example 0.0 and the run continues
         # (brief 1.f): one bad example must not abort the whole devset pass,
         # or a single flaky metric call would kill an optimization run. The
@@ -180,7 +190,7 @@ def evaluate(program: Any, devset: Any, metric: Callable[[Example, Any], Any]) -
             value = 0.0
         results.append((example, prediction, value))
     score = sum(value for _, _, value in results) / len(results)
-    return EvaluationResult(score=score, results=results, lm_calls=lm_calls)
+    return EvaluationResult(score=score, results=results, lm_calls=lm_calls, attribution=attribution)
 
 
 def _count_lm_calls(prediction: Any) -> int:

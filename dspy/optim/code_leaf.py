@@ -151,6 +151,7 @@ def admit_tool_source(
     extra_imports: frozenset[str] | None = None,
     code_trust: str = "isolated",
     allowed_deps: frozenset[str] | None = None,
+    session: bool = False,
 ) -> AdmittedCode:
     """Admit optimizer-authored source as a tool leaf, or refuse loudly.
 
@@ -264,7 +265,7 @@ def admit_tool_source(
     _refuse_builtin_escapes(definition, subject=subject)
 
     # Step 4: the io-contract from the replaced signature.
-    _check_io_contract(definition, signature, subject=subject, partial=partial)
+    _check_io_contract(definition, signature, subject=subject, partial=partial, session=session)
 
     # Only now define the function (the single def in a clean namespace via
     # linecache — defines the name, runs no body) and extract the pool
@@ -396,7 +397,9 @@ def _locally_bound_names(definition: ast.FunctionDef) -> set[str]:
     return local
 
 
-def _check_io_contract(definition: ast.FunctionDef, signature: Any, *, subject: str, partial: bool) -> None:
+def _check_io_contract(
+    definition: ast.FunctionDef, signature: Any, *, subject: str, partial: bool, session: bool = False
+) -> None:
     """Refuse unless params == input fields (typed) and return matches the op.
 
     The unified-leaf law: the code leaf's interface IS the replaced
@@ -407,6 +410,11 @@ def _check_io_contract(definition: ast.FunctionDef, signature: Any, *, subject: 
     With `signature=None` (a FREE tool, FlexIR v3 `add_tool`), the
     io-contract derives from the source's OWN hints: every parameter must
     carry a type hint, and the return annotation must be `dict`.
+
+    With `session=True` (PIR-021 session leaf), the FIRST parameter is the
+    grant bridge — the leaf's only capability surface. It is exempt from
+    the typed-input rule (it is not a data input); the rest still must be
+    typed, and the return still must be `dict`.
     """
     inputs = list(signature.input_fields) if signature is not None else None
     args = definition.args
@@ -415,15 +423,27 @@ def _check_io_contract(definition: ast.FunctionDef, signature: Any, *, subject: 
         raise ValueError(
             f"ProgramIR {subject} must take {wanted} as plain parameters — no positional-only, *args, or **kwargs"
         )
-    names = [argument.arg for argument in (*args.args, *args.kwonlyargs)]
+    all_positional = [*args.args, *args.kwonlyargs]
+    # Every parameter — the bridge included — must be typed (extract_tool
+    # enforces this too; a session bridge types as `object`). The bridge
+    # is exempt only from the input-FIELD equality rule below, not typing.
+    untyped = [argument.arg for argument in all_positional if argument.annotation is None]
+    if untyped:
+        raise ValueError(f"ProgramIR {subject} parameters {untyped} need type hints (every leaf parameter is typed)")
+    positional = all_positional
+    if session:
+        if not positional:
+            raise ValueError(
+                f"ProgramIR {subject} is a session leaf and must take the grant bridge as its FIRST parameter "
+                "(a session leaf reaches its grants through the bridge, never ambient pools)"
+            )
+        positional = positional[1:]  # exempt the bridge from the input-field rule
+    names = [argument.arg for argument in positional]
     if inputs is not None and names != inputs:
         raise ValueError(
             f"ProgramIR {subject} parameters {names} must be exactly the replaced signature's input "
             f"fields {inputs}, in order (the unified-leaf law: the code's interface IS the signature)"
         )
-    untyped = [argument.arg for argument in (*args.args, *args.kwonlyargs) if argument.annotation is None]
-    if untyped:
-        raise ValueError(f"ProgramIR {subject} parameters {untyped} need type hints (every leaf parameter is typed)")
     if definition.returns is None:
         expected = "dict | None" if partial else "dict"
         record = (

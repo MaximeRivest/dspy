@@ -60,6 +60,18 @@ def _shape_short(shape: Any) -> str:
     return _dumps(shape)
 
 
+def _grant_label(grant: Any) -> str:
+    """Readable label for one grant: a pool-leaf bridge, or the raw kind/name."""
+    if not isinstance(grant, dict):
+        return str(grant)
+    from dspy.programir.leaves import granted_leaf_name
+
+    leaf = granted_leaf_name(grant)
+    if leaf is not None:
+        return f"leaf:{leaf}"
+    return f"{grant.get('kind', '?')}:{grant.get('name', '?')}"
+
+
 def _placement_line(placement: Any) -> str:
     if not isinstance(placement, dict):
         return "(no placement block)"
@@ -313,12 +325,19 @@ def build_text(manifest: dict) -> str:
         absent.append("tools (6)")
     for name in sorted(tools):
         entry = tools[name]
-        out.append(_kv(name, f"language={entry.get('language', '?')}  source={entry.get('source', '?')}"))
+        # PIR-021: show the invocation discriminant (kind) and the static
+        # effect row (grants) so the leaf's capability surface is readable
+        # without executing anything.
+        kind = entry.get("kind", "call")
+        out.append(_kv(name, f"kind={kind}  language={entry.get('language', '?')}  source={entry.get('source', '?')}"))
         if entry.get("description"):
             out.append(_kv("  description", entry["description"], 4))
         if entry.get("parameters") is not None:
             out.append(_kv("  params", _dumps(entry.get("parameters")), 4))
         out.append(_kv("  return", _shape_short(entry.get("return_schema")), 4))
+        grants = entry.get("grants")
+        if grants:
+            out.append(_kv("  grants", ", ".join(_grant_label(grant) for grant in grants), 4))
         out.append(_kv("  placement", _placement_line(entry.get("placement")), 4))
 
     out.append(_rule("INTERPRETER POOL (7)"))
