@@ -124,6 +124,11 @@ class EgressBroker:
         headers = {key: value for key, value in handler.headers.items() if key.lower() != "proxy-connection"}
         grant = self.inject.get(host)
         if grant is not None:
+            # REPLACE, never merely add: the child may hold a non-secret
+            # placeholder credential (its client refuses to send without
+            # one), and a case-variant duplicate header would leak the
+            # placeholder alongside the real credential.
+            headers = {key: value for key, value in headers.items() if key.lower() != grant["header"].lower()}
             headers[grant["header"]] = grant["value"]
             injected = True
         self.requests.append({"host": host, "method": method, "allowed": True, "injected": injected})

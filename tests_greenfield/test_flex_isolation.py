@@ -482,8 +482,13 @@ class TestBrokerEndToEnd:
         optimizer.compile(program, trainset=tag_devset("cat"))
         baseline = optimizer.trajectory[0]
         assert (baseline["score"], baseline["lm_calls"]) == (1.0, 1)
-        # The stub saw the injected credential — proof egress worked.
+        # The stub saw the injected credential — proof egress worked. This
+        # also pins REPLACEMENT: the child holds only the non-secret
+        # placeholder (modern provider clients refuse to send with no key
+        # at all — the server run proved it), and the broker swapped it
+        # for the real credential on the way out.
         assert stub_lm_server.seen_auth == ["Bearer sk-child-must-not-have"]
+        assert "Bearer sk-broker-injected" not in stub_lm_server.seen_auth
 
     def test_child_env_is_secret_free_under_the_broker(self):
         # With the broker active, the credential rides NO child env var.

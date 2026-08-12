@@ -892,8 +892,14 @@ class FlexIR(Optimizer):
                     # Broker channel (Q7): the credential NEVER enters the
                     # child — not even as an env var. The broker attaches
                     # `Authorization: Bearer <key>` on egress to the
-                    # allowlisted host. The child gets only the proxy vars.
+                    # allowlisted host. The child gets the proxy vars plus
+                    # a NON-SECRET placeholder key: modern provider clients
+                    # (openai >= 2.x) refuse to send a request with no key
+                    # at all, so the child must hold something — and the
+                    # broker REPLACES the Authorization header on egress,
+                    # so the placeholder never reaches the provider.
                     self._broker_inject[host] = {"header": "Authorization", "value": f"Bearer {value}"}
+                    kwargs[key] = _BROKER_PLACEHOLDER_KEY
                     continue
                 # Env-name channel (scoring_isolation without a broker, and
                 # the back-compat default): the credential rides an env-var
@@ -1576,6 +1582,13 @@ _NONE_LEVEL = _IsolationLevel.none
 #: `Authorization` header in a dict). No per-value audit is attempted —
 #: they refuse whole (refusing beats leaking).
 _OPAQUE_SECRET_KWARGS = frozenset({"extra_headers", "default_headers", "headers"})
+
+#: The NON-SECRET key the broker-channel child holds so its provider
+#: client will send the request at all (openai >= 2.x refuses an empty
+#: key client-side, so the request would die before the broker could
+#: inject). The broker replaces the Authorization header on egress; this
+#: value never reaches the provider and is safe in specs and logs.
+_BROKER_PLACEHOLDER_KEY = "sk-broker-injected"
 
 
 def _is_secret_kwarg(key: str) -> bool:
