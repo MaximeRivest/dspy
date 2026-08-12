@@ -21,11 +21,13 @@ optimizer = dspy.optim.FlexIR(
     reward=None,              # enables wrap_best_of_n proposals
     holdout=None,             # the reward-hacking guard split
     eps=1e-9,                 # score tolerance for acceptance
-    code_trust="isolated",    # "isolated" | "in_process"
+    isolation_floor="fork_ratchet",  # the D-042 floor authored leaves demand
     extra_imports=None,       # widen the stdlib import allowlist
     allowed_deps=None,        # permit named pip packages in # deps:
     auto_install=False,       # uv pip install granted deps into THIS env
     eval_mode="in_process",   # "in_process" | "artifact" (score as artifact)
+    scoring_isolation="none", # wall the artifact-mode scoring child runs behind
+    broker_egress=None,       # hostnames the child may reach through the broker
 )
 compiled = optimizer.compile(program, trainset=trainset, checkpoint_dir="runs/flex")
 ```
@@ -47,18 +49,32 @@ compiled = optimizer.compile(program, trainset=trainset, checkpoint_dir="runs/fl
 These three govern what optimizer-authored code may reach. They are
 independent; compose them deliberately.
 
-**`code_trust`** — where authored code runs.
+**`isolation_floor`** — the wall authored code demands (D-042).
 
-- `"isolated"` (default): authored tool leaves are stamped
+The floor is the **minimum** isolation level an authored tool leaf will
+accept, named on the ordered gradient
+(`none < namespace < fork < fork_cgroup < fork_ratchet < sandbox <
+remote`). It is baked into the leaf's placement; a receiver may exceed
+it, never under-run it (under-floor is a loud refusal).
+
+- `"fork_ratchet"` (default): authored tool leaves are stamped
   `isolation_required`. Loading the artifact fails closed unless the
-  receiver explicitly grants the leaf. Nothing runs in your process
-  without a deliberate act.
-- `"in_process"`: authored leaves get the ordinary in-process placement.
-  Your own loop, and anyone who loads your artifact, runs the generated
-  code with **full ambient authority** — your filesystem, your network,
-  your credentials. The `authored_by: "optimizer"` provenance stamp
-  survives either way, so a receiver can always audit or re-place the
-  leaf before trusting it.
+  receiver grants the leaf — either explicitly (bind a reviewed
+  callable) or by binding an isolation envelope at level ≥ `fork_ratchet`
+  (**the envelope IS the grant**). Nothing runs in your process without a
+  deliberate act.
+- `"none"`: authored leaves get the ordinary in-process placement. Your
+  own loop, and anyone who loads your artifact, runs the generated code
+  with **full ambient authority** — your filesystem, your network, your
+  credentials.
+
+The `authored_by: "optimizer"` provenance stamp survives at every floor,
+so a receiver can always audit or re-place the leaf before trusting it.
+
+> **Migration.** `code_trust` is the old spelling: `code_trust="isolated"`
+> is an alias for `isolation_floor="fork_ratchet"`, and
+> `code_trust="in_process"` for `isolation_floor="none"`. Both still work;
+> prefer the floor form for the full gradient.
 
 **`extra_imports`** — what authored code may `import`.
 
@@ -66,8 +82,17 @@ The default allowlist is a closed pure-stdlib set (`re`, `json`, `math`,
 `statistics`, `itertools`, ...). `extra_imports=frozenset({"numpy",
 "sklearn"})` widens it for this optimizer instance only. The
 builtin/dunder denylist (`eval`, `__import__`, `__globals__`, ...) stays
-denied regardless — but understand what this is: an AST filter, not a
-sandbox. Every module you add is a door you opened.
+denied regardless.
+
+Understand what this list is now: **defense in depth and teaching
+ergonomics, not the wall.** When the floor is `fork_ratchet` or above,
+the real boundary is the isolation envelope — a kernel wall, not an AST
+filter. The import allowlist then serves two lesser purposes: it catches
+an obviously-wrong import early with a teaching refusal (faster feedback
+than a sandbox denial mid-run), and it is a second layer for the honest
+case where the envelope is weaker than intended. At floor `none` it is
+the *only* filter, and an AST filter is a speed bump, not armor — so
+every module you add there is a door you opened.
 
 **`allowed_deps`** — what packages authored code may declare.
 
@@ -141,6 +166,76 @@ construction contract; a credential-bearing opaque header bag
 pin in the lock is overridden with the local tree via
 `eval_env_overrides`.
 
+## Isolation: the wall around scoring (D-042)
+
+The isolation gradient is an axis *orthogonal* to where the backend runs.
+It names, mechanism by mechanism, what it costs to walk away from the
+zero pole (today's in-process scoring). Its zero end is byte-identical to
+before.
+
+| level | mechanism | leaf-boundary cost |
+|---|---|---|
+| `none` | same process, same namespace — today's default | 0 |
+| `namespace` | same process, isolated Python namespace | ~0 |
+| `fork` | subprocess via fork, CoW-shared RAM, no lockdown | ~1 ms |
+| `fork_cgroup` | + resource caps (cpu/memory/pids), parent-controlled, revocable | ~1 ms |
+| `fork_ratchet` | + ephemeral UID, netns, Landlock, seccomp — the one-way wall | ~2–5 ms |
+| `sandbox` | + separate mount-root world (bubblewrap), broker-only network | ~5–20 ms |
+| `remote` | the same declared profile satisfied elsewhere | RPC latency |
+
+**`scoring_isolation`** puts the artifact-mode scoring child behind one of
+these walls. The default `"none"` is exactly today's behavior. Any higher
+level asks the Linux backend for that wall following the fork-place-ratchet
+recipe: fork → the parent places the child in a cgroup leaf → the child
+self-ratchets (unshare namespaces, `NO_NEW_PRIVS`, Landlock/seccomp where
+present) → a self-probe confirms a socket and an out-of-scratch write both
+fail before any payload runs. If the host cannot honestly build the
+requested level — cgroupfs unwritable, user namespaces disabled — it
+**refuses loudly** (`IsolationDowngrade`) rather than run behind a weaker
+wall while claiming the stronger one. Fail closed, never silently.
+
+**The envelope is recorded, per candidate.** Every trajectory entry (and
+`scores.json`) carries the `envelope` it was scored under — the level, the
+broker allowlist, the scratch dir. Because behavior must be
+isolation-invariant (raising the wall never changes what the code
+computes), a score that shifts when the wall changes shows up as one
+differing field in one diff, and indicts the leaf's undeclared side
+channel — not the wall.
+
+**The envelope is also a grant.** At load time, binding an isolation
+envelope at level ≥ `fork_ratchet`
+(`bindings={"isolation": {"envelope": "fork_ratchet"}}`) satisfies an
+`isolation_required` leaf directly — the wall the leaf demanded is
+present, so the receiver need not hand-review and bind every callable.
+The explicit per-leaf grant still works.
+
+## The egress broker
+
+At `sandbox` the child's network is deny-all by default. `broker_egress`
+opens exactly the hosts you name, through a parent-owned localhost proxy
+(the notes' Q7 design):
+
+```python
+FlexIR(..., scoring_isolation="sandbox",
+       broker_egress=frozenset({"api.anthropic.com"}))
+```
+
+The broker gives three things: a **hostname allowlist** (anything else is
+refused *and* logged — no IP-allowlist rot), a **per-request log** (one
+list answers "what did the child reach"), and **credential injection** —
+the child gets `HTTPS_PROXY`/`HTTP_PROXY` and *no* credential env vars;
+the broker attaches the `Authorization` header on egress to an allowlisted
+host. Generated code cannot leak a key it never held.
+
+Which credential channel is live, stated plainly:
+
+- **Broker active** (`broker_egress` names the LM's host): the secret
+  never enters the child, not even as an env var. The broker injects it.
+- **No broker** (the env-name channel, back-compat and the
+  `scoring_isolation="none"` default): the secret rides an env-var *name*
+  the child reads from its inherited environment, or a private
+  `DSPY_FLEX_LM_*` fallback var — still never on disk or argv.
+
 ## Three postures
 
 **1. Paranoid (the default).** No knobs. Generated code is pure stdlib,
@@ -156,7 +251,7 @@ FlexIR(reflection_lm, metric, holdout=holdout)
 the loop frictionless.
 
 ```python
-FlexIR(reflection_lm, metric, holdout=holdout, code_trust="in_process")
+FlexIR(reflection_lm, metric, holdout=holdout, isolation_floor="none")
 ```
 
 **3. Full power in a disposable box.** You run the whole optimization
@@ -167,7 +262,7 @@ ceiling is the solution space, not the exposure. Open the doors:
 ```python
 FlexIR(
     reflection_lm, metric, holdout=holdout,
-    code_trust="in_process",
+    isolation_floor="none",
     extra_imports=frozenset({"numpy", "sklearn", "torch", "transformers", "xgboost"}),
     allowed_deps=frozenset({"numpy", "scikit-learn", "torch", "transformers", "xgboost"}),
 )

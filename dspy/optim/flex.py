@@ -97,6 +97,7 @@ from dspy.programir.build import (
     Try,
     Var,
 )
+from dspy.programir.engine.isolation import IsolationLevel as _IsolationLevel
 from dspy.programir.errors import ProgramIRRefusal
 from dspy.programir.forward import compile_forward
 from dspy.programir.printer import render_forward
@@ -293,18 +294,36 @@ class FlexIR(Optimizer):
         reward: Callable[[Any], float] | None = None,
         holdout: Any = None,
         eps: float = 1e-9,
-        code_trust: str = "isolated",
+        isolation_floor: str = "fork_ratchet",
+        code_trust: str | None = None,
         extra_imports: frozenset[str] | None = None,
         allowed_deps: frozenset[str] | None = None,
         auto_install: bool = False,
         eval_mode: str = "in_process",
         eval_env_overrides: dict[str, Any] | None = None,
+        scoring_isolation: str = "none",
+        broker_egress: frozenset[str] | None = None,
         _eval_same_env: bool = False,
+        _isolation_backend: Any = None,
     ):
         if isinstance(iterations, bool) or not isinstance(iterations, int) or iterations < 1:
             raise ValueError(f"FlexIR iterations must be an int >= 1, got {iterations!r}")
-        if code_trust not in ("isolated", "in_process"):
-            raise ValueError(f"FlexIR code_trust must be 'isolated' or 'in_process', got {code_trust!r}")
+        from dspy.programir.engine.isolation import parse_level
+
+        # code_trust migrated to isolation_floor over the D-042 vocabulary.
+        # Old values stay as documented aliases (no deprecation warning —
+        # Maxime's call later): "isolated" -> "fork_ratchet" (authored code
+        # walled off, the old isolation-required rung), "in_process" ->
+        # "none" (runs in the loop's own process, the old placement).
+        if code_trust is not None:
+            aliases = {"isolated": "fork_ratchet", "in_process": "none"}
+            if code_trust not in aliases:
+                raise ValueError(
+                    f"FlexIR code_trust must be 'isolated' or 'in_process' (aliases of isolation_floor), "
+                    f"got {code_trust!r}"
+                )
+            isolation_floor = aliases[code_trust]
+        self._floor_level = parse_level(isolation_floor)
         if extra_imports is not None and (
             isinstance(extra_imports, str) or not all(isinstance(name, str) for name in extra_imports)
         ):
@@ -317,18 +336,33 @@ class FlexIR(Optimizer):
             raise ValueError(f"FlexIR auto_install must be a bool, got {auto_install!r}")
         if eval_mode not in ("in_process", "artifact"):
             raise ValueError(f"FlexIR eval_mode must be 'in_process' or 'artifact', got {eval_mode!r}")
+        self._scoring_level = parse_level(scoring_isolation)
+        if broker_egress is not None and (
+            isinstance(broker_egress, str) or not all(isinstance(name, str) for name in broker_egress)
+        ):
+            raise ValueError(f"FlexIR broker_egress must be an iterable of hostname strings, got {broker_egress!r}")
         self.metric = metric
         self.iterations = iterations
         self.reward = reward
         self.holdout = holdout
         self.eps = eps
-        self.code_trust = code_trust
+        self.isolation_floor = self._floor_level.name
+        # The authored-leaf placement stamp derives from the floor: floor
+        # `none` runs in-process (the old "in_process" trust), any wall at
+        # or above `fork` stamps the isolation-required rung (the old
+        # "isolated"). `admit_tool_source` still speaks the two-value
+        # code_trust; the floor is the source of truth now.
+        self.code_trust = "in_process" if self._floor_level == _NONE_LEVEL else "isolated"
         self.extra_imports = frozenset(extra_imports) if extra_imports is not None else None
         self.allowed_deps = frozenset(allowed_deps) if allowed_deps is not None else None
         self.auto_install = auto_install
         self.eval_mode = eval_mode
         self.eval_env_overrides = eval_env_overrides
         self._eval_same_env = _eval_same_env
+        self.scoring_isolation = self._scoring_level.name
+        self.broker_egress = frozenset(broker_egress) if broker_egress is not None else frozenset()
+        self._isolation_backend = _isolation_backend
+        self._last_envelope: dict[str, Any] | None = None
         self._env_cache: Any = None
         self._metric_source: str | None = None
         self._script_lms: dict[str, Any] = {}
@@ -374,6 +408,7 @@ class FlexIR(Optimizer):
                 "best_score": best_score,
                 "best_lm_calls": best_lm_calls,
                 "accepted": True,
+                "envelope": self._last_envelope,
                 "checkpoint": checkpointer.accept(program, score=baseline.score, label="baseline")
                 if checkpointer
                 else None,
@@ -437,6 +472,7 @@ class FlexIR(Optimizer):
                 "lm_calls": None if result is None else result.lm_calls,
                 "best_score": best_score,
                 "best_lm_calls": best_lm_calls,
+                "envelope": self._last_envelope if result is not None else None,
                 "accepted": False,
                 "checkpoint": None,
                 "manifest": None,
@@ -616,6 +652,30 @@ class FlexIR(Optimizer):
             overrides=self.eval_env_overrides or {"dspy": REPO_ROOT},
             same_env=self._eval_same_env,
         )
+        self._prepare_isolation()
+
+    def _prepare_isolation(self) -> None:
+        """Build the scoring envelope; refuse loudly if the host under-runs it.
+
+        `scoring_isolation="none"` is byte-identical to before (no
+        backend, no preexec, no envelope record). Any higher level asks
+        the Linux backend for the best-effort wall; a request the host
+        cannot honestly establish is a loud `IsolationDowngrade`, never a
+        silent weaker wall.
+        """
+        from dspy.programir.engine.isolation import (
+            IsolationLevel,
+            IsolationPolicy,
+            LinuxIsolationBackend,
+        )
+
+        if self._scoring_level == IsolationLevel.none:
+            self._isolation_policy = IsolationPolicy(level=IsolationLevel.none)
+            return
+        backend = self._isolation_backend or LinuxIsolationBackend()
+        self._isolation_backend = backend
+        reached = backend.best_effort_level(self._scoring_level)  # raises IsolationDowngrade if under-floor
+        self._isolation_policy = IsolationPolicy(level=reached, broker_egress=self.broker_egress)
 
     def _evaluate_as_artifact(self, program: Module, dataset: Any):
         """Export the candidate; score it in a child under its own env.
@@ -632,6 +692,7 @@ class FlexIR(Optimizer):
             program.save(artifact)
             interpreter = self._env_cache.interpreter_for(artifact)
             specs, extra_env = self._serialize_lms(program)
+            child_env, broker, self._last_envelope = self._child_channel(extra_env, tmp)
             job = {
                 "artifact": str(artifact),
                 "examples": [
@@ -651,16 +712,20 @@ class FlexIR(Optimizer):
                     self._assert_secret_free(file.read_bytes(), f"the exported artifact file {file.name!r}")
             job_path = Path(tmp) / "job.json"
             job_path.write_text(payload_text)
-            child = subprocess.run(
-                [interpreter, "-m", "dspy.optim._score_harness", str(job_path)],
-                capture_output=True,
-                text=True,
-                # The child inherits the parent env unchanged, plus (only
-                # when a live secret had no recoverable env-var origin) the
-                # fallback vars — process memory to process memory, never
-                # disk or argv.
-                env={**os.environ, **extra_env},
-            )
+            preexec = None
+            if self._scoring_level != _NONE_LEVEL and self._isolation_backend is not None:
+                preexec = self._isolation_backend.child_preexec(self._isolation_policy)
+            try:
+                child = subprocess.run(
+                    [interpreter, "-m", "dspy.optim._score_harness", str(job_path)],
+                    capture_output=True,
+                    text=True,
+                    env=child_env,
+                    preexec_fn=preexec,
+                )
+            finally:
+                if broker is not None:
+                    broker.stop()
         if child.returncode != 0:
             tail = "\n".join((child.stderr or "").strip().splitlines()[-6:])
             raise RuntimeError(
@@ -674,6 +739,62 @@ class FlexIR(Optimizer):
             prediction = None if record["prediction"] is None else Prediction(**record["prediction"])
             results.append((example, prediction, record["value"]))
         return EvaluationResult(score=payload["score"], results=results, lm_calls=payload["lm_calls"])
+
+    def check_isolation_invariance(self, program: Module, dataset: Any) -> str | None:
+        """Refuse a candidate whose behavior CHANGES with the envelope.
+
+        The D-042 invariance law (Q9 point 4): behavior must be
+        isolation-invariant — a leaf that scores differently under the
+        envelope than in-process is relying on an undeclared side channel,
+        and the divergence indicts the LEAF, not the level. This hook
+        scores the same candidate both ways on the same scripted run and
+        returns a teaching refusal on any divergence, or None when the
+        law holds. It is only checkable where a scripted run makes both
+        passes deterministic (the tests), so the loop wires it but does
+        not force it; the law it enforces is the whole reason raising the
+        wall is a binding and not an authorship act.
+        """
+        in_process = evaluate(program, dataset, self.metric)
+        under_envelope = self._evaluate_as_artifact(program, dataset)
+        if abs(in_process.score - under_envelope.score) > self.eps or in_process.lm_calls != under_envelope.lm_calls:
+            return (
+                f"refused candidate: behavior DIVERGED under isolation — in_process scored "
+                f"{in_process.score} at {in_process.lm_calls} LM call(s), the envelope scored "
+                f"{under_envelope.score} at {under_envelope.lm_calls}. Behavior must be isolation-invariant "
+                "(D-042); a divergence indicts the leaf's undeclared side channel, not the wall."
+            )
+        return None
+
+    def _child_channel(
+        self, extra_env: dict[str, str], scratch: str
+    ) -> tuple[dict[str, str], Any, dict[str, Any] | None]:
+        """Assemble the child env, start the broker (if any), record the envelope.
+
+        Three cases, documented so it is always clear WHICH credential
+        channel is live:
+
+        - No broker: the child inherits the parent env plus the fallback
+          secret vars (`extra_env`) — the env-NAME channel (back-compat,
+          the `scoring_isolation="none"` default too).
+        - Broker active (`broker_egress` non-empty AND some real LM hit
+          it): the child gets `HTTPS_PROXY`/`HTTP_PROXY` and NO credential
+          vars; the broker injects the header on egress. `extra_env` is
+          NOT added — the secret never enters the child.
+        """
+        from dspy.programir.engine.isolation import IsolationPolicy
+
+        policy = getattr(self, "_isolation_policy", IsolationPolicy())
+        envelope = policy.describe_envelope() if self._scoring_level != _NONE_LEVEL else None
+        if self.broker_egress and self._broker_inject:
+            from dspy.optim.broker import EgressBroker
+
+            broker = EgressBroker(self.broker_egress, inject=self._broker_inject).start()
+            proxy = broker.proxy_url
+            child_env = {**os.environ, "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "NO_PROXY": ""}
+            if envelope is not None:
+                envelope = {**envelope, "broker": sorted(self.broker_egress)}
+            return child_env, broker, envelope
+        return {**os.environ, **extra_env}, None, envelope
 
     def _serialize_lms(self, program: Module) -> tuple[dict[str, Any], dict[str, str]]:
         """Serialize the program's LM pool for the child, or refuse.
@@ -700,6 +821,7 @@ class FlexIR(Optimizer):
         extra_env: dict[str, str] = {}
         self._script_lms = {}
         self._secret_values = set()
+        self._broker_inject: dict[str, dict[str, str]] = {}
         for name, lm in live["lm"].items():
             if isinstance(lm, DummyLM):
                 if lm._script is not None:
@@ -753,6 +875,17 @@ class FlexIR(Optimizer):
                         f"is {type(value).__name__}, not a string"
                     )
                 self._secret_values.add(value)
+                host = _lm_host(lm)
+                if self.broker_egress and key == "api_key" and host in self.broker_egress:
+                    # Broker channel (Q7): the credential NEVER enters the
+                    # child — not even as an env var. The broker attaches
+                    # `Authorization: Bearer <key>` on egress to the
+                    # allowlisted host. The child gets only the proxy vars.
+                    self._broker_inject[host] = {"header": "Authorization", "value": f"Bearer {value}"}
+                    continue
+                # Env-name channel (scoring_isolation without a broker, and
+                # the back-compat default): the credential rides an env-var
+                # NAME the child reads from its inherited environment.
                 env_name = _env_var_holding(value)
                 if env_name is None:
                     env_name = "DSPY_FLEX_LM_" + re.sub(r"[^A-Z0-9]+", "_", f"{name}_{key}".upper()).strip("_")
@@ -1336,6 +1469,10 @@ def _refuse_overlapping_holdout(devset: list[Example], holdout: list[Example]) -
 #: escaping an exact-name filter.
 _SECRET_KWARG_MARKERS = ("api_key", "secret", "password")
 
+#: Cached `IsolationLevel.none` — the byte-identical-to-before pole. A
+#: module constant keeps the hot path free of a repeated enum lookup.
+_NONE_LEVEL = _IsolationLevel.none
+
 #: Kwargs that can smuggle credentials inside an opaque structure (an
 #: `Authorization` header in a dict). No per-value audit is attempted —
 #: they refuse whole (refusing beats leaking).
@@ -1349,6 +1486,16 @@ def _is_secret_kwarg(key: str) -> bool:
     # `_token` matches the sibling-credential class (azure_ad_token) while
     # sparing counters like `max_tokens` (plural, not a credential).
     return lowered == "token" or lowered.endswith("_token")
+
+
+def _lm_host(lm: LM) -> str | None:
+    """The hostname of an LM's api_base, for broker allowlist matching."""
+    from urllib.parse import urlsplit
+
+    base = lm.kwargs.get("api_base") or lm.kwargs.get("base_url")
+    if not isinstance(base, str) or not base:
+        return None
+    return urlsplit(base).hostname
 
 
 def _env_var_holding(value: str) -> str | None:

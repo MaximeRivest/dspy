@@ -43,7 +43,7 @@ from dspy.signatures.signature import make_signature
 
 __all__ = ["ExecutableProgram", "materialize"]
 
-_BINDING_KINDS = ("lm", "adapter", "tool", "interpreter")
+_BINDING_KINDS = ("lm", "adapter", "tool", "interpreter", "isolation")
 
 _SHAPE_TYPES = {
     "string": str,
@@ -157,7 +157,12 @@ def materialize(ir: ProgramIR, bindings: dict[str, dict[str, Any]] | None = None
 
     lms = _resolve_lms(components.get("8_lm", {}), bindings.get("lm", {}))
     adapters = _resolve_adapters(components.get("4_adapter", {}), bindings.get("adapter", {}))
-    tools = _resolve_tools(components.get("6_tools", {}), dict(ir.sidecars), bindings.get("tool", {}))
+    tools = _resolve_tools(
+        components.get("6_tools", {}),
+        dict(ir.sidecars),
+        bindings.get("tool", {}),
+        envelope=(bindings.get("isolation") or {}).get("envelope"),
+    )
     interpreters = _resolve_interpreters(components.get("7_interpreter", {}), bindings.get("interpreter", {}))
 
     predictors = {
@@ -207,8 +212,28 @@ def _resolve_adapters(pool: dict[str, Any], bound: dict[str, Any]) -> dict[str, 
     return resolved
 
 
+def _envelope_satisfies_floor(envelope: Any) -> bool:
+    """True when a bound isolation envelope meets the authored-leaf floor.
+
+    The envelope may be an `IsolationPolicy`, or a plain dict/name from a
+    JSON binding. Anything that resolves to level >= fork_ratchet is a
+    grant for isolation-required leaves (D-042).
+    """
+    if envelope is None:
+        return False
+    from dspy.programir.engine.isolation import AUTHORED_LEAF_FLOOR, IsolationPolicy, parse_level
+
+    if isinstance(envelope, IsolationPolicy):
+        return envelope.satisfies(AUTHORED_LEAF_FLOOR)
+    level = envelope.get("level") if isinstance(envelope, dict) else envelope
+    try:
+        return parse_level(level) >= AUTHORED_LEAF_FLOOR
+    except ValueError:
+        return False
+
+
 def _resolve_tools(
-    pool: dict[str, Any], sidecars: dict[str, bytes], bound: dict[str, Any]
+    pool: dict[str, Any], sidecars: dict[str, bytes], bound: dict[str, Any], *, envelope: Any = None
 ) -> dict[str, Callable[..., Any]]:
     _check_bound_names("tool", pool, bound)
     resolved: dict[str, Callable[..., Any]] = {}
@@ -233,12 +258,29 @@ def _resolve_tools(
         # that runs it under enforced isolation without a full-trust grant —
         # BUILD-STATE A10 fix wave, "enforced-isolation owed".)
         if isinstance(entry, dict) and entry.get("placement", {}).get("rung") == ISOLATION_REQUIRED_RUNG:
+            # D-042: an ISOLATION ENVELOPE that meets the authored-leaf
+            # floor IS a grant. When the receiver binds an envelope at
+            # level >= fork_ratchet, the sidecar becomes lawfully runnable
+            # — the wall the leaf demanded is present, so materialize
+            # rebuilds and runs it instead of failing closed. The explicit
+            # per-leaf callable grant still works (handled above).
+            if _envelope_satisfies_floor(envelope):
+                source_path = entry.get("source")
+                source = sidecars.get(source_path) if isinstance(source_path, str) else None
+                if source is None:
+                    raise ValueError(
+                        f"programir.materialize() cannot resolve tool pool entry {name!r}: "
+                        f"source sidecar {source_path!r} is absent"
+                    )
+                resolved[name] = _load_function(source.decode("utf-8"), entry_name=name)
+                continue
             raise ValueError(
                 f"programir.materialize() refuses to run tool pool entry {name!r} in-process: it is "
                 f"{entry.get('authored_by', 'authored')}-authored code whose placement requires isolation "
                 "(the trust pairing rule — authored code runs at an isolation rung, never silently in-process "
                 f"from its sidecar). Review tools/{name}.py, then GRANT it explicitly with "
-                "bindings={'tool': {" + repr(name) + ": <reviewed callable>}}."
+                "bindings={'tool': {" + repr(name) + ": <reviewed callable>}}, or bind an isolation envelope "
+                "at level >= fork_ratchet (the envelope IS the grant, D-042)."
             )
         source_path = entry.get("source")
         source = sidecars.get(source_path) if isinstance(source_path, str) else None
