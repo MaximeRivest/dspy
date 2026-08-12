@@ -203,20 +203,71 @@ def _source(function: Callable[..., Any], *, subject: str) -> str:
         # source (which reparses cleanly). Any OTHER decorator still
         # refuses: it may wrap or replace the callable, so the baked source
         # would not be what runs.
-        if not _only_dspy_tool_decorators(definition):
-            raise ValueError(f"ProgramIR {subject} uses decorators; bake the undecorated function instead")
-        source = _strip_decorators(source, definition)
+        source = _strip_tool_decorators(source, definition, function, subject=f"ProgramIR {subject}")
     return source
 
 
-def _only_dspy_tool_decorators(definition: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True when every decorator is the `@dspy.tool` / `@tool` marker."""
+_MISSING = object()
+
+
+def _strip_tool_decorators(
+    source: str,
+    definition: ast.FunctionDef | ast.AsyncFunctionDef,
+    function: Callable[..., Any],
+    *,
+    subject: str,
+) -> str:
+    """Strip genuine `@dspy.tool` markers, or refuse naming the decorator.
+
+    Matching by NAME alone is forgeable: a foreign decorator literally
+    named `tool` (another library's) would be silently stripped, changing
+    semantics. So each decorator expression must RESOLVE — against the
+    function's globals (and closure) — to `dspy.tooling.tool` itself.
+    Anything else refuses loudly, naming the decorator: it may wrap or
+    replace the callable, so the baked source would not be what runs.
+    """
+    from dspy.tooling import tool as marker
+
     for decorator in definition.decorator_list:
         target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", None)
-        if name != "tool":
-            return False
-    return True
+        if _resolve_decorator(target, function) is not marker:
+            raise ValueError(
+                f"{subject} uses decorator @{ast.unparse(target)}, which is not dspy's @tool declaration "
+                "marker; bake the undecorated function instead"
+            )
+    return _strip_decorators(source, definition)
+
+
+def _resolve_decorator(target: ast.expr, function: Callable[..., Any]) -> Any:
+    """Resolve a (possibly dotted) decorator expression to a live object."""
+    parts: list[str] = []
+    node = target
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return _MISSING
+    value = _lookup_name(node.id, function)
+    for attribute in reversed(parts):
+        if value is _MISSING:
+            return _MISSING
+        value = getattr(value, attribute, _MISSING)
+    return value
+
+
+def _lookup_name(name: str, function: Callable[..., Any]) -> Any:
+    """Look a name up the way the decoration site did: closure, globals, builtins."""
+    code = getattr(function, "__code__", None)
+    closure = getattr(function, "__closure__", None)
+    if code is not None and closure and name in code.co_freevars:
+        try:
+            return closure[code.co_freevars.index(name)].cell_contents
+        except ValueError:  # an empty cell — unresolvable
+            return _MISSING
+    namespace = getattr(function, "__globals__", None) or {}
+    if name in namespace:
+        return namespace[name]
+    return getattr(builtins, name, _MISSING)
 
 
 def _strip_decorators(source: str, definition: ast.FunctionDef | ast.AsyncFunctionDef) -> str:

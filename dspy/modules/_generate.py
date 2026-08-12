@@ -127,11 +127,13 @@ def build_dispatch_tool(tool: Tool, *, owner: str) -> Callable[..., Any]:
     # A `@dspy.tool(...)` DECLARATION decorator only attaches metadata and
     # returns the same callable, so strip it before embedding the verbatim
     # source (the same tolerance leaves._source applies). Any other
-    # decorator would wrap/replace the callable and is left to fail below.
-    from dspy.programir.leaves import _only_dspy_tool_decorators, _strip_decorators
+    # decorator — including a foreign one merely NAMED `tool` — refuses
+    # loudly there: it may wrap/replace the callable, so the embedded
+    # source would not be what runs.
+    from dspy.programir.leaves import _strip_tool_decorators
 
-    if definition.decorator_list and _only_dspy_tool_decorators(definition):
-        original = _strip_decorators(original, definition)
+    if definition.decorator_list:
+        original = _strip_tool_decorators(original, definition, function, subject=f"{owner} tool {name!r}")
         definition = ast.parse(original).body[0]
     if definition.returns is None:
         raise ValueError(f"{owner} tool {name!r} is missing a return type hint; tool leaves declare their types")
@@ -150,4 +152,13 @@ def build_dispatch_tool(tool: Tool, *, owner: str) -> Callable[..., Any]:
         f'        raise ToolError("Execution error in {name}: " + str(error)) from error\n'
         f"    return result\n"
     )
-    return load_generated(source, tag=f"tool-{name}", name=name)
+    wrapper = load_generated(source, tag=f"tool-{name}", name=name)
+    # The declared-capability stamps (`_dspy_*`, dspy/tooling.py) live on
+    # the USER function; the generated wrapper is a new object. Copy them
+    # across so the dynamic-dispatch leaf carries the same placement/
+    # floor/grants bytes as a directly-bound tool (`extract_tool` reads
+    # the stamps off whatever callable it is handed).
+    for attribute, value in getattr(function, "__dict__", {}).items():
+        if attribute.startswith("_dspy_"):
+            setattr(wrapper, attribute, value)
+    return wrapper

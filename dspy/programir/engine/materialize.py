@@ -370,21 +370,34 @@ def _envelope_satisfies_floor(envelope: Any) -> bool:
     """
     if envelope is None:
         return False
-    from dspy.programir.engine.isolation import AUTHORED_LEAF_FLOOR, IsolationPolicy, parse_level
+    from dspy.programir.engine.isolation import AUTHORED_LEAF_FLOOR
+
+    level = _envelope_level(envelope)
+    return level is not None and level >= AUTHORED_LEAF_FLOOR
+
+
+def _envelope_level(envelope: Any) -> Any:
+    """The bound envelope's `IsolationLevel`, or None when unparseable."""
+    if envelope is None:
+        return None
+    from dspy.programir.engine.isolation import IsolationPolicy, parse_level
 
     if isinstance(envelope, IsolationPolicy):
-        return envelope.satisfies(AUTHORED_LEAF_FLOOR)
+        return envelope.level
     level = envelope.get("level") if isinstance(envelope, dict) else envelope
     try:
-        return parse_level(level) >= AUTHORED_LEAF_FLOOR
+        return parse_level(level)
     except ValueError:
-        return False
+        return None
 
 
 def _resolve_tools(
     pool: dict[str, Any], sidecars: dict[str, bytes], bound: dict[str, Any], *, envelope: Any = None
 ) -> dict[str, Callable[..., Any]]:
+    from dspy.programir.engine.isolation import warn_declared_gpu
+
     _check_bound_names("tool", pool, bound)
+    level = _envelope_level(envelope)
     resolved: dict[str, Callable[..., Any]] = {}
     for name, entry in pool.items():
         if name in bound:
@@ -394,6 +407,11 @@ def _resolve_tools(
             # supplies a live callable at a rung of its choosing.
             if not callable(bound[name]):
                 raise ValueError(f"binding for tool pool entry {name!r} must be callable")
+            # Honesty rule: under an ENFORCING envelope (fork_cgroup+), a
+            # bound callable stamped `gpu=` gets one loud declared-only
+            # warning — the envelope enforces memory/cpus, never a GPU.
+            if level is not None:
+                warn_declared_gpu(bound[name], level, leaf=name)
             resolved[name] = bound[name]
             continue
         # The trust pairing rule (spec/trust.md): authored-origin code runs

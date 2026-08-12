@@ -82,6 +82,7 @@ __all__ = [
     "IsolationPolicy",
     "LinuxIsolationBackend",
     "parse_level",
+    "warn_declared_gpu",
 ]
 
 
@@ -119,6 +120,33 @@ def parse_level(value: Any) -> IsolationLevel:
                 f"{[level.name for level in IsolationLevel]}"
             ) from None
     raise ValueError(f"isolation level must be a name or IsolationLevel, got {type(value).__name__}")
+
+
+def warn_declared_gpu(fn: Any, level: IsolationLevel, *, leaf: str) -> None:
+    """Warn ONCE that a leaf's `gpu=` declaration is not enforced.
+
+    The honesty rule: never let a user believe more is enforced than is.
+    An enforcing envelope (`fork_cgroup`+) turns declared memory/cpus into
+    real cgroup caps — exactly the moment a `gpu=` declaration could read
+    as enforced too. It is not: `gpu=` is DECLARED-ONLY (device placement
+    is owed). Emitted once per leaf (marked on the function), not per call.
+    """
+    import warnings
+
+    gpu = (getattr(fn, "_dspy_declared_resources", None) or {}).get("gpu")
+    if not gpu or level < IsolationLevel.fork_cgroup:
+        return
+    if getattr(fn, "_dspy_gpu_declared_warned", False):
+        return
+    try:
+        fn._dspy_gpu_declared_warned = True
+    except (AttributeError, TypeError):  # pragma: no cover - exotic callables
+        pass
+    warnings.warn(
+        f"tool leaf {leaf!r} declares gpu={gpu!r}, but gpu= is DECLARED-ONLY: this {level.name} envelope "
+        "enforces memory/cpus caps and does NOT provide or enforce GPU access (device placement is owed)",
+        stacklevel=2,
+    )
 
 
 #: The floor an optimizer-authored leaf's placement enforces, expressed on

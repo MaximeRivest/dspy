@@ -23,13 +23,16 @@ DECLARATION vs ENFORCEMENT — stated once, honestly, here:
 - ENFORCED WHEN RUN UNDER AN ENVELOPE AT THE RIGHT LEVEL: `memory=`/
   `cpus=` become real cgroup v2 caps at `fork_cgroup`+; `files=` becomes
   a real Landlock filesystem wall at `fork_ratchet`+ (when the kernel has
-  Landlock). `dspy.confined(memory=/cpus=/files=)` and `dspy.Session`
-  flow these into the run's policy; `FlexIR(scoring_memory=/scoring_cpus=)`
-  caps the scoring child. On a `@dspy.tool` these still ride the pool
-  entry as the LEAF's declared intent — a receiver's envelope is what
-  turns them into enforcement.
+  Landlock). `dspy.confined(memory=/cpus=/files=)` flows these into the
+  run's policy; `FlexIR(scoring_memory=/scoring_cpus=)` caps the scoring
+  child. On a `@dspy.tool` these ride the FUNCTION as declared intent
+  (`_dspy_declared_resources`) — they do not reach the pool entry, and a
+  receiver's own envelope caps are what enforce.
 - DECLARED-ONLY (recorded as intent, no behavior claim; the mechanism is
-  owed): `gpu=` (device placement).
+  owed): `gpu=` (device placement). No level enforces or provides a GPU.
+  A leaf that declares gpu and then runs under an ENFORCING envelope
+  (`fork_cgroup`+, where memory/cpus caps are real) gets one loud
+  warning saying exactly that — the asymmetry must never be silent.
 """
 
 from __future__ import annotations
@@ -100,7 +103,10 @@ def tool(
             envelope; otherwise recorded.
         cpus: A cgroup CPU budget — enforced as `cpu.max` under a
             `fork_cgroup`+ envelope; otherwise recorded (as `memory`).
-        gpu: GPU access intent. DECLARED-ONLY (device placement is owed).
+        gpu: GPU access intent. DECLARED-ONLY (device placement is owed):
+            recorded on the function, never enforced, no device provided.
+            Under an enforcing (`fork_cgroup`+) envelope a warning states
+            this once per leaf, so the declaration never reads as real.
         session: `True` marks a PIR-021 session-kind leaf (the function
             takes the grant bridge as its FIRST parameter). ENFORCED by the
             engine bridge.
@@ -503,11 +509,14 @@ def confined(
     JSON-round-trippable (args, kwargs, and the return value cross as
     JSON). A non-serializable value refuses before the child launches.
     """
-    from dspy.programir.engine.isolation import IsolationPolicy, LinuxIsolationBackend, parse_level
+    from dspy.programir.engine.isolation import IsolationPolicy, LinuxIsolationBackend, parse_level, warn_declared_gpu
 
     level = parse_level(isolation)
     backend = _backend or LinuxIsolationBackend()
     reached = backend.best_effort_level(level)  # raises IsolationDowngrade if under-floor
+    # Honesty rule: an enforcing envelope must not let a `gpu=` declaration
+    # read as enforced — it is declared-only (warned once per leaf).
+    warn_declared_gpu(fn, reached, leaf=getattr(fn, "__name__", repr(fn)))
 
     import inspect
     import textwrap

@@ -151,12 +151,24 @@ class TestToolDecorator:
         react = dspy.ReAct("question -> answer", tools=[look], max_iters=2)
         manifest = react.to_manifest()  # compiles clean — the decorator did not break extraction
         assert "look" in manifest["components"]["6_tools"]
-        # NOTE: ReAct's dynamic-dispatch tools are re-embedded through a
-        # generated wrapper that does not carry the original function's
-        # `_dspy_*` stamps, so the floor does not survive that path today
-        # (a known limitation — see the report's declared-vs-enforced list).
-        # A tool bound DIRECTLY as a module attribute keeps its stamp; the
-        # dispatch-wrapper path is the gap.
+
+    def test_dispatch_path_keeps_floor_and_grants(self):
+        # The dynamic-dispatch wrapper (ReAct's tools table) carries the
+        # user function's `_dspy_*` stamps across, so the extracted leaf's
+        # pool entry matches the directly-bound path — same floor + grants
+        # bytes (mirrors the direct-bound pin below).
+        @dspy.tool(isolation="sandbox", net=["api.x"])
+        def look(query: str) -> str:
+            """Look something up."""
+            return query
+
+        dspy.configure(
+            lm=dspy.DummyLM([chat_completion(next_thought="t", next_tool_name="finish", next_tool_args="{}")])
+        )
+        react = dspy.ReAct("question -> answer", tools=[look], max_iters=2)
+        entry = react.to_manifest()["components"]["6_tools"]["look"]
+        assert entry["placement"]["isolation_floor"] == "sandbox"
+        assert entry["grants"] == [{"kind": "broker_route", "name": "api.x"}]
 
     def test_direct_bound_decorated_tool_keeps_floor_and_grants(self):
         # The primary path: a decorated tool bound as a plain module
@@ -179,6 +191,63 @@ class TestToolDecorator:
         entry = M().to_manifest()["components"]["6_tools"]["helper"]
         assert entry["placement"]["isolation_floor"] == "sandbox"
         assert entry["grants"] == [{"kind": "broker_route", "name": "api.x"}]
+
+
+# ---------------------------------------------------------------------------
+# (1b) decorator-strip identity — only the REAL dspy.tooling.tool strips
+# ---------------------------------------------------------------------------
+
+
+def _load_module(tmp_path, name, source):
+    import importlib.util
+
+    path = tmp_path / f"{name}.py"
+    path.write_text(source)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestDecoratorIdentity:
+    def test_aliased_genuine_tool_decorator_still_strips(self, tmp_path):
+        # The genuine decorator under ANY import name resolves by IDENTITY,
+        # so it still strips — the name is not the check, the object is.
+        module = _load_module(
+            tmp_path,
+            "aliased_tool_mod",
+            "from dspy.tooling import tool as declare\n"
+            "\n"
+            "@declare(isolation='fork')\n"
+            "def aliased(x: str) -> dict:\n"
+            "    return {'y': x}\n",
+        )
+        leaf = extract_tool(module.aliased, name="aliased")
+        assert leaf.entry["placement"]["isolation_floor"] == "fork"
+        assert leaf.source.decode("utf-8").startswith("def aliased")  # marker stripped
+
+    def test_foreign_decorator_named_tool_refuses_loudly(self, tmp_path):
+        # A FOREIGN decorator merely NAMED `tool` must never be silently
+        # stripped (it may wrap/replace the callable): loud refusal, named.
+        module = _load_module(
+            tmp_path,
+            "foreign_tool_mod",
+            "def tool(fn):\n    return fn\n\n@tool\ndef sneaky(x: str) -> dict:\n    return {'y': x}\n",
+        )
+        with pytest.raises(ValueError, match="uses decorator @tool.*not dspy's @tool"):
+            extract_tool(module.sneaky, name="sneaky")
+
+    def test_foreign_tool_decorator_refuses_on_the_dispatch_path_too(self, tmp_path):
+        module = _load_module(
+            tmp_path,
+            "foreign_dispatch_mod",
+            "def tool(fn):\n    return fn\n\n@tool\ndef sneaky(x: str) -> str:\n    return x\n",
+        )
+        from dspy.adapters.types.tool import Tool
+        from dspy.modules._generate import build_dispatch_tool
+
+        with pytest.raises(ValueError, match="not dspy's @tool"):
+            build_dispatch_tool(Tool(module.sneaky), owner="ReAct")
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +543,60 @@ class TestConfined:
         backend = LinuxIsolationBackend(Poor())
         with pytest.raises(IsolationDowngrade):
             dspy.confined(add, 1, 2, isolation="sandbox", _backend=backend)
+
+    def test_gpu_declared_only_warns_once_under_enforcing_envelope(self):
+        # Item C honesty rule: `gpu=` never enforces. When the leaf runs
+        # under an ENFORCING envelope (fork_cgroup+, where memory/cpus caps
+        # are real), one loud warning states the asymmetry — once per leaf.
+        import warnings
+
+        from dspy.programir.engine.isolation import IsolationLevel
+
+        class FakeChild:
+            returncode = 0
+            stdout = '{"value": 7}'
+            stderr = ""
+
+        class FakeBackend:
+            def best_effort_level(self, level):
+                return IsolationLevel.fork_cgroup
+
+            def run(self, argv, policy, **kwargs):
+                return FakeChild()
+
+        @dspy.tool(gpu="a100")
+        def seven() -> int:
+            return 7
+
+        with pytest.warns(UserWarning, match="gpu= is DECLARED-ONLY") as caught:
+            assert dspy.confined(seven, isolation="fork_cgroup", _backend=FakeBackend()) == 7
+        message = str(caught[0].message)
+        assert "does NOT provide or enforce GPU access" in message
+        assert "fork_cgroup" in message
+        # Once per leaf, not per call: a second run stays silent.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert dspy.confined(seven, isolation="fork_cgroup", _backend=FakeBackend()) == 7
+
+    def test_gpu_warning_stays_silent_below_enforcement_or_without_gpu(self):
+        import warnings
+
+        from dspy.programir.engine.isolation import IsolationLevel, warn_declared_gpu
+
+        @dspy.tool(gpu=True)
+        def gpu_leaf(x: str) -> str:
+            return x
+
+        @dspy.tool(memory="1G")
+        def plain_leaf(x: str) -> str:
+            return x
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            # Below fork_cgroup nothing is enforced, so nothing misleads.
+            warn_declared_gpu(gpu_leaf, IsolationLevel.fork, leaf="gpu_leaf")
+            # No gpu declaration: nothing to warn about.
+            warn_declared_gpu(plain_leaf, IsolationLevel.fork_cgroup, leaf="plain_leaf")
 
     @pytest.mark.skipif(
         not os.environ.get("DSPY_FLEX_UV_TESTS"),

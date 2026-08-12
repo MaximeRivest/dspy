@@ -331,7 +331,7 @@ declaration as a guarantee:
 | `deps=` | **Yes** — validated + unioned into the artifact env |
 | `files=` (`ro`/`rw` scopes) | **Yes at `fork_ratchet`+** — a real Landlock filesystem wall (deny-all beyond the scopes + scratch) when the kernel supports Landlock; below that level, or on a Landlock-less kernel, the mount-ns wall alone stands (recorded in the envelope's `engaged` list) |
 | `memory=` / `cpus=` | **Yes at `fork_cgroup`+** — real cgroup v2 caps (`memory.max` / `cpu.max`); a fork bomb also stops at `pids.max` |
-| `gpu=` | **No** — declared only; device placement is owed |
+| `gpu=` | **No, never** — declared only; no level provides or enforces a GPU (device placement is owed). Running such a leaf under an enforcing (`fork_cgroup`+) envelope warns once, so the declaration cannot read as real |
 
 A worked example, top to bottom:
 
@@ -345,7 +345,8 @@ def weather(city: str) -> dict:
     import httpx
     return httpx.get(f"https://api.weather.example/{city}").json()
 
-# A GPU rerank tool — floor real, memory/gpu DECLARED (not enforced yet).
+# A GPU rerank tool — floor real; memory a real cgroup cap only under a
+# fork_cgroup+ envelope; gpu DECLARED-ONLY (never enforced — warned).
 @dspy.tool(isolation="fork_ratchet", memory="8G", gpu=True)
 def rerank(query: str, docs: list) -> dict:
     return {"order": sorted(range(len(docs)), key=lambda i: docs[i])}
