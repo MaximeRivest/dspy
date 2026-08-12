@@ -872,7 +872,11 @@ the unified-leaf view (§d) a tool/UDF's arg+return schema *is* a signature in
 another notation; entries additionally carry the `effects` declaration and
 serve both dispatch modes (program-called UDF, model-called tool), and
 user-authored bodies default frozen with per-leaf objective declarations
-governing any opening to search (§e2 Seeds).
+governing any opening to search (§e2 Seeds). D-043 completes the unified-leaf
+view mechanically: tools and interpreters share one leaf-substrate record — a
+closed `kind` discriminant (`call` vs `session`) for invocation semantics and a
+closed static grant row (FDs, broker routes) — so floors, grants, and authorship
+land on both identically.
 
 **The MCP rung (ratified 2026-08-06, D-027).** At the outermost rung the tool
 transport is MCP, with two requirements the transport does not impose by
@@ -924,7 +928,11 @@ objects return the same plain-data shape from `programir_profile()`. The fused
 structural profiles carry `versions.interpreter_profile = "1.0"` (D-033).
 The declarable profile is the floor, not the ceiling — two engines matching it
 could still differ in an undocumented exec corner — the same honest limit as
-string-named weight identity vs a checksum.
+string-named weight identity vs a checksum. Under D-043 the interpreter pool
+entry is one instance of the unified leaf substrate shared with tools
+(component 6): the same record shape, a closed `kind` discriminant (session
+leaves are fork-scoped at `fork_ratchet`+), and grants as a closed static
+effect row.
 
 <a name="env-manifest"></a>**§Env-manifest — PEP 723 inline metadata, not a
 synthesized side-car.** The env manifest is the program's `ldd`: the exact
@@ -1215,6 +1223,16 @@ hash → inline), so shipping any one checkpoint is always possible.
 ---
 
 ## (d) The representable set — restricted Python by AST whitelist
+
+> **D-041 amendment (2026-08-11, ratified): the inputs-bag admission
+> (`node_set` 0.4).** A forward may declare its args as ONE record
+> parameter bound to the module's own signature (D-036), and a leaf
+> call may splat that record into its kwargs — lawful only for
+> signature-records, whose key set is static in the manifest, so every
+> grade-1 analysis keeps exact per-key precision. LM-decided kwargs
+> stay refused. This is what lets signature-polymorphic modules
+> (ReAct-family, RLM) be hand-written forwards instead of generated
+> ones. Normative text: the contract's `spec/node-set.md` v0.4.
 
 `forward` is **normal Python** — real `if`/`for`/`while`/`try`/`raise`/`return`
 and variable assignment — restricted to a **whitelist of AST node types** whose
@@ -1688,7 +1706,9 @@ Every placeable component carries a uniform `placement` block:
                                      //   receiver binds to their locator (§e0-binding)
   "default_endpoint": null,          // optional baked fallback locator; used only
                                      //   when the slot is unbound, still verified
-  "isolation": "none",               // none | os_sandbox | remote_sandbox
+  "isolation": "none",               // ordered gradient vocabulary (§e0-isolation);
+                                     //   the receiver's envelope — the artifact bakes
+                                     //   only a FLOOR (isolation_floor, D-033/D-042)
   "credential_ref": null             // a NAME only when the rung needs auth (#10)
 }
 ```
@@ -1736,6 +1756,136 @@ the manifest following mechanically. The IR does not need a new mechanism per
 distribution mode; it needs this one axis, and the batching/replication story for
 *why* and *when* to walk outward lives in the DESIGN doc's compute-gradient
 section.
+
+<a name="e0-isolation"></a>
+### (e0-isolation) The isolation gradient — a dial orthogonal to the rung (D-042)
+
+The `isolation` field is not a 3-value enum but an **ordered, versioned
+vocabulary** — a second axis composing with the rung: the rung says *where the
+backend lives*, isolation says *how hard the wall around it is*. Most of the
+gradient is a dial *within* rung 1 ("same-sandbox subprocess"), which this
+section refines into a continuum. Each level adds to the previous; ordering is
+what makes "floor" well-defined by comparison:
+
+| level | mechanism | leaf-boundary cost |
+|---|---|---|
+| `none` | same process, same namespace — today's rung 0 | 0 |
+| `namespace` | same process, isolated Python namespace (the rung-0 interpreter) | ~0 |
+| `fork` | subprocess via fork; CoW-shared RAM; no lockdown | ~1 ms |
+| `fork_cgroup` | + resource caps (cgroup v2), parent-controlled, revocable | ~1 ms |
+| `fork_ratchet` | + ephemeral UID, netns, Landlock, seccomp (one-way) | ~2–5 ms |
+| `sandbox` | separate mount-root world (bwrap-class), broker-only network | ~5–20 ms |
+| `remote` | the old `remote_sandbox` — rung 2/3 territory | RPC latency |
+
+**Revocable knobs vs one-way ratchets — the structural fact the gradient is
+built on.** OS isolation mechanisms split into two kinds, and the split decides
+what can change at a leaf boundary. *Revocable* mechanisms (cgroup membership,
+netns joining via `setns`, broker grants, passed FDs) are parent-controlled and
+reversible: the engine moves a PID into a leaf's cgroup, grants a route, hands
+an FD — and takes it all back when the leaf returns. A PID genuinely travels in
+and out of *this* half of the sandbox at leaf boundaries. *Ratchet* mechanisms
+(seccomp, Landlock, `no_new_privs`, UID drop) bind a PID for life — set once,
+never lifted. So for levels at `fork_ratchet` and above, **process lifetime =
+leaf span**: fork at leaf entry (from the warm parent — the zygote pattern:
+libraries, pools, and tree pre-loaded, shared copy-on-write for free), place in
+the cgroup, ratchet down, run the body, exit at leaf return. The PID does not
+exit the sandbox; the sandbox dies with the PID. The engine rule that follows:
+revocable knobs may change at leaf boundaries; ratchets apply only at process
+birth.
+
+**The data plane: sealed memory, capability-style — and the D-027 `vars` hole
+closes.** Leaf inputs/outputs at local rungs travel as **sealed shared memory**
+(`memfd` + `F_SEAL_WRITE`, Arrow IPC or raw tensor bytes), the FD passed into
+the leaf process (inherited at fork, or `SCM_RIGHTS` for the worker-pool
+shape). Three properties earn it: the seal makes inputs immutable — a hostile
+leaf body cannot corrupt what the parent shares; an FD crosses every wall on
+the gradient (Landlock and netns do not block passed FDs), so data sharing
+costs *nothing* in isolation strength — the FD **is** the declared grant, the
+same capability discipline as the broker's endpoint grants; and it is
+zero-copy, so walking a leaf from `none` to `fork_ratchet` does not tax the
+values crossing the seam. This is the answer to the interpreter rung's open
+`vars`-marshaling surface (D-027): **one contract, two transports** —
+sealed-Arrow-over-memfd at local rungs, the JSON-typed wire form at remote
+rungs; the leaf's typed contract (§e0) is identical over both.
+
+**Floor is baked; envelope is the receiver's.** The D-033 identity/binding
+discipline extends unchanged: the *actual* isolation level a receiver runs a
+leaf at is a **binding** — it does not change `execute(code, vars)→result`
+semantics, so scores stay warranted across isolation re-placement, exactly as
+across endpoint re-binding. What the artifact bakes is a **floor**: the
+interpreter profile already carries `isolation_floor` (D-033), and component 6
+tool placement gains the same field — an optimizer-authored tool body may
+demand `fork_ratchet` ("this code came from an optimizer; never run it with
+ambient network"). The receiver may exceed the floor, never go under it;
+under-floor execution is a loud refusal like every other declared capability.
+This composes with the trust gradient (D-040): the floor is part of what
+authored code *declares*, and the trust profile names who must honor it.
+
+**Floors are per-use-site: binding-level floors with max-composition.** The
+entry-level floor is the *runtime's* own demand (a wasm host may inherently
+demand `remote`); but the motivating trust distinction is per-leaf — the same
+CPython entry running the author's hand-written helper at one leaf and
+optimizer-generated code at another. Forking the entry to express that would
+state "two runtimes" where the truth is "one runtime, two trust levels" —
+exactly the sharing-as-stated-fact principle §b-pools exists to protect. So
+the LM pool's base ⊕ delta move applies verbatim: **a leaf's binding may carry
+an optional `isolation_floor` override** (`{interpreter: "main",
+isolation_floor: "fork_ratchet"}`), and the **effective floor at a leaf =
+max(entry floor, binding floor)** — floors compose upward only; a binding can
+tighten, never loosen, the entry's demand (the same one-way discipline as the
+ratchet itself). `authored_by: optimizer` on a tool body defaults its binding
+floor per the receiver's trust profile (D-040's mechanical hook). The
+three-way pairing then reads directly off the artifact, per leaf: *this leaf*
+(tree position) runs on *this runtime* (entry ref → identity profile) at *at
+least this isolation* (effective floor) — and actually ran at *this envelope*
+(run provenance, below).
+
+**Changing a floor is authorship; choosing an envelope is deployment — and
+both leave records, in different homes.** *Lowering* a floor (the receiver
+decides to trust the code — e.g. accepts LM-generated tool bodies in their
+context) is never an engine override flag: it is an **artifact edit** — the
+floor is a baked field, so lowering it produces a new artifact version with
+the change in provenance (`floor_lowered_by`, date, old→new). It changes what
+the artifact *promises*, so it must go through the artifact, loudly, never
+around it. *Raising* the envelope stays a **binding** (re-placement without
+re-authoring — the dial, not a fork), but it is not unrecorded: every **run**
+records the actual envelope used per leaf (View-2), and every **score**
+carries the envelope it was measured under (View-3, beside the LM binding
+that served it). That record is what gives the invariance law teeth —
+"measured at `none`, reproduced at `fork_ratchet`, same scores" becomes a
+checkable claim, and a divergence is a filed defect against the leaf. Declared
+grants keep both directions honest: a leaf's declared needs (endpoints,
+credentials, files) are **orthogonal to the level** — the envelope at *any*
+level must supply every declared grant or load refuses — so "it stopped
+working under stricter isolation" is never a silent runtime surprise, only a
+load-time refusal (missing grant) or a surfaced leaf defect (undeclared side
+channel).
+
+**The gradient's boundary: same runtime, thicker wall — never a different
+runtime.** Every level runs the leaf's declared interpreter profile (D-033)
+unchanged; from `none` to `sandbox` the runtime inside the wall is
+byte-identical (a fork of the same loaded process). A backend that cannot
+satisfy the profile — e.g. a Pyodide/wasm pool lacking declared packages, real
+threads, or the declared CPython version — is **not a higher isolation level
+but an identity deviation**: it fails profile verification at load (loud
+refusal naming the mismatch), and a receiver who accepts it anyway records a
+profile deviation, detaching shipped scores (D-033). `remote` means the same
+profile satisfied elsewhere, never "any remote runtime."
+
+**The isolation-invariance law (the leaf-purity corollary).** A forked leaf's
+writes to inherited state die with the child — which enforces mechanically
+what the IR wants philosophically: leaves communicate through their typed
+edges only. Stated as law: **a leaf must behave identically at every isolation
+level; a level change that changes behavior indicts the leaf, not the level.**
+A leaf that breaks under `fork` was relying on undeclared side channels
+(ambient mutation, hidden globals) — a defect the gradient *detects*, not a
+compatibility problem it creates. This is the isolation analogue of the
+structural-equivalence criterion (example 14), and it is precisely what keeps
+the whole gradient a binding rather than an identity axis. The zero end of the
+gradient is exactly today's rung 0 — one RAM, one process, the reference frame
+the thesis privileges — so nothing about the fully-baked pole changes; the
+gradient only names what it costs, mechanism by mechanism, to walk away from
+it.
 
 <a name="e0-lang"></a>
 ### (e0-lang) Cross-language receivers — the rung-walk rule and the declared-tier profile
