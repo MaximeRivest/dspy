@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ProgramIR node set v0.4 (SEM-8)",
-  "description": "The forward grammar's JSON encoding, spec/node-set.md SEM-8 ruling as amended by the ratified v0.2 ergonomics batch (D-034), v0.3 values batch (D-037, 2026-08-10), and v0.4 inputs-bag admission (D-041, 2026-08-11): the `node` discriminator, the statement/expression vocabulary below, leaves as {leaf: {kind, ref?}} with the interpreter leaf carrying a required ref (D-029), dynamic tools as {leaf: {kind: 'tool'}, name: <expr>}. v0.2 added statements SetIndex/AssignTuple, expressions IfExp/BoolOp/UnaryOp/Format/List/Dict/Index, the For list-iter form, and the widened Compare/BinOp operator enums. v0.3 adds statements Pass/Log, the Slice expression, and two pure call forms (builtin table, value-method table); the aforward rule (D-037) makes async twins lower to this identical vocabulary. v0.4 adds the record envelope (args as exactly one record binding, bound to the module's own input signature, D-036 component 2) and the leaf-call `splat` field (the signature-record splat; LM-decided dicts stay refused). Artifact form carries no source spans (SEM-8: refusal locations are an input-side concern). The root of this schema is one forward object -- the input to the node_compile op (harness/PROTOCOL.md). Anything outside this closed vocabulary refuses at compile with PIR-E-NODE-* (spec/errors.md).",
+  "title": "ProgramIR node set v0.5 (SEM-8)",
+  "description": "The forward grammar's JSON encoding, spec/node-set.md SEM-8 ruling as amended by the ratified v0.2 ergonomics batch (D-034), v0.3 values batch (D-037, 2026-08-10), and v0.4 inputs-bag admission (D-041, 2026-08-11): the `node` discriminator, the statement/expression vocabulary below, leaves as {leaf: {kind, ref?}} with the interpreter leaf carrying a required ref (D-029), dynamic tools as {leaf: {kind: 'tool'}, name: <expr>}. v0.2 added statements SetIndex/AssignTuple, expressions IfExp/BoolOp/UnaryOp/Format/List/Dict/Index, the For list-iter form, and the widened Compare/BinOp operator enums. v0.3 adds statements Pass/Log, the Slice expression, and two pure call forms (builtin table, value-method table); the aforward rule (D-037) makes async twins lower to this identical vocabulary. v0.4 adds the record envelope (args as exactly one record binding, bound to the module's own input signature, D-036 component 2) and the leaf-call `splat` field (the signature-record splat; LM-decided dicts stay refused). v0.5 (D-042 point 6, 2026-08-12) adds the leaf object's optional `isolation_floor` field -- the PIR-016 binding-level floor override, tool/interpreter leaves only. Artifact form carries no source spans (SEM-8: refusal locations are an input-side concern). The root of this schema is one forward object -- the input to the node_compile op (harness/PROTOCOL.md). Anything outside this closed vocabulary refuses at compile with PIR-E-NODE-* (spec/errors.md).",
   "$ref": "#/$defs/forward",
   "$defs": {
     "identifier": {
@@ -289,6 +289,10 @@
         "ref": {
           "$ref": "#/$defs/identifier",
           "description": "The declared target: a child Predict name (kind=predict), a sub-module name (kind=module), a component-6 tool name (kind=tool, static form), or a component-7 interpreter pool entry name (kind=interpreter; REQUIRED by D-029 -- the examples' ref-less interpreter leaf is pre-ratification; the migrator adds ref: 'main')."
+        },
+        "isolation_floor": {
+          "enum": ["none", "namespace", "fork", "fork_cgroup", "fork_ratchet", "sandbox", "remote"],
+          "description": "Optional binding-level floor override (v0.5, D-042 point 6; PIR-016): effective floor = max(entry floor, this field) -- floors tighten per binding, never loosen. Drawn from the D-042 ordered gradient vocabulary (spec/placement.md). tool/interpreter leaves only -- enforced on the Call node ($defs/expr_call); on predict/module leaves the field refuses at compile (PIR-E-NODE-001). Compile-inert: changes no execution semantics (PIR-019)."
         }
       },
       "required": ["kind"],
@@ -321,6 +325,23 @@
       "required": ["node", "leaf", "kwargs"],
       "additionalProperties": false,
       "allOf": [
+        {
+          "description": "predict/module leaves: the binding-level isolation_floor is not admitted (v0.5, D-042 point 6) -- predictors bind envelopes through their LM placement, not through a code floor. Refuses PIR-E-NODE-001 naming the node.",
+          "if": {
+            "properties": {
+              "leaf": {
+                "properties": {"kind": {"enum": ["predict", "module"]}},
+                "required": ["kind"]
+              }
+            },
+            "required": ["leaf"]
+          },
+          "then": {
+            "properties": {
+              "leaf": {"not": {"required": ["isolation_floor"]}}
+            }
+          }
+        },
         {
           "description": "predict/module/interpreter leaves: ref required (D-029 for interpreter), dynamic `name` forbidden.",
           "if": {

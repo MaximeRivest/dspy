@@ -891,9 +891,9 @@ def test_compile_forward_refuses_named_constructs(function, node, fragment):
 # --- version stamp ----------------------------------------------------------
 
 
-def test_node_set_version_stamp_is_v04():
-    assert IMPLEMENTED_VERSIONS["node_set"] == "0.4"
-    assert supported_versions("node_set") == ("0.1", "0.2", "0.3", "0.4")
+def test_node_set_version_stamp_is_v05():
+    assert IMPLEMENTED_VERSIONS["node_set"] == "0.5"
+    assert supported_versions("node_set") == ("0.1", "0.2", "0.3", "0.4", "0.5")
     assert supported_versions("ir_version") == ("0.1",)
 
 
