@@ -61,6 +61,8 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import os
+import re
 import subprocess
 import tempfile
 import types
@@ -629,20 +631,35 @@ class FlexIR(Optimizer):
             artifact = Path(tmp) / "artifact"
             program.save(artifact)
             interpreter = self._env_cache.interpreter_for(artifact)
+            specs, extra_env = self._serialize_lms(program)
             job = {
                 "artifact": str(artifact),
                 "examples": [
                     {"values": example.toDict(), "input_keys": list(example.inputs().keys())} for example in dataset
                 ],
                 "metric_source": self._metric_source,
-                "lm": self._serialize_lms(program),
+                "lm": specs,
             }
+            payload_text = json.dumps(job, default=str)
+            # Belt and suspenders: NOTHING credential-shaped touches disk.
+            # The serialization above already routes secrets into env-var
+            # NAMES; this scan proves it held, for the job payload AND the
+            # exported artifact, before either is used.
+            self._assert_secret_free(payload_text.encode("utf-8"), "the scoring job payload")
+            for file in sorted(artifact.rglob("*")):
+                if file.is_file():
+                    self._assert_secret_free(file.read_bytes(), f"the exported artifact file {file.name!r}")
             job_path = Path(tmp) / "job.json"
-            job_path.write_text(json.dumps(job, default=str))
+            job_path.write_text(payload_text)
             child = subprocess.run(
                 [interpreter, "-m", "dspy.optim._score_harness", str(job_path)],
                 capture_output=True,
                 text=True,
+                # The child inherits the parent env unchanged, plus (only
+                # when a live secret had no recoverable env-var origin) the
+                # fallback vars — process memory to process memory, never
+                # disk or argv.
+                env={**os.environ, **extra_env},
             )
         if child.returncode != 0:
             tail = "\n".join((child.stderr or "").strip().splitlines()[-6:])
@@ -658,16 +675,21 @@ class FlexIR(Optimizer):
             results.append((example, prediction, record["value"]))
         return EvaluationResult(score=payload["score"], results=results, lm_calls=payload["lm_calls"])
 
-    def _serialize_lms(self, program: Module) -> dict[str, Any]:
+    def _serialize_lms(self, program: Module) -> tuple[dict[str, Any], dict[str, str]]:
         """Serialize the program's LM pool for the child, or refuse.
 
-        Scripted DummyLMs cross the boundary as data: a reply list is
-        sent from its cursor onward (the parent's cursor advances by the
-        child's consumption afterward, so successive child runs read the
-        script exactly as one in-process run would); a function-scripted
-        DummyLM sends its self-contained source. Real provider LMs are
-        not yet re-bindable in the child — a teaching refusal, not a
-        silent misscore.
+        Returns `(specs, extra_env)`. Scripted DummyLMs cross the
+        boundary as data: a reply list is sent from its cursor onward
+        (the parent's cursor advances by the child's consumption
+        afterward, so successive child runs read the script exactly as
+        one in-process run would); a function-scripted DummyLM sends its
+        self-contained source. A plain `dspy.LM` crosses as a RECEIVER
+        BINDING — model identity, capability facts, non-secret kwargs —
+        with every credential replaced by the NAME of an environment
+        variable (`_real_lm_spec`); `extra_env` carries the fallback
+        vars set on the child process only. An LM subclass with no
+        reconstruction contract keeps a teaching refusal naming exactly
+        what is missing — never a silent misscore, never a silent drop.
         """
         from dspy.lm.dummy import DummyLM
         from dspy.programir._dspy import compile_with_live
@@ -675,23 +697,92 @@ class FlexIR(Optimizer):
 
         _, live = compile_with_live(program)
         specs: dict[str, Any] = {}
+        extra_env: dict[str, str] = {}
         self._script_lms = {}
+        self._secret_values = set()
         for name, lm in live["lm"].items():
-            if not isinstance(lm, DummyLM):
-                raise ValueError(
-                    f"FlexIR eval_mode='artifact' can serialize only DummyLM state into the scoring child; "
-                    f"LM pool entry {name!r} is a {type(lm).__name__}. Use eval_mode='in_process' for live "
-                    "provider LMs (child-side provider binding is not implemented yet)."
-                )
-            if lm._script is not None:
-                specs[name] = {"script": lm._script[lm._cursor :]}
-                self._script_lms[name] = lm
+            if isinstance(lm, DummyLM):
+                if lm._script is not None:
+                    specs[name] = {"script": lm._script[lm._cursor :]}
+                    self._script_lms[name] = lm
+                else:
+                    subject = f"FlexIR artifact-mode DummyLM {name!r}"
+                    source = _source(lm._fn, subject=subject)
+                    _check_self_contained(lm._fn, source, subject=subject)
+                    specs[name] = {"function_source": source}
+            elif type(lm) is LM:
+                specs[name] = self._real_lm_spec(name, lm, extra_env)
             else:
-                subject = f"FlexIR artifact-mode DummyLM {name!r}"
-                source = _source(lm._fn, subject=subject)
-                _check_self_contained(lm._fn, source, subject=subject)
-                specs[name] = {"function_source": source}
-        return specs
+                raise ValueError(
+                    f"FlexIR eval_mode='artifact' cannot rebind LM pool entry {name!r} in the scoring child: "
+                    f"{type(lm).__name__} is neither a DummyLM nor a plain dspy.LM, and it declares no "
+                    "child-side construction contract (model identity + capability facts + JSON-safe kwargs). "
+                    "Use eval_mode='in_process' for this LM, or bind a plain dspy.LM."
+                )
+        return specs, extra_env
+
+    def _real_lm_spec(self, name: str, lm: LM, extra_env: dict[str, str]) -> dict[str, Any]:
+        """One plain `dspy.LM` as a child receiver binding — secrets as names.
+
+        The spec reuses the LM's own constructor contract (`model`, the
+        capability facts, the default request kwargs) — no parallel
+        serialization. Credential-shaped kwargs NEVER enter the spec:
+        each is replaced by `{"env": <var name>}`. The var name is
+        recovered from the parent's environment when a variable holds
+        that exact value; otherwise (the FALLBACK path — a raw key whose
+        env origin is unknown) a private `DSPY_FLEX_LM_*` var is set on
+        the child process only, so the secret moves process-to-process
+        and still never touches disk or argv. The two audit failure
+        classes both refuse loudly: an unserializable kwarg (silent
+        loss) and an opaque header bag (secret leak) are errors, not
+        best-effort guesses.
+        """
+        kwargs: dict[str, Any] = {}
+        credentials: dict[str, dict[str, str]] = {}
+        for key, value in lm.kwargs.items():
+            if key in _OPAQUE_SECRET_KWARGS:
+                raise ValueError(
+                    f"FlexIR eval_mode='artifact' cannot serialize LM {name!r}: kwarg {key!r} is an opaque "
+                    "header/secret bag the credential channel cannot audit — remove it or use "
+                    "eval_mode='in_process' (refusing beats leaking)"
+                )
+            if _is_secret_kwarg(key):
+                if not isinstance(value, str) or not value:
+                    raise ValueError(
+                        f"FlexIR eval_mode='artifact' cannot serialize LM {name!r}: credential kwarg {key!r} "
+                        f"is {type(value).__name__}, not a string"
+                    )
+                self._secret_values.add(value)
+                env_name = _env_var_holding(value)
+                if env_name is None:
+                    env_name = "DSPY_FLEX_LM_" + re.sub(r"[^A-Z0-9]+", "_", f"{name}_{key}".upper()).strip("_")
+                    extra_env[env_name] = value
+                credentials[key] = {"env": env_name}
+                continue
+            try:
+                json.dumps(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"FlexIR eval_mode='artifact' cannot serialize LM {name!r}: kwarg {key!r} is not "
+                    f"JSON-serializable ({error}); dropping it silently would change the child's sampling"
+                ) from error
+            kwargs[key] = value
+        return {
+            "class": "LM",
+            "model": lm.model,
+            "capabilities": lm.capabilities.to_dict(),
+            "kwargs": kwargs,
+            "credentials": credentials,
+        }
+
+    def _assert_secret_free(self, data: bytes, where: str) -> None:
+        """Refuse loudly if any known credential value appears in `data`."""
+        for secret in getattr(self, "_secret_values", ()):
+            if secret.encode("utf-8") in data:
+                raise RuntimeError(
+                    f"FlexIR refused to proceed: a credential value leaked into {where}. Secrets ride "
+                    "env-var NAMES only; this is the belt-and-suspenders scan catching a leak before disk."
+                )
 
     def _advance_scripts(self, consumed: dict[str, int]) -> None:
         for name, count in consumed.items():
@@ -1233,6 +1324,44 @@ def _refuse_overlapping_holdout(devset: list[Example], holdout: list[Example]) -
             "reward-hacking guard needs a holdout the reflection LM never sees. Pass a holdout DISJOINT "
             "from trainset, or split one labeled set so disjointness is guaranteed."
         )
+
+
+# ---------------------------------------------------------------------------
+# Credential channel: secrets ride env-var NAMES to the scoring child
+# ---------------------------------------------------------------------------
+
+#: Kwarg-name markers that make an LM kwarg credential material. Wider
+#: than the exact `api_key` on purpose: the serialization audit's leak
+#: class was sibling credentials (`azure_ad_token`, `aws_secret_access_key`)
+#: escaping an exact-name filter.
+_SECRET_KWARG_MARKERS = ("api_key", "secret", "password")
+
+#: Kwargs that can smuggle credentials inside an opaque structure (an
+#: `Authorization` header in a dict). No per-value audit is attempted —
+#: they refuse whole (refusing beats leaking).
+_OPAQUE_SECRET_KWARGS = frozenset({"extra_headers", "default_headers", "headers"})
+
+
+def _is_secret_kwarg(key: str) -> bool:
+    lowered = key.lower()
+    if any(marker in lowered for marker in _SECRET_KWARG_MARKERS):
+        return True
+    # `_token` matches the sibling-credential class (azure_ad_token) while
+    # sparing counters like `max_tokens` (plural, not a credential).
+    return lowered == "token" or lowered.endswith("_token")
+
+
+def _env_var_holding(value: str) -> str | None:
+    """The first environment variable whose value IS `value`, or None.
+
+    Recovering the NAME lets the binding carry a reference instead of
+    the secret; the child reads the same variable from its inherited
+    environment.
+    """
+    for name, held in os.environ.items():
+        if held == value:
+            return name
+    return None
 
 
 def _input_key(example: Example) -> str:

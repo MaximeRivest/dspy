@@ -20,6 +20,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
@@ -27,6 +29,7 @@ import dspy
 from dspy import optim
 from dspy.lm import BINDINGS
 from dspy.optim import env_prepare
+from dspy.optim.flex import _env_var_holding, _is_secret_kwarg
 
 
 @pytest.fixture(autouse=True)
@@ -366,3 +369,163 @@ class TestArtifactMode:
         )
         assert optimizer.trajectory[1]["accepted"] is True
         assert optimizer._env_cache.provisions == 1
+
+
+# ---------------------------------------------------------------------------
+# (3) Real-LM child binding — credentials ride env-var names, never disk
+# ---------------------------------------------------------------------------
+
+
+def make_optimizer(**flex_kwargs):
+    return optim.FlexIR(
+        dspy.DummyLM([]), exact_tag, iterations=1, eval_mode="artifact", _eval_same_env=True, **flex_kwargs
+    )
+
+
+class TestRealLMBinding:
+    def serialize(self, lm):
+        program = Tagger()
+        dspy.configure(lm=lm)
+        return make_optimizer()._serialize_lms(program)
+
+    def test_env_var_name_recovery(self, monkeypatch):
+        monkeypatch.setenv("FLEX_TEST_KEY", "sk-fake-unit-123")
+        specs, extra_env = self.serialize(
+            dspy.LM("openai/gpt-fake", api_key="sk-fake-unit-123", api_base="http://example.invalid/v1")
+        )
+        (spec,) = specs.values()
+        # The binding reuses the LM's own constructor contract...
+        assert spec["class"] == "LM"
+        assert spec["model"] == "openai/gpt-fake"
+        assert spec["capabilities"]["instruct"] is True
+        assert spec["kwargs"]["api_base"] == "http://example.invalid/v1"
+        assert spec["kwargs"]["temperature"] == 0.0
+        # ...and the credential crosses as the env var's NAME only.
+        assert spec["credentials"] == {"api_key": {"env": "FLEX_TEST_KEY"}}
+        assert extra_env == {}
+        assert "sk-fake-unit-123" not in json.dumps(specs)
+
+    def test_fallback_env_injection_for_orphan_secrets(self):
+        specs, extra_env = self.serialize(dspy.LM("openai/gpt-fake", api_key="sk-orphan-987"))
+        (spec,) = specs.values()
+        (env_name,) = spec["credentials"]["api_key"].values()
+        assert env_name.startswith("DSPY_FLEX_LM_")
+        # The secret rides the child's process env only — never the payload.
+        assert extra_env == {env_name: "sk-orphan-987"}
+        assert "sk-orphan-987" not in json.dumps(specs)
+
+    def test_sibling_credentials_are_caught_by_the_markers(self):
+        assert _is_secret_kwarg("azure_ad_token")
+        assert _is_secret_kwarg("aws_secret_access_key")
+        assert _is_secret_kwarg("api_key")
+        assert not _is_secret_kwarg("api_base")
+        specs, extra_env = self.serialize(dspy.LM("openai/gpt-fake", azure_ad_token="tok-555"))
+        (spec,) = specs.values()
+        assert "azure_ad_token" in spec["credentials"]
+        assert "tok-555" not in json.dumps(specs)
+        assert "tok-555" in extra_env.values()
+
+    def test_opaque_header_bags_refuse_loudly(self):
+        with pytest.raises(ValueError, match="opaque"):
+            self.serialize(dspy.LM("openai/gpt-fake", extra_headers={"Authorization": "Bearer x"}))
+
+    def test_non_json_kwarg_refuses_instead_of_silent_loss(self):
+        with pytest.raises(ValueError, match="not\\s+JSON-serializable"):
+            self.serialize(dspy.LM("openai/gpt-fake", api_key="k", weird=object()))
+
+    def test_unbindable_subclass_keeps_a_narrow_teaching_refusal(self):
+        class ExoticLM(dspy.LM):
+            pass
+
+        with pytest.raises(ValueError, match="ExoticLM.*construction contract"):
+            self.serialize(ExoticLM("openai/gpt-fake", api_key="k"))
+
+    def test_the_secret_scan_catches_a_leak(self):
+        optimizer = make_optimizer()
+        optimizer._secret_values = {"sk-planted-1"}
+        optimizer._assert_secret_free(b"clean payload", "x")  # no raise
+        with pytest.raises(RuntimeError, match="credential value leaked"):
+            optimizer._assert_secret_free(b'{"api_key": "sk-planted-1"}', "the scoring job payload")
+
+    def test_env_var_holding_finds_names(self, monkeypatch):
+        monkeypatch.setenv("FLEX_HOLDING_TEST", "value-abc")
+        assert _env_var_holding("value-abc") == "FLEX_HOLDING_TEST"
+        assert _env_var_holding("value-that-is-nowhere") is None
+
+
+class _StubHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        self.server.auth_headers.append(self.headers.get("Authorization"))
+        content = "[[ ## tag ## ]]\nCAT\n\n[[ ## completed ## ]]"
+        body = json.dumps(
+            {
+                "id": "stub",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "stub-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture()
+def stub_server():
+    server = HTTPServer(("127.0.0.1", 0), _StubHandler)
+    server.auth_headers = []
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+    thread.join(timeout=5)
+
+
+class TestRealLMEndToEnd:
+    def run(self, stub_server, api_key):
+        port = stub_server.server_address[1]
+        lm = dspy.LM("openai/stub-model", api_key=api_key, api_base=f"http://127.0.0.1:{port}/v1")
+        dspy.configure(lm=lm)
+        program = Tagger()
+        optimizer = optim.FlexIR(
+            dspy.DummyLM([reflection_reply([])]),
+            exact_tag,
+            iterations=1,
+            eval_mode="artifact",
+            _eval_same_env=True,
+        )
+        optimizer.compile(program, trainset=tag_devset("cat"))
+        return optimizer
+
+    def test_child_scores_through_the_stub_with_env_credential(self, stub_server, monkeypatch):
+        # The recovered-name path: the key lives in a parent env var; the
+        # binding carries the NAME; the child reads it and authenticates.
+        monkeypatch.setenv("FLEX_STUB_KEY", "sk-stub-e2e-42")
+        optimizer = self.run(stub_server, "sk-stub-e2e-42")
+        baseline = optimizer.trajectory[0]
+        assert (baseline["score"], baseline["lm_calls"]) == (1.0, 1)
+        # The stub SAW the credential — proof the child read it from env.
+        assert stub_server.auth_headers == ["Bearer sk-stub-e2e-42"]
+
+    def test_child_scores_through_the_stub_with_fallback_credential(self, stub_server):
+        # The fallback path: an orphan key with no env-var origin rides a
+        # private var set on the child process only.
+        optimizer = self.run(stub_server, "sk-stub-orphan-77")
+        baseline = optimizer.trajectory[0]
+        assert (baseline["score"], baseline["lm_calls"]) == (1.0, 1)
+        assert stub_server.auth_headers == ["Bearer sk-stub-orphan-77"]

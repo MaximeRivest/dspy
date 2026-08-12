@@ -89,7 +89,7 @@ purpose — each list is one explicit door.
 | Knob | Default | What it does |
 |---|---|---|
 | `auto_install` | False | When a dep-carrying leaf passes admission, install its missing granted packages via `uv pip install` into the **current** interpreter's environment, before the candidate is scored. Install failure is a teaching refusal into the ledger (a bad package name is the proposal's fault), never an infra abort. Know the costs: installing a package executes third-party build code; a rejected candidate's installs are **not** unwound (your env drifts from the lock until the next export re-locks); it needs network or a warm uv cache. Only meaningful with `allowed_deps`. |
-| `eval_mode` | "in_process" | Where candidates are scored — never what is accepted. `"artifact"` exports every candidate (baseline included) and scores it in a subprocess under the artifact's own environment: scoring semantics == deployment semantics, environment included. Requires a self-contained metric (its source travels to the child; refused at compile otherwise). Child environments are cached by lockfile hash under `<checkpoint_dir>/.envs` (or `~/.cache/dspy-flexir`), so only candidates that change deps pay a resolve. |
+| `eval_mode` | "in_process" | Where candidates are scored — never what is accepted. `"artifact"` exports every candidate (baseline included) and scores it in a subprocess under the artifact's own environment: scoring semantics == deployment semantics, environment included. Requires a self-contained metric (its source travels to the child; refused at compile otherwise). LM bindings for the child are auto-derived from the live LMs — scripted `DummyLM` state as data, plain `dspy.LM` as a receiver binding with credentials as env-var **names** (see below). Child environments are cached by lockfile hash under `<checkpoint_dir>/.envs` (or `~/.cache/dspy-flexir`), so only candidates that change deps pay a resolve. |
 | `eval_env_overrides` | `{"dspy": <this repo>}` | Artifact mode: distributions installed **editable** from a local path instead of the locked release. The default exists because the manifest pins `dspy==<greenfield version>`, which is not the PyPI dspy — the child must run the local tree. |
 
 ## Who prepares the environment
@@ -117,11 +117,29 @@ the process boundary: catchable program errors score 0.0 per example;
 anything that escapes (an unloadable artifact, an engine guard) aborts
 the step as infrastructure, never scored against the candidate.
 
-Current limits, stated plainly: artifact mode serializes scripted
-`DummyLM` state to the child (replayable tests); binding a live provider
-LM inside the child is not implemented yet — use `in_process` for live
-providers. The `dspy` pin in the lock is overridden with the local tree
-via `eval_env_overrides`.
+### Real LMs in artifact mode
+
+The child's LM bindings are derived from the live LMs your predictors
+already hold — no parallel configuration. A scripted `DummyLM` crosses
+as data (replayable tests). A plain `dspy.LM` crosses as a receiver
+binding: model identity, capability facts, and the non-secret request
+kwargs, straight from the LM's own constructor contract.
+
+Credentials ride **environment-variable names, never disk**: the job
+file, the exported artifact, the lockfile, and the argv carry no secret
+material (a belt-and-suspenders scan refuses before writing if one
+would). When a parent env var holds the key, the binding names that
+var and the child reads it from its inherited environment. When the
+live LM holds a raw key with no recoverable env origin, the fallback
+path sets a private `DSPY_FLEX_LM_*` variable on the child process
+only — process memory to process memory.
+
+What still refuses, loudly and by name: an LM subclass with no
+construction contract; a credential-bearing opaque header bag
+(`extra_headers` and kin — refusing beats leaking); a non-JSON kwarg
+(dropping it silently would change the child's sampling). The `dspy`
+pin in the lock is overridden with the local tree via
+`eval_env_overrides`.
 
 ## Three postures
 

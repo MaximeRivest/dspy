@@ -41,6 +41,30 @@ def _load_function(source: str, *, tag: str) -> Any:
     return load_generated(source, tag=tag, name=name)
 
 
+def _real_lm(name: str, spec: dict[str, Any]) -> Any:
+    """Rebuild one plain `dspy.LM` from its receiver binding.
+
+    Credentials arrive as env-var NAMES; the values come from this
+    process's inherited environment (or the parent-set fallback vars) —
+    they were never in the job file. A missing variable is an
+    infrastructure failure, named loudly.
+    """
+    import os
+
+    import dspy
+
+    kwargs = dict(spec["kwargs"])
+    for key, credential in spec.get("credentials", {}).items():
+        env_name = credential["env"]
+        if env_name not in os.environ:
+            raise RuntimeError(
+                f"credential environment variable {env_name!r} for LM pool entry {name!r} is not set in "
+                "the scoring child's environment"
+            )
+        kwargs[key] = os.environ[env_name]
+    return dspy.LM(spec["model"], **spec["capabilities"], **kwargs)
+
+
 def _bindings(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
     import dspy
 
@@ -48,8 +72,10 @@ def _bindings(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for name, spec in job["lm"].items():
         if "script" in spec:
             lms[name] = dspy.DummyLM(spec["script"])
-        else:
+        elif "function_source" in spec:
             lms[name] = dspy.DummyLM(_load_function(spec["function_source"], tag="flex-harness-lm"))
+        else:
+            lms[name] = _real_lm(name, spec)
     artifact = Path(job["artifact"])
     manifest = json.loads((artifact / "manifest.json").read_text())
     tools: dict[str, Any] = {}
@@ -79,7 +105,7 @@ def main(job_path: str) -> None:
             {"prediction": None if prediction is None else prediction.toDict(), "value": value}
             for _example, prediction, value in result.results
         ],
-        "consumed": {name: len(lm.calls) for name, lm in bindings["lm"].items()},
+        "consumed": {name: len(lm.calls) for name, lm in bindings["lm"].items() if hasattr(lm, "calls")},
     }
     print(json.dumps(payload, default=str))
 
