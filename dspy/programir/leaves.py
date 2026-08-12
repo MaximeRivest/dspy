@@ -90,7 +90,45 @@ def extract_tool(value: Tool | Callable[..., Any], *, name: str) -> AuthoredLeaf
     }
     if authored_by is not None:
         entry["authored_by"] = authored_by
+    # PIR-021 unified leaf substrate (D-043): a leaf may carry the
+    # invocation discriminant `kind` ("call" default — absent — or
+    # "session") and the closed static effect row `grants[]`. Both are
+    # ADDITIVE: absent means today's call-kind, grant-free tool, so every
+    # existing manifest stays byte-identical. The stamps live on the
+    # function (`_dspy_leaf_kind`, `_dspy_leaf_grants`) so they survive
+    # every recompile, like `_dspy_authored_by`.
+    kind = getattr(function, "_dspy_leaf_kind", None)
+    if kind == "session":
+        entry["kind"] = "session"
+    grants = getattr(function, "_dspy_leaf_grants", None)
+    if grants:
+        entry["grants"] = [dict(grant) for grant in grants]
     return AuthoredLeaf(name=name, entry=entry, source_path=path, source=source.encode("utf-8"))
+
+
+#: The engine-internal grant kind for a pool-leaf bridge. The ratified
+#: contract's `$defs/grant` closes `kind` to `fd | broker_route`; a
+#: leaf-to-leaf callback bridge has NO contract byte shape yet (PIR-021
+#: records nested attribution as "law, no byte shape yet"). It rides as an
+#: `fd`-kind grant whose `name` is `"leaf:<pool_name>"` — contract-valid
+#: bytes (an in-process bridge IS an FD-like capability the parent hands
+#: over) that also names the granted pool leaf the engine bridges. The
+#: prefix is the seam the engine reads; when the contract lands a
+#: `leaf`-kind grant this maps straight onto it.
+LEAF_GRANT_PREFIX = "leaf:"
+
+
+def leaf_grant(pool_name: str) -> dict[str, str]:
+    """One pool-leaf bridge grant, in contract-valid `{kind, name}` bytes."""
+    return {"kind": "fd", "name": f"{LEAF_GRANT_PREFIX}{pool_name}"}
+
+
+def granted_leaf_name(grant: dict[str, Any]) -> str | None:
+    """The pool leaf a bridge grant names, or None for a non-bridge grant."""
+    name = grant.get("name", "")
+    if grant.get("kind") == "fd" and isinstance(name, str) and name.startswith(LEAF_GRANT_PREFIX):
+        return name[len(LEAF_GRANT_PREFIX) :]
+    return None
 
 
 def extract_metric(function: Callable[..., Any], *, name: str) -> AuthoredLeaf:

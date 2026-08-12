@@ -981,8 +981,9 @@ class FlexIR(Optimizer):
         if op not in _VOCABULARY:
             return f"refused {tag}: unknown op {op!r} — the closed vocabulary is {sorted(_VOCABULARY)}"
         required = _VOCABULARY[op]
+        optional = _OPTIONAL_KEYS.get(op, frozenset())
         missing = sorted(required - set(proposal))
-        extra = sorted(set(proposal) - required - {"op"})
+        extra = sorted(set(proposal) - required - optional - {"op"})
         if missing or extra:
             detail = f"; missing {missing}" if missing else ""
             detail += f"; unexpected {extra}" if extra else ""

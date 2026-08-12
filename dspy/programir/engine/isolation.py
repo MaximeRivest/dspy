@@ -175,7 +175,33 @@ class _SyscallLayer:
         return os.path.isdir("/sys/fs/cgroup") and os.path.exists("/sys/fs/cgroup/cgroup.controllers")
 
     def cgroupfs_writable(self, root: str = "/sys/fs/cgroup") -> bool:
-        return os.access(root, os.W_OK)
+        """True when this process can create cgroup leaves it may place a child in.
+
+        The cgroup ROOT is never user-writable on a systemd host; what a
+        user owns is their DELEGATED subtree (user.slice/user-<uid>.slice/
+        user@<uid>.service/...), resolved from /proc/self/cgroup. Checking
+        the root would report "unwritable" on exactly the hosts where the
+        fork_cgroup rung works fine — a false downgrade, which the
+        fail-closed law forbids in both directions: never claim a wall you
+        cannot build, never refuse one you can.
+        """
+        candidates = []
+        try:
+            with open("/proc/self/cgroup", encoding="utf-8") as fh:
+                for line in fh:
+                    # cgroup v2: one line, "0::/user.slice/.../scope"
+                    prefix, _, path = line.strip().partition("::")
+                    if prefix == "0" and path:
+                        candidates.append(root + path)
+        except OSError:
+            pass
+        # An ssh session's scope is often root-owned while the user's
+        # DELEGATED subtree (user@<uid>.service, a sibling) is writable —
+        # systemd delegates exactly that subtree to the user manager.
+        uid = os.getuid()
+        candidates.append(f"{root}/user.slice/user-{uid}.slice/user@{uid}.service")
+        candidates.append(root)
+        return any(os.access(path, os.W_OK) for path in candidates)
 
     def has_unshare(self) -> bool:
         return hasattr(os, "unshare") and hasattr(os, "CLONE_NEWUSER")
@@ -211,14 +237,32 @@ class _SyscallLayer:
             raise OSError(ctypes.get_errno(), "prctl(PR_SET_NO_NEW_PRIVS) failed")
 
     def probe_socket_denied(self) -> bool:
-        """True when opening a socket FAILS (the wall holds)."""
+        """True when outbound NETWORK REACH fails (the wall holds).
+
+        In a fresh empty netns `socket()` itself still SUCCEEDS — an empty
+        namespace hands out sockets happily; what it cannot do is route.
+        The genuine-child run proved this: probing socket creation passes
+        the probe on the host and fails it inside the wall, exactly
+        backwards. So the probe attempts a connect to TEST-NET-1
+        (192.0.2.1, reserved, never assigned): an immediate
+        ENETUNREACH/EHOSTUNREACH is the empty-netns signature. On the
+        host side the same connect times out or is refused (packets left
+        the box) — NOT denied.
+        """
+        import errno
         import socket
 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         except OSError:
             return True
-        sock.close()
+        try:
+            sock.settimeout(0.25)
+            sock.connect(("192.0.2.1", 9))
+        except OSError as error:
+            return getattr(error, "errno", None) in (errno.ENETUNREACH, errno.EHOSTUNREACH)
+        finally:
+            sock.close()
         return False
 
     def probe_write_denied(self, path: str) -> bool:
@@ -309,8 +353,9 @@ class LinuxIsolationBackend(IsolationBackend):
         Levels below `fork_ratchet` need no in-child work (a plain fork or
         cgroup placement is the parent's job). At `fork_ratchet`+ the child
         unshares namespaces, sets NO_NEW_PRIVS, applies Landlock/seccomp
-        where the libraries exist, then SELF-PROBES: a socket that must
-        fail and an out-of-scratch write that must fail. A probe that
+        where the libraries exist, then SELF-PROBES: an outbound network
+        reach that must fail and an out-of-scratch write that must fail.
+        A probe that
         SUCCEEDS where it had to fail is an infrastructure abort — the wall
         did not hold, and the notes are explicit that this must never be
         mistaken for a passing run.
@@ -336,8 +381,9 @@ class LinuxIsolationBackend(IsolationBackend):
         """Self-probe: the wall must actually deny what it claims to deny."""
         if not sc.probe_socket_denied():
             raise RuntimeError(
-                "isolation self-probe FAILED: a socket() succeeded inside the fork_ratchet envelope where "
-                "the network must be unshared — the wall did not hold (infrastructure, never scored)"
+                "isolation self-probe FAILED: outbound network reach succeeded inside the fork_ratchet "
+                "envelope where the network must be unshared — the wall did not hold (infrastructure, "
+                "never scored)"
             )
         outside = os.path.join(scratch, "..", "_flex_probe") if scratch else "/_flex_probe"
         if not sc.probe_write_denied(outside):

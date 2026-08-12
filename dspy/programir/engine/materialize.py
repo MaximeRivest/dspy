@@ -73,18 +73,73 @@ class ExecutableProgram:
         predictors: dict[str, Predict],
         tools: dict[str, Callable[..., Any]],
         interpreters: dict[str, Any],
+        grants: dict[str, dict[str, str]] | None = None,
     ):
         self.forwards = forwards
         self.predictors = predictors
         self.tools = tools
         self.interpreters = interpreters
+        #: PIR-021 bridge table: {tool_name: {granted_pool_name: kind}}.
+        self.grants = grants or {}
 
     def __call__(self, **inputs: Any) -> Prediction:
         leaves = _Leaves(self)
         record = interpret.run_forward(self.forwards, "", dict(inputs), leaves)
         prediction = Prediction(**record)
         prediction._trajectory["predictor_calls"] = leaves.trace
+        # PIR-021 nested attribution: a call made through a session leaf's
+        # grant bridge is LABELED with both the session leaf and the
+        # predictor it reached, transitively. `predictor_calls` still has
+        # exactly one row per real call (the TOTAL counts each call once);
+        # `leaf_attribution` is the labeling — per-leaf measured counts
+        # where a single call shows under both names.
+        if leaves.attribution:
+            prediction._trajectory["leaf_attribution"] = leaves.attribution
         return prediction
+
+
+class _GrantBridge:
+    """The ONLY capability surface a session leaf is handed (PIR-021).
+
+    A session leaf receives this bridge as its first argument and reaches
+    its granted pool leaves through it — never ambient pool access. Each
+    granted leaf is exposed as an attribute (`bridge.<granted_name>(**kw)`)
+    and as `bridge.call(name, **kw)`. Reaching a leaf the manifest did NOT
+    grant raises `ToolError` (the bridge-only law, pinned by test). A
+    predictor reached this way runs through the same `_Leaves.predict`, so
+    it lands in `predictor_calls` (counted once) and attributes to both
+    the predictor and this session leaf.
+    """
+
+    def __init__(self, leaves: _Leaves, leaf_name: str, table: dict[str, str]):
+        object.__setattr__(self, "_leaves", leaves)
+        object.__setattr__(self, "_leaf_name", leaf_name)
+        object.__setattr__(self, "_table", table)
+
+    def call(self, name: str, **kwargs: Any) -> Any:
+        table = object.__getattribute__(self, "_table")
+        leaves = object.__getattribute__(self, "_leaves")
+        leaf_name = object.__getattribute__(self, "_leaf_name")
+        if name not in table:
+            raise ToolError(
+                f"session leaf {leaf_name!r} tried to reach {name!r}, which it was NOT granted "
+                f"(granted: {sorted(table)}); a session leaf reaches only its declared grants (PIR-021)"
+            )
+        if table[name] == "predict":
+            return leaves.predict(name, dict(kwargs))
+        return leaves.tool(name, dict(kwargs))
+
+    def __getattr__(self, name: str) -> Any:
+        table = object.__getattribute__(self, "_table")
+        if name in table:
+            def _bound(**kwargs: Any) -> Any:
+                return self.call(name, **kwargs)
+
+            return _bound
+        raise AttributeError(
+            f"session leaf reaches only its declared grants; {name!r} is not granted "
+            f"(granted: {sorted(table)})"
+        )
 
 
 class _Leaves:
@@ -93,6 +148,18 @@ class _Leaves:
     def __init__(self, program: ExecutableProgram):
         self.program = program
         self.trace: list[dict[str, Any]] = []
+        #: PIR-021 per-leaf measured attribution: name -> call count. A
+        #: predictor reached DIRECTLY counts under its own path; a
+        #: predictor reached THROUGH a session leaf's bridge counts under
+        #: BOTH the session leaf and the predictor (the same real call,
+        #: labeled twice — the total in `trace` still counts it once).
+        self.attribution: dict[str, int] = {}
+        #: The session leaf currently on the call stack, if any — its
+        #: bridge calls attribute to it too.
+        self._active_session: str | None = None
+
+    def _attribute(self, name: str) -> None:
+        self.attribution[name] = self.attribution.get(name, 0) + 1
 
     def predict(self, path: str, kwargs: dict) -> dict:
         predictor = self.program.predictors.get(path)
@@ -100,18 +167,50 @@ class _Leaves:
             raise interpret.MalformedNodeError(f"no materialized predictor at path {path!r}")
         record = predictor(**kwargs).toDict()
         self.trace.append({"predictor": path, "inputs": dict(kwargs), "outputs": dict(record)})
+        self._attribute(path)
+        if self._active_session is not None:
+            # This predictor was reached through a session leaf's bridge —
+            # attribute the SAME call to the session leaf too (transitive).
+            self._attribute(self._active_session)
         return record
 
     def tool(self, name: str, kwargs: dict) -> Any:
         tool = self.program.tools.get(name)
         if tool is None:
             raise ToolError(f"unknown tool {name!r}")
+        bridge = self.program.grants.get(name)
+        if bridge is None:
+            # A plain call-kind tool with no grants — exactly today's path.
+            try:
+                return tool(**kwargs)
+            except ToolError:
+                raise
+            except Exception as error:
+                raise ToolError(f"tool {name!r} failed: {error}") from error
+        # A session/bridge-bearing leaf: hand it ONLY its resolved grants
+        # (never ambient pool access) and mark it active so any bridge call
+        # it makes attributes to it. The bridge is the single argument the
+        # leaf receives beyond its declared kwargs.
+        previous = self._active_session
+        self._active_session = name
         try:
-            return tool(**kwargs)
+            return tool(_GrantBridge(self, name, bridge), **kwargs)
         except ToolError:
             raise
+        except TypeError as error:
+            # A leaf that declares grants but takes no bridge parameter is
+            # a mis-shaped session leaf — teach, do not silently drop.
+            if "positional argument" in str(error) or "argument" in str(error):
+                raise ToolError(
+                    f"tool {name!r} declares grants but its function does not accept the grant bridge as "
+                    "its first parameter (a session leaf reads its grants from the bridge, never ambient "
+                    f"pools): {error}"
+                ) from error
+            raise ToolError(f"tool {name!r} failed: {error}") from error
         except Exception as error:
             raise ToolError(f"tool {name!r} failed: {error}") from error
+        finally:
+            self._active_session = previous
 
     def interpreter(self, ref: str, code: str) -> Any:
         runtime = self.program.interpreters.get(ref)
@@ -169,12 +268,61 @@ def materialize(ir: ProgramIR, bindings: dict[str, dict[str, Any]] | None = None
         path: _build_predictor(path, components, lms[names["lm"]], adapters[names["adapter"]])
         for path, names in binding_table.items()
     }
+    # PIR-021 grants-as-effect-row: resolve each leaf's bridge grants
+    # against the live pools. A dangling grant is a loud link refusal, the
+    # same species as a dangling leaf ref.
+    grants = _resolve_grants(components.get("6_tools", {}), predictors, tools)
     return ExecutableProgram(
         forwards=deepcopy(components["5_forward"]),
         predictors=predictors,
         tools=tools,
         interpreters=interpreters,
+        grants=grants,
     )
+
+
+def _resolve_grants(
+    tool_pool: dict[str, Any],
+    predictors: dict[str, Predict],
+    tools: dict[str, Callable[..., Any]],
+) -> dict[str, dict[str, str]]:
+    """Resolve each leaf's pool-leaf bridge grants, or refuse dangling.
+
+    PIR-021: `grants[]` is the closed static effect row — every capability
+    the leaf may be handed, readable from the manifest without executing
+    anything. Here the ENGINE resolves the pool-leaf bridge grants (the
+    `fd`/`leaf:<name>` shape, see leaves.leaf_grant): every named leaf must
+    resolve against the predictor or tool pools, or load refuses by name —
+    the same species as a dangling leaf ref, before any run. Returns
+    `{tool_name: {granted_pool_name: "predict"|"tool"}}` — the bridge
+    table the session leaf is handed at run time (never ambient pool
+    access). Non-bridge grants (fd, broker_route) are the receiver
+    envelope's concern, not resolved here.
+    """
+    from dspy.programir.leaves import granted_leaf_name
+
+    bridges: dict[str, dict[str, str]] = {}
+    for name, entry in tool_pool.items():
+        if not isinstance(entry, dict):
+            continue
+        table: dict[str, str] = {}
+        for grant in entry.get("grants", []) or []:
+            granted = granted_leaf_name(grant) if isinstance(grant, dict) else None
+            if granted is None:
+                continue  # fd / broker_route: envelope-supplied, not a pool bridge
+            if granted in predictors:
+                table[granted] = "predict"
+            elif granted in tools:
+                table[granted] = "tool"
+            else:
+                raise ValueError(
+                    f"programir.materialize() refuses tool pool entry {name!r}: its grant names leaf "
+                    f"{granted!r}, which resolves to no predictor or tool pool entry (a dangling grant — "
+                    "the same refusal species as a dangling leaf ref, PIR-021)"
+                )
+        if table:
+            bridges[name] = table
+    return bridges
 
 
 def _resolve_lms(pool: dict[str, Any], bound: dict[str, Any]) -> dict[str, LM]:

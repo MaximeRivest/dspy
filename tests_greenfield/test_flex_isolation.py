@@ -213,7 +213,7 @@ class TestSelfProbe:
             def probe_socket_denied(self):
                 return False
 
-        with pytest.raises(RuntimeError, match="socket.*did not hold"):
+        with pytest.raises(RuntimeError, match="reach.*did not hold"):
             backend._run_probes(SocketOpen(), scratch="/tmp/scratch")
 
     def test_probe_aborts_when_out_of_scratch_write_succeeds(self):
@@ -570,7 +570,10 @@ def test_genuine_fork_ratchet_reachable_on_this_host():
             preexec = backend.child_preexec(IsolationPolicy(level=IsolationLevel.fork_ratchet, scratch=scratch))
             preexec()  # unshare + no_new_privs + self-probe; raises if the wall did not hold
 
-        process = multiprocessing.Process(target=child, args=("/tmp",))
+        # The ratchet is fork-shaped by design (the zygote pattern); Python
+        # 3.14's default start method is no longer fork on Linux, so ask
+        # for it explicitly — spawn/forkserver cannot pickle this closure.
+        process = multiprocessing.get_context("fork").Process(target=child, args=("/tmp",))
         process.start()
         process.join(timeout=30)
         assert process.exitcode == 0
