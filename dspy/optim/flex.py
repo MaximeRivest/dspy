@@ -66,6 +66,7 @@ import re
 import subprocess
 import tempfile
 import types
+import warnings
 from pathlib import Path
 from typing import Any, Callable
 
@@ -313,6 +314,10 @@ class FlexIR(Optimizer):
         eval_env_overrides: dict[str, Any] | None = None,
         scoring_isolation: str = "none",
         broker_egress: frozenset[str] | None = None,
+        scoring_memory: str | int | None = None,
+        scoring_cpus: float | int | None = None,
+        scoring_pids: int | None = None,
+        invariance_check: bool = True,
         _eval_same_env: bool = False,
         _isolation_backend: Any = None,
     ):
@@ -371,6 +376,10 @@ class FlexIR(Optimizer):
         self._eval_same_env = _eval_same_env
         self.scoring_isolation = self._scoring_level.name
         self.broker_egress = frozenset(broker_egress) if broker_egress is not None else frozenset()
+        self.scoring_memory = scoring_memory
+        self.scoring_cpus = scoring_cpus
+        self.scoring_pids = scoring_pids
+        self.invariance_check = invariance_check
         self._isolation_backend = _isolation_backend
         self._last_envelope: dict[str, Any] | None = None
         self._env_cache: Any = None
@@ -526,6 +535,29 @@ class FlexIR(Optimizer):
             record["best_lm_calls"] = best_lm_calls
             self.trajectory.append(record)
             pending_refusals = refusals + ([record["rejection"]] if record["rejection"] else [])
+        # PIR-019 isolation invariance goes LIVE: after the loop, when the
+        # scoring ran behind a real wall (fork+) and a holdout exists, score
+        # the final champion once more at "none" vs the envelope. Divergence
+        # is a loud trajectory record — behavior must be isolation-invariant,
+        # and a level change that changes it indicts the leaf.
+        if (
+            self.invariance_check
+            and self.eval_mode == "artifact"
+            and self._scoring_level >= _IsolationLevel.fork
+            and holdout
+        ):
+            divergence = self.check_isolation_invariance(program, holdout)
+            self.trajectory.append(
+                {
+                    "iteration": "invariance",
+                    "label": "isolation-invariance",
+                    "refusals": [divergence] if divergence else [],
+                    "diverged": divergence is not None,
+                    "envelope": self._last_envelope,
+                }
+            )
+            if divergence:
+                warnings.warn(divergence, stacklevel=2)
         return program
 
     def _accept(
@@ -687,7 +719,17 @@ class FlexIR(Optimizer):
         backend = self._isolation_backend or LinuxIsolationBackend()
         self._isolation_backend = backend
         reached = backend.best_effort_level(self._scoring_level)  # raises IsolationDowngrade if under-floor
-        self._isolation_policy = IsolationPolicy(level=reached, broker_egress=self.broker_egress)
+        # The resource caps GRADUATE to enforcement here: at fork_cgroup+
+        # they are written into the child's cgroup (memory.max / pids.max /
+        # cpu.max), not merely declared.
+        self._isolation_policy = IsolationPolicy(
+            level=reached,
+            broker_egress=self.broker_egress,
+            memory=self.scoring_memory,
+            cpus=self.scoring_cpus,
+            pids=self.scoring_pids,
+            scratch=tempfile.gettempdir(),
+        )
 
     def _evaluate_as_artifact(self, program: Module, dataset: Any):
         """Export the candidate; score it in a child under its own env.
@@ -724,17 +766,14 @@ class FlexIR(Optimizer):
                     self._assert_secret_free(file.read_bytes(), f"the exported artifact file {file.name!r}")
             job_path = Path(tmp) / "job.json"
             job_path.write_text(payload_text)
-            preexec = None
-            if self._scoring_level != _NONE_LEVEL and self._isolation_backend is not None:
-                preexec = self._isolation_backend.child_preexec(self._isolation_policy)
+            argv = [interpreter, "-m", "dspy.optim._score_harness", str(job_path)]
             try:
-                child = subprocess.run(
-                    [interpreter, "-m", "dspy.optim._score_harness", str(job_path)],
-                    capture_output=True,
-                    text=True,
-                    env=child_env,
-                    preexec_fn=preexec,
-                )
+                if self._scoring_level != _NONE_LEVEL and self._isolation_backend is not None:
+                    # The backend owns the fork-place-gate-ratchet launch
+                    # (cgroup caps + Landlock enforced at their levels).
+                    child = self._isolation_backend.run(argv, self._isolation_policy, env=child_env)
+                else:
+                    child = subprocess.run(argv, capture_output=True, text=True, env=child_env)
             finally:
                 if broker is not None:
                     broker.stop()

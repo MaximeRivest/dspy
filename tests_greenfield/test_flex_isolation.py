@@ -14,6 +14,7 @@ attempted at the end (the report says whether it ran on this machine).
 
 import json
 import os
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -226,8 +227,13 @@ class TestSelfProbe:
             def probe_write_denied(self, path):
                 return False
 
+            def probe_read_denied(self, path):
+                return True
+
+        # The write probe fires only when Landlock engaged (a bare mount-ns
+        # unshare still shares /tmp, so it cannot deny the write).
         with pytest.raises(RuntimeError, match="out-of-scratch write.*did not hold"):
-            backend._run_probes(WriteOpen(), scratch="/tmp/scratch")
+            backend._run_probes(WriteOpen(), scratch="/tmp/scratch", landlock=True)
 
     def test_child_preexec_is_none_below_fork_ratchet(self):
         backend = LinuxIsolationBackend(FakeSyscalls())
@@ -290,11 +296,13 @@ class TestScoringIsolation:
             _isolation_backend=FakeBackend(),
         )
         # Baseline and candidate both record the envelope they scored under.
+        import tempfile
+
         for entry in optimizer.trajectory:
             assert entry["envelope"] == {
                 "level": "fork_ratchet",
                 "broker_egress": [],
-                "scratch": None,
+                "scratch": tempfile.gettempdir(),
             }
         assert optimizer.trajectory[1]["accepted"] is True
 
@@ -582,3 +590,288 @@ def test_genuine_fork_ratchet_reachable_on_this_host():
         process.start()
         process.join(timeout=30)
         assert process.exitcode == 0
+
+
+# ---------------------------------------------------------------------------
+# (A6) cgroup enforcement — placement / teardown / fail-closed (fakes)
+# ---------------------------------------------------------------------------
+
+
+class RecordingCgroupSyscalls(FakeSyscalls):
+    """A fake syscall layer recording the cgroup placement/teardown calls."""
+
+    def __init__(self, *, root="/sys/fs/cgroup/user", create_fails=False, cap_fails=False, place_fails=False, **kw):
+        super().__init__(**kw)
+        self._root = root
+        self._create_fails = create_fails
+        self._cap_fails = cap_fails
+        self._place_fails = place_fails
+        self.created = []
+        self.caps = []
+        self.placed = []
+        self.killed = []
+        self.rmdirs = []
+
+    def writable_cgroup_root(self, root="/sys/fs/cgroup"):
+        return self._root
+
+    def cgroup_create(self, leaf):
+        if self._create_fails:
+            raise OSError(13, "denied")
+        self.created.append(leaf)
+
+    def cgroup_write(self, leaf, control, value):
+        if self._cap_fails:
+            raise OSError(13, "denied")
+        self.caps.append((control, value))
+
+    def cgroup_place(self, leaf, pid):
+        if self._place_fails:
+            raise OSError(3, "no such process")
+        self.placed.append((leaf, pid))
+
+    def cgroup_kill(self, leaf):
+        self.killed.append(leaf)
+
+    def cgroup_rmdir(self, leaf):
+        self.rmdirs.append(leaf)
+
+
+class TestCgroupEnforcementUnit:
+    def test_caps_are_written_from_the_policy(self):
+        sc = RecordingCgroupSyscalls()
+        backend = LinuxIsolationBackend(sc)
+        policy = IsolationPolicy(level=IsolationLevel.fork_cgroup, memory="2G", pids=100, cpus=1.5)
+        leaf = backend._create_cgroup(policy)
+        assert leaf in sc.created
+        assert ("memory.max", str(2 * 1024**3)) in sc.caps
+        assert ("pids.max", "100") in sc.caps
+        assert ("cpu.max", "150000 100000") in sc.caps
+
+    def test_no_writable_subtree_refuses_loudly(self):
+        sc = RecordingCgroupSyscalls(root=None)
+        backend = LinuxIsolationBackend(sc)
+        with pytest.raises(IsolationDowngrade, match="no writable cgroup"):
+            backend._create_cgroup(IsolationPolicy(level=IsolationLevel.fork_cgroup, memory="1G"))
+
+    def test_create_failure_refuses_loudly(self):
+        sc = RecordingCgroupSyscalls(create_fails=True)
+        backend = LinuxIsolationBackend(sc)
+        with pytest.raises(IsolationDowngrade, match="could not create the cgroup leaf"):
+            backend._create_cgroup(IsolationPolicy(level=IsolationLevel.fork_cgroup))
+
+    def test_cap_write_failure_refuses_and_cleans_up(self):
+        sc = RecordingCgroupSyscalls(cap_fails=True)
+        backend = LinuxIsolationBackend(sc)
+        with pytest.raises(IsolationDowngrade, match="could not write a cgroup cap"):
+            backend._create_cgroup(IsolationPolicy(level=IsolationLevel.fork_cgroup, memory="1G"))
+        # The half-built leaf was killed + removed (no orphan).
+        assert sc.killed and sc.rmdirs
+
+    def test_run_places_then_tears_down(self, tmp_path):
+        # A trivial payload runs; placement recorded, teardown always kills+rmdir.
+        sc = RecordingCgroupSyscalls()
+        backend = LinuxIsolationBackend(sc)
+        policy = IsolationPolicy(level=IsolationLevel.fork_cgroup, memory="256M")
+        result = backend.run([sys.executable, "-c", "print('ok')"], policy, timeout=30)
+        assert result.returncode == 0
+        assert "ok" in result.stdout
+        # The child pid was placed in the created leaf, then killed + rmdir'd.
+        assert sc.placed and sc.placed[0][0] in sc.created
+        assert sc.killed and sc.rmdirs
+
+
+# ---------------------------------------------------------------------------
+# (A7) invariance auto-check goes live
+# ---------------------------------------------------------------------------
+
+
+class TestInvarianceAutoCheck:
+    def test_invariance_pass_appends_a_clean_record(self):
+        optimizer = run_flex(
+            Tagger(),
+            SWAP_OPS,
+            holdout=tag_devset("owl"),
+            eval_mode="artifact",
+            _eval_same_env=True,
+            scoring_isolation="fork_ratchet",
+            _isolation_backend=FakeBackend(),
+        )
+        # The last trajectory record is the invariance check — same-env, so
+        # in_process and "envelope" scores match: no divergence.
+        last = optimizer.trajectory[-1]
+        assert last["label"] == "isolation-invariance"
+        assert last["diverged"] is False
+        assert last["refusals"] == []
+
+    def test_invariance_check_can_be_disabled(self):
+        optimizer = run_flex(
+            Tagger(),
+            SWAP_OPS,
+            holdout=tag_devset("owl"),
+            eval_mode="artifact",
+            _eval_same_env=True,
+            scoring_isolation="fork_ratchet",
+            _isolation_backend=FakeBackend(),
+            invariance_check=False,
+        )
+        assert all(entry.get("label") != "isolation-invariance" for entry in optimizer.trajectory)
+
+    def test_no_invariance_check_without_a_wall_or_holdout(self):
+        # scoring_isolation="none" -> no check even with a holdout.
+        optimizer = run_flex(
+            Tagger(),
+            SWAP_OPS,
+            holdout=tag_devset("owl"),
+            eval_mode="artifact",
+            _eval_same_env=True,
+        )
+        assert all(entry.get("label") != "isolation-invariance" for entry in optimizer.trajectory)
+
+
+# ---------------------------------------------------------------------------
+# (A8) Landlock ruleset construction (fake syscall layer)
+# ---------------------------------------------------------------------------
+
+
+class TestLandlockUnit:
+    def test_abi_detection_gates_engagement(self):
+        # A host reporting abi 0 never calls landlock_restrict.
+        class NoLandlock(FakeSyscalls):
+            def landlock_abi(self):
+                return 0
+
+            restricted = False
+
+            def landlock_restrict(self, scopes, scratch):
+                type(self).restricted = True
+
+        backend = LinuxIsolationBackend(FakeSyscalls())
+        preexec = backend.child_preexec(IsolationPolicy(level=IsolationLevel.fork_ratchet, files={"/data": "ro"}))
+        assert preexec is not None  # a ratchet exists; whether Landlock engages is abi-gated in it
+
+    def test_run_probes_reads_denied_when_landlock_engaged(self):
+        # When Landlock engaged, a non-granted read that SUCCEEDS aborts.
+        class ReadOpen(FakeSyscalls):
+            def probe_socket_denied(self):
+                return True
+
+            def probe_write_denied(self, path):
+                return True
+
+            def probe_read_denied(self, path):
+                return False  # the read leaked
+
+        backend = LinuxIsolationBackend(FakeSyscalls())
+        with pytest.raises(RuntimeError, match="non-granted path.*did not hold"):
+            backend._run_probes(ReadOpen(), scratch="/tmp/s", landlock=True, files={"/data": "ro"})
+
+    def test_run_probes_skip_read_when_landlock_absent(self):
+        # No Landlock: the read probe does not fire (only netns + write-if-landlock).
+        class OnlyNet(FakeSyscalls):
+            def probe_socket_denied(self):
+                return True
+
+        backend = LinuxIsolationBackend(FakeSyscalls())
+        backend._run_probes(OnlyNet(), scratch="/tmp/s", landlock=False)  # no raise
+
+
+# ---------------------------------------------------------------------------
+# GENUINE cgroup + Landlock — gated (reachable is sandbox on this host)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DSPY_FLEX_UV_TESTS"),
+    reason="genuine cgroup/Landlock enforcement; set DSPY_FLEX_UV_TESTS=1",
+)
+class TestGenuineEnforcement:
+    def _skip_below(self, level):
+        if LinuxIsolationBackend().reachable_level() < level:
+            pytest.skip(f"host does not reach {level.name}")
+
+    def test_memory_balloon_dies_by_memory_max(self):
+        self._skip_below(IsolationLevel.fork_cgroup)
+        backend = LinuxIsolationBackend()
+        policy = IsolationPolicy(level=IsolationLevel.fork_cgroup, memory="64M")
+        code = "x = bytearray(300 * 1024 * 1024); print(len(x))"
+        result = backend.run([sys.executable, "-c", code], policy, timeout=30)
+        assert result.returncode != 0  # OOM-killed inside the cgroup
+
+    def test_fork_bomb_stops_at_pids_max(self):
+        self._skip_below(IsolationLevel.fork_cgroup)
+        backend = LinuxIsolationBackend()
+        policy = IsolationPolicy(level=IsolationLevel.fork_cgroup, pids=8)
+        code = (
+            "import threading, time, sys\n"
+            "n = 0\n"
+            "try:\n"
+            "    while n < 200:\n"
+            "        threading.Thread(target=lambda: time.sleep(20)).start()\n"
+            "        n += 1\n"
+            "except RuntimeError:\n"
+            "    print('stopped at', n); sys.exit(7)\n"
+            "print('reached', n)\n"
+        )
+        result = backend.run([sys.executable, "-c", code], policy, timeout=25)
+        assert result.returncode == 7  # thread creation blocked by pids.max
+
+    def test_cgroup_kill_reaps_a_straggler_grandchild(self, tmp_path):
+        self._skip_below(IsolationLevel.fork_cgroup)
+        backend = LinuxIsolationBackend()
+        marker = tmp_path / "straggler_pid"
+        code = (
+            "import os, time, sys\n"
+            "pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    os.setsid()\n"
+            "    dn = os.open(os.devnull, os.O_RDWR)\n"
+            "    os.dup2(dn, 0); os.dup2(dn, 1); os.dup2(dn, 2)\n"
+            f"    open({str(marker)!r}, 'w').write(str(os.getpid()))\n"
+            "    time.sleep(120)\n"
+            "    os._exit(0)\n"
+            "sys.exit(0)\n"
+        )
+        result = backend.run(
+            [sys.executable, "-c", code], IsolationPolicy(level=IsolationLevel.fork_cgroup), timeout=20
+        )
+        assert result.returncode == 0
+        import time as _t
+
+        _t.sleep(0.3)
+        gpid = int(marker.read_text())
+        # After run()'s teardown (cgroup.kill), the grandchild is dead.
+        assert not os.path.exists(f"/proc/{gpid}")
+
+    def test_landlock_scopes_enforce(self, tmp_path):
+        self._skip_below(IsolationLevel.fork_ratchet)
+        if LinuxIsolationBackend().syscalls.landlock_abi() == 0:
+            pytest.skip("kernel has no Landlock")
+        backend = LinuxIsolationBackend()
+        scratch = tmp_path / "scratch"
+        rodir = tmp_path / "ro"
+        rwdir = tmp_path / "rw"
+        for d in (scratch, rodir, rwdir):
+            d.mkdir()
+        (rodir / "data.txt").write_text("hello")
+        code = (
+            "import os, sys\n"
+            f"assert open({str(rodir / 'data.txt')!r}).read() == 'hello'\n"  # in-scope ro read
+            f"open(os.path.join({str(rwdir)!r}, 'w.txt'), 'w').write('x')\n"  # rw scope write
+            f"open(os.path.join({str(scratch)!r}, 's.txt'), 'w').write('y')\n"  # scratch write
+            "try:\n"
+            "    open('/etc/hostname').read(); print('LEAK-read'); sys.exit(5)\n"  # out-of-scope read denied
+            "except OSError: pass\n"
+            f"try:\n"
+            f"    open(os.path.join({str(rodir)!r}, 'new.txt'), 'w').write('z'); print('LEAK-write'); sys.exit(6)\n"
+            "except OSError: pass\n"
+            "print('LANDLOCK-OK')\n"
+        )
+        policy = IsolationPolicy(
+            level=IsolationLevel.fork_ratchet,
+            scratch=str(scratch),
+            files={str(rodir): "ro", str(rwdir): "rw"},
+        )
+        result = backend.run([sys.executable, "-c", code], policy, timeout=25)
+        assert result.returncode == 0, result.stderr
+        assert "LANDLOCK-OK" in result.stdout

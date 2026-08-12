@@ -20,18 +20,22 @@ DECLARATION vs ENFORCEMENT — stated once, honestly, here:
   in the engine), `net=` broker routes (the broker injects and allowlists
   when FlexIR runs under it), `deps=` (validated + injected into the
   `# deps:` line, unioned into the artifact environment).
-- DECLARED-NOT-ENFORCED today (recorded in the entry as intent, no
-  behavior claim; the mechanism is owed): `files=` scopes (no Landlock
-  wiring), `memory=`/`cpus=`/`gpu=` (cgroup/device placement is
-  detection-only). These ride the entry so a receiver and an auditor can
-  read the author's intent; nothing in this engine yet makes them bite.
+- ENFORCED WHEN RUN UNDER AN ENVELOPE AT THE RIGHT LEVEL: `memory=`/
+  `cpus=` become real cgroup v2 caps at `fork_cgroup`+; `files=` becomes
+  a real Landlock filesystem wall at `fork_ratchet`+ (when the kernel has
+  Landlock). `dspy.confined(memory=/cpus=/files=)` and `dspy.Session`
+  flow these into the run's policy; `FlexIR(scoring_memory=/scoring_cpus=)`
+  caps the scoring child. On a `@dspy.tool` these still ride the pool
+  entry as the LEAF's declared intent — a receiver's envelope is what
+  turns them into enforcement.
+- DECLARED-ONLY (recorded as intent, no behavior claim; the mechanism is
+  owed): `gpu=` (device placement).
 """
 
 from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -83,16 +87,20 @@ def tool(
             grants (contract-valid `grants[]`). ENFORCED when the run goes
             through an egress broker (the broker allowlists + injects);
             otherwise a recorded declaration.
-        files: `{path: "ro"|"rw"}` filesystem scopes. DECLARED-NOT-ENFORCED
-            — no Landlock wiring exists yet; stored as intent only.
+        files: `{path: "ro"|"rw"}` filesystem scopes — the leaf's declared
+            filesystem intent. ENFORCED as a real Landlock wall when the
+            leaf runs under a `fork_ratchet`+ envelope on a Landlock
+            kernel (via `confined`/`Session`/an envelope); otherwise a
+            recorded declaration.
         deps: Third-party packages. Validated against and injected into the
             source's `# deps:` line (conflict refuses); ENFORCED via the
             artifact environment union.
-        memory: A cgroup memory cap (e.g. `"2G"`). DECLARED-NOT-ENFORCED —
-            cgroup placement is detection-only today.
-        cpus: A cgroup CPU budget. DECLARED-NOT-ENFORCED (as `memory`).
-        gpu: GPU access intent. DECLARED-NOT-ENFORCED (device placement is
-            owed).
+        memory: A cgroup memory cap (e.g. `"2G"`) — the leaf's declared
+            intent. ENFORCED as `memory.max` under a `fork_cgroup`+
+            envelope; otherwise recorded.
+        cpus: A cgroup CPU budget — enforced as `cpu.max` under a
+            `fork_cgroup`+ envelope; otherwise recorded (as `memory`).
+        gpu: GPU access intent. DECLARED-ONLY (device placement is owed).
         session: `True` marks a PIR-021 session-kind leaf (the function
             takes the grant bridge as its FIRST parameter). ENFORCED by the
             engine bridge.
@@ -467,22 +475,29 @@ def confined(
     *args: Any,
     isolation: str = "fork_ratchet",
     memory: str | None = None,
+    cpus: float | int | None = None,
+    files: dict[str, str] | None = None,
     _backend: Any = None,
     **kwargs: Any,
 ) -> Any:
     """Run `fn(*args, **kwargs)` ONCE in a child under the envelope.
 
-    Reuses the isolation backend (fork-place-ratchet) and a minimal
+    Reuses the isolation backend (fork-place-gate-ratchet) and a minimal
     JSON-in/JSON-out child runner. Returns the callable's result, or
-    re-raises the child's error. `memory` is a DECLARED cap only (cgroup
-    placement is detection-only).
+    re-raises the child's error.
+
+    ENFORCEMENT by level: `memory`/`cpus` graduate to real cgroup caps at
+    `fork_cgroup`+; `files` graduates to a real Landlock filesystem wall at
+    `fork_ratchet`+ when the kernel supports it (otherwise the mount-ns
+    wall alone stands, recorded honestly).
 
     FORK-CONTEXT REQUIREMENT: the ratchet half (`fork_ratchet`+) needs a
-    single-threaded fork so `unshare(CLONE_NEWUSER)` is legal. On Python
-    3.14 the default multiprocessing start method changes; this uses an
-    explicit `fork` context. The child self-ratchets before running `fn`,
-    and the isolation backend refuses loudly (`IsolationDowngrade`) if the
-    host cannot build the requested level.
+    single-threaded fork so `unshare(CLONE_NEWUSER)` is legal. The launcher
+    runs the ratchet post-exec (single-threaded); on Python 3.14 the
+    default multiprocessing start method changes, but the backend uses a
+    subprocess exec, not multiprocessing, so this is unaffected. The
+    backend refuses loudly (`IsolationDowngrade`) if the host cannot build
+    the requested level.
 
     Args (fn/args/kwargs): the callable and its arguments — must be
     JSON-round-trippable (args, kwargs, and the return value cross as
@@ -493,7 +508,6 @@ def confined(
     level = parse_level(isolation)
     backend = _backend or LinuxIsolationBackend()
     reached = backend.best_effort_level(level)  # raises IsolationDowngrade if under-floor
-    policy = IsolationPolicy(level=reached, scratch=tempfile.gettempdir())
 
     import inspect
     import textwrap
@@ -508,15 +522,13 @@ def confined(
         raise ValueError(f"dspy.confined args/kwargs must be JSON-serializable: {error}") from error
 
     with tempfile.TemporaryDirectory(prefix="dspy-confined-") as tmp:
+        # The scratch dir the child may write is the confined-run tmp; the
+        # caller's files= scopes are added to it.
+        policy = IsolationPolicy(level=reached, scratch=tmp, memory=memory, cpus=cpus, files=dict(files or {}))
         job = Path(tmp) / "job.json"
         job.write_text(json.dumps({"source": source, "name": fn.__name__, "payload": payload}))
-        preexec = backend.child_preexec(policy)
-        child = subprocess.run(
-            [sys.executable, "-m", "dspy.optim._confined_runner", str(job)],
-            capture_output=True,
-            text=True,
-            preexec_fn=preexec,
-        )
+        argv = [sys.executable, "-m", "dspy.optim._confined_runner", str(job)]
+        child = backend.run(argv, policy)
     if child.returncode != 0:
         tail = "\n".join((child.stderr or "").strip().splitlines()[-6:])
         raise RuntimeError(f"dspy.confined child failed (exit {child.returncode}):\n{tail}")

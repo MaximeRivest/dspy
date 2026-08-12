@@ -361,11 +361,15 @@ class TestArtifactMode:
     )
     def test_genuine_uv_built_child_environment(self, tmp_path):
         program = Tagger()
+        # checkpoint_dir pins the env cache under tmp_path — without it the
+        # cache lands in ~/.cache/dspy-flexir, and a warm cache from a prior
+        # run makes `provisions == 1` flake to 0 (a cache HIT, not a bug).
         optimizer = run_flex(
             program,
             SWAP_OPS,
             holdout=tag_devset("owl"),
             eval_mode="artifact",
+            checkpoint_dir=tmp_path,
         )
         assert optimizer.trajectory[1]["accepted"] is True
         assert optimizer._env_cache.provisions == 1

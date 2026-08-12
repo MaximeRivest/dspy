@@ -184,23 +184,49 @@ before.
 | `remote` | the same declared profile satisfied elsewhere | RPC latency |
 
 **`scoring_isolation`** puts the artifact-mode scoring child behind one of
-these walls. The default `"none"` is exactly today's behavior. Any higher
-level asks the Linux backend for that wall following the fork-place-ratchet
-recipe: fork → the parent places the child in a cgroup leaf → the child
-self-ratchets (unshare namespaces, `NO_NEW_PRIVS`, Landlock/seccomp where
-present) → a self-probe confirms a socket and an out-of-scratch write both
-fail before any payload runs. If the host cannot honestly build the
-requested level — cgroupfs unwritable, user namespaces disabled — it
-**refuses loudly** (`IsolationDowngrade`) rather than run behind a weaker
-wall while claiming the stronger one. Fail closed, never silently.
+these walls (with the resource caps `scoring_memory` / `scoring_cpus` /
+`scoring_pids`). The default `"none"` is exactly today's behavior. Any
+higher level asks the Linux backend for that wall following the ordered
+recipe **fork → place → gate → ratchet → run**:
+
+1. **fork** the child (a launcher exec, so `unshare` runs single-threaded);
+2. the **parent places** it in a fresh cgroup v2 leaf under its delegated
+   subtree and writes the caps (`memory.max` / `pids.max` / `cpu.max`) —
+   the child cannot escape or exceed them;
+3. an airtight **gate**: the child blocks until the parent signals that
+   placement is done, so it never touches the payload uncapped;
+4. the child **ratchets** — unshare user/net/mount namespaces,
+   `NO_NEW_PRIVS`, then a pure-ctypes Landlock ruleset for `files=` when
+   the kernel supports it;
+5. a **self-probe** confirms the wall actually denies (an outbound network
+   reach; an out-of-scratch write and a non-granted read when Landlock
+   engaged) — a probe that passes where it must fail aborts as
+   infrastructure, never a passing run.
+
+If the host cannot honestly build the requested level — no writable cgroup
+subtree, a cap that will not write, user namespaces disabled — it
+**refuses loudly** (`IsolationDowngrade`) rather than run uncapped or
+behind a weaker wall while claiming the stronger one. Fail closed, never
+silently. On teardown `cgroup.kill` reaps every straggler (grandchildren
+included) before the leaf is removed.
+
+**Engaged mechanisms are recorded.** A declared level may engage fewer
+mechanisms than its name suggests on a given host — Landlock absent, so
+`files=` did not bite. The envelope's `engaged` list records what actually
+held (`cgroup`, `userns`, `netns`, `mountns`, `no_new_privs`, `landlock`),
+so the record never overclaims.
 
 **The envelope is recorded, per candidate.** Every trajectory entry (and
 `scores.json`) carries the `envelope` it was scored under — the level, the
-broker allowlist, the scratch dir. Because behavior must be
-isolation-invariant (raising the wall never changes what the code
-computes), a score that shifts when the wall changes shows up as one
-differing field in one diff, and indicts the leaf's undeclared side
-channel — not the wall.
+caps, the broker allowlist, the scratch dir, the engaged mechanisms.
+Because behavior must be isolation-invariant (raising the wall never
+changes what the code computes), a score that shifts when the wall changes
+shows up as one differing field in one diff, and indicts the leaf's
+undeclared side channel — not the wall. FlexIR proves this automatically:
+when `scoring_isolation` is `fork`+ and a holdout exists, `compile` scores
+the final champion once more at `none` vs the envelope and appends a loud
+`isolation-invariance` record on any divergence (disable with
+`invariance_check=False`).
 
 **The envelope is also a grant.** At load time, binding an isolation
 envelope at level ≥ `fork_ratchet`
@@ -303,8 +329,9 @@ declaration as a guarantee:
 | `session=` / `grants=` | **Yes** — the real engine bridge |
 | `net=` (broker routes) | **Yes when run under a broker** — allowlist + inject |
 | `deps=` | **Yes** — validated + unioned into the artifact env |
-| `files=` (`ro`/`rw` scopes) | **No** — declared only; no Landlock wiring yet |
-| `memory=` / `cpus=` / `gpu=` | **No** — declared only; cgroup/device placement is detection-only |
+| `files=` (`ro`/`rw` scopes) | **Yes at `fork_ratchet`+** — a real Landlock filesystem wall (deny-all beyond the scopes + scratch) when the kernel supports Landlock; below that level, or on a Landlock-less kernel, the mount-ns wall alone stands (recorded in the envelope's `engaged` list) |
+| `memory=` / `cpus=` | **Yes at `fork_cgroup`+** — real cgroup v2 caps (`memory.max` / `cpu.max`); a fork bomb also stops at `pids.max` |
+| `gpu=` | **No** — declared only; device placement is owed |
 
 A worked example, top to bottom:
 
