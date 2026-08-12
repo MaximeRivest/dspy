@@ -8,6 +8,14 @@ equality), the SEM-6 loop and recursion caps, and the v0.3 builtin and
 value-method tables (D-037). dspy's compiler currently emits node-set v0.1
 trees; this interpreter runs those and is structured for v0.3.
 
+v0.4 (D-041, the inputs-bag admission): the record envelope binds ONE
+shallowly immutable record (`_Record`) instead of per-name inputs; a
+leaf call's ``splat`` expands the record's static key list into the
+kwargs ahead of the explicit ones. Direct writes to the record and
+splat/kwarg collisions are compile refusals and surface here as
+`MalformedNodeError`; alias-path mutation is the runtime
+`InterpreterTypeError`.
+
 The interpreter performs no I/O of its own: every predict / tool /
 interpreter call goes through the `LeafRunner` the caller supplies, so a
 scripted LM can drive execution without a live model.
@@ -73,6 +81,20 @@ class LeafRunner(Protocol):
     def interpreter(self, ref: str, code: str) -> Any:
         """Run `code` on interpreter pool entry `ref` (D-029)."""
         ...
+
+
+class _Record(dict):
+    """The v0.4 input record (D-041): a shallowly immutable mapping.
+
+    Subclasses dict so every READ path (Attr, Index, membership, the
+    non-mutating dict methods, splat expansion, trace serialization)
+    works unchanged; the mutation sites (SetIndex, the mutating dict
+    methods) check for this marker and raise `InterpreterTypeError` —
+    the runtime half of the read-only rule, reachable only through an
+    alias (the direct spelling is a compile refusal, PIR-E-NODE-004).
+    Values it holds follow the ordinary v0.2 aliasing rules (shallow
+    immutability, spec/node-set.md v0.4).
+    """
 
 
 class _BreakSignal(Exception):  # noqa: N818 - control-flow signal, not an error
@@ -450,6 +472,13 @@ def _run_method(name: str, obj: Any, args: list) -> Any:
                 raise InterpreterKeyError(f"pop: index {idx} out of range")
             return obj.pop(idx)
     if isinstance(obj, dict) and name in _DICT_METHODS:
+        if isinstance(obj, _Record) and name in ("pop", "update"):
+            # The v0.4 input record is immutable at execution (D-041);
+            # the non-mutating reads (get/keys/values/items) apply.
+            raise InterpreterTypeError(
+                f"{name} on the input record — the record is read-only "
+                "(D-041), through every alias"
+            )
         if name == "get":
             _arity("get", args, 1, 2)
             key = args[0]
@@ -531,7 +560,30 @@ def run_forward(
     top = spec.get("body")
     if not isinstance(top, list):
         raise MalformedNodeError(f"forward[{key}] has no statement list")
-    env = dict(inputs)
+    # The v0.4 envelope split (D-041): plain args bind each input name;
+    # the record envelope binds ONE shallowly immutable record. A
+    # missing key at runtime is impossible by construction (validation
+    # admits only inputs matching the signature) — no check here.
+    record_name: str | None = None
+    args_spec = spec.get("args")
+    if (isinstance(args_spec, list) and len(args_spec) == 1
+            and isinstance(args_spec[0], dict)):
+        binding = args_spec[0]
+        name = binding.get("name")
+        if not isinstance(name, str) or not name:
+            raise MalformedNodeError(
+                "record binding needs a name (D-041; a compile-side "
+                "refusal, never a runtime fallback)"
+            )
+        if binding.get("record") != "self":
+            raise MalformedNodeError(
+                "record binding target must be 'self' — the module's own "
+                "input signature is the only lawful target (D-041)"
+            )
+        record_name = name
+        env: dict = {record_name: _Record(inputs)}
+    else:
+        env = dict(inputs)
 
     def require_bool(v: Any, where: str) -> bool:
         if type(v) is not bool:
@@ -703,6 +755,12 @@ def run_forward(
         raise MalformedNodeError(f"<{n}> is not in the expression node set")
 
     def call(e: dict) -> Any:
+        if "builtin" in e or "method" in e:
+            if "splat" in e:
+                raise MalformedNodeError(
+                    "splat is a leaf-call form (D-041) — the builtin/"
+                    "method call forms carry no kwargs"
+                )
         if "builtin" in e:
             name = e["builtin"]
             args_spec = _field(e, "args")
@@ -725,7 +783,30 @@ def run_forward(
         kwargs_spec = e.get("kwargs", {})
         if not isinstance(kwargs_spec, dict):
             raise MalformedNodeError("Call kwargs must be an object")
-        kw = {k: ev(v) for k, v in kwargs_spec.items()}
+        # v0.4 record-splat (D-041): expanded keys first (the record's
+        # order IS the declared field order by construction), then the
+        # explicit kwargs in authored order. Collisions and non-record
+        # splats are compile refusals; reaching them here is malformed
+        # input, never a runtime fallback.
+        splat = e.get("splat")
+        kw: dict = {}
+        if splat is not None:
+            if not isinstance(splat, str) or not splat:
+                raise MalformedNodeError("splat must be a simple name")
+            if record_name is None or splat != record_name:
+                raise MalformedNodeError(
+                    f"splat {splat!r} resolves to no declared input record "
+                    "(D-041; PIR-E-NODE-002 at compile — splat what the "
+                    "signature declares, never what the model decides)"
+                )
+            kw.update(env[splat])
+        for k, v in kwargs_spec.items():
+            if splat is not None and k in kw:
+                raise MalformedNodeError(
+                    f"splat and explicit kwarg both name {k!r} (D-041; "
+                    "PIR-E-NODE-003 at compile)"
+                )
+            kw[k] = ev(v)
         if kind in ("predict", "module"):
             ref = leaf.get("ref")
             if not isinstance(ref, str) or not ref:
@@ -776,6 +857,16 @@ def run_forward(
             return leaves.interpreter(ref, code)
         raise MalformedNodeError(f"unknown leaf kind {kind!r}")
 
+    def guard_record_target(target: str, what: str) -> None:
+        """The read-only record rule's runtime backstop (D-041): a direct
+        bind/mutate of the record name is compile-refused (NODE-004), so
+        seeing one here is malformed input, never a runtime rebinding."""
+        if record_name is not None and target == record_name:
+            raise MalformedNodeError(
+                f"{what} targets the read-only input record "
+                f"{target!r} (D-041; PIR-E-NODE-004 at compile)"
+            )
+
     def ex(stmts: list) -> None:
         for s in stmts:
             s = _node(s, "statement")
@@ -784,6 +875,7 @@ def run_forward(
                 target = _field(s, "target")
                 if not isinstance(target, str) or not target:
                     raise MalformedNodeError("Assign target must be a simple name (SEM-5)")
+                guard_record_target(target, "Assign")
                 env[target] = ev(_field(s, "value"))
             elif k == "If":
                 take = require_bool(ev(_field(s, "test")), "If test")
@@ -798,6 +890,7 @@ def run_forward(
                 target = _field(s, "target")
                 if not isinstance(target, str) or not target:
                     raise MalformedNodeError("For target must be a simple name")
+                guard_record_target(target, "For target")
                 has_range, has_iter = "range" in s, "iter" in s
                 if has_range == has_iter:
                     raise MalformedNodeError(
@@ -888,11 +981,20 @@ def run_forward(
                 target = _field(s, "target")
                 if not isinstance(target, str) or not target:
                     raise MalformedNodeError("SetIndex target must be a simple name")
+                guard_record_target(target, "SetIndex")
                 if target not in env:
                     raise InterpreterKeyError(f"unbound name {target!r} (SEM-7)")
                 container = env[target]
                 set_key = ev(_field(s, "key"))
                 value = ev(_field(s, "value"))
+                if isinstance(container, _Record):
+                    # Reached only through an alias — the direct spelling
+                    # is compile-refused (guard above). The record is
+                    # immutable at execution (D-041).
+                    raise InterpreterTypeError(
+                        "SetIndex into the input record — the record is "
+                        "read-only (D-041), through every alias"
+                    )
                 if isinstance(container, dict):
                     if not isinstance(set_key, str):
                         raise InterpreterTypeError("SetIndex into a dict needs a string key")
@@ -913,6 +1015,8 @@ def run_forward(
                     or not all(isinstance(t, str) and t for t in targets)
                 ):
                     raise MalformedNodeError("AssignTuple targets must be 2+ simple names")
+                for t in targets:
+                    guard_record_target(t, "AssignTuple target")
                 value = ev(_field(s, "value"))
                 if not isinstance(value, list):
                     raise InterpreterTypeError(f"AssignTuple value must be a list, got {type(value).__name__} (v0.2)")

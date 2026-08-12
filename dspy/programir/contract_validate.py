@@ -704,6 +704,181 @@ def iter_calls(forward: dict) -> list[tuple[tuple, dict]]:
     return out
 
 
+def record_param(forward: Any) -> str | None:
+    """The record parameter's name under the v0.4 inputs-bag envelope.
+
+    Returns the bound name when the forward's ``args`` is the record
+    envelope — exactly one ``{name, record: "self"}`` binding (D-041) —
+    and None for the plain-names envelope. Shape errors are the schema
+    walk's job, not this reader's.
+    """
+    if isinstance(forward, dict):
+        args = forward.get("args")
+        if (isinstance(args, list) and len(args) == 1
+                and isinstance(args[0], dict)):
+            name = args[0].get("name")
+            if isinstance(name, str):
+                return name
+    return None
+
+
+#: Statement kinds that bind or mutate a name, with the field naming
+#: their target — the D-041 read-only-record rule's checklist (SEM-5
+#: as amended v0.4).
+_BINDING_TARGETS: dict[str, str] = {
+    "Assign": "target",
+    "SetIndex": "target",
+    "For": "target",
+}
+
+
+def _record_write(value: Any, record: str, path: tuple) -> tuple | None:
+    """The instance path of the first statement binding/mutating `record`.
+
+    Document-order walk (the corpus's deterministic-first-refusal
+    discipline); None when the record name is never a target.
+    """
+    if isinstance(value, dict):
+        kind = value.get("node")
+        if (kind in _BINDING_TARGETS
+                and value.get(_BINDING_TARGETS[kind]) == record):
+            return path
+        if kind == "AssignTuple":
+            targets = value.get("targets")
+            if isinstance(targets, list) and record in targets:
+                return path
+        for key, sub in value.items():
+            found = _record_write(sub, record, path + (key,))
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for i, sub in enumerate(value):
+            found = _record_write(sub, record, path + (i,))
+            if found is not None:
+                return found
+    return None
+
+
+def _record_refusal(forward: dict, record: str | None) -> dict | None:
+    """The standalone (context-free) D-041 checks over a schema-valid forward.
+
+    Two rules, both decidable from the forward alone — PASS-ORDERED, not
+    per-call interleaved (contract-sync wave 2026-08-12: an
+    earlier-position defect in a later pass loses to a later-position
+    defect in an earlier pass):
+
+    - **Read-only record** (PIR-E-NODE-004 naming ``record``): no
+      Assign/AssignTuple/For-target/SetIndex may name the record
+      parameter (SEM-5 as amended v0.4). The alias path
+      (``x = inputs; x[k] = v``) is undecidable here and is the
+      interpreter's runtime InterpreterTypeError.
+    - **Splat resolves to the declared record** (PIR-E-NODE-002 naming
+      ``target``): a ``splat`` naming anything but the forward's record
+      parameter is the LM-decided-dict form — the line that stays
+      (spec/node-set.md v0.4).
+    """
+    if record is not None:
+        hit = _record_write(forward.get("body", []), record, ("body",))
+        if hit is not None:
+            return {
+                "code": "PIR-E-NODE-004",
+                "component": "5_forward",
+                "record": record,
+                "location": render_path(hit),
+                "message": f"the input record {record!r} is read-only "
+                           "(D-041; SEM-5 as amended v0.4) — no statement "
+                           "may bind or mutate it",
+            }
+    for path, call in iter_calls(forward):
+        if "splat" not in call:
+            continue
+        splat = call["splat"]
+        if record is None or splat != record:
+            return {
+                "code": "PIR-E-NODE-002",
+                "component": "5_forward",
+                "target": splat,
+                "location": render_path(path),
+                "detail": {"reason": "splat"},
+                "message": f"splat {splat!r} resolves to no declared input "
+                           "record — splat what the signature declares, "
+                           "never what the model decides (D-041; the "
+                           "LM-decided-dict form stays refused)",
+            }
+    return None
+
+
+#: Leaf kind -> the `declared` context pool key it resolves against
+#: (mirrors the `pools` map in forward_refusal).
+_KIND_POOL: dict[str, str] = {
+    "predict": "predict",
+    "module": "module",
+    "tool": "tools",
+    "interpreter": "interpreters",
+}
+
+
+def _splat_context_refusal(forward: dict, record: str,
+                           declared: dict) -> dict | None:
+    """The D-041 checks that need signature context (the `declared` extension).
+
+    ``declared.signature = {"inputs": [<field>, ...]}`` is the module's
+    own input fields in declared order — the record's STATIC key set;
+    ``declared.accepts = {<pool key>: {<ref>: [<key>, ...]}}`` lists
+    per-callee accepted input keys. Checks run only where context
+    exists — the same layering as leaf resolution. Per splat call in
+    document order: the collision check first (explicit kwargs in
+    authored order), then callee acceptance (record keys in declared
+    order). Both refuse PIR-E-NODE-003 naming the key. Acceptance is
+    signature-fields-only (contract-sync wave 2026-08-12): an explicit
+    kwarg may be absent from ``accepts``; only record keys are checked.
+    """
+    signature = declared.get("signature")
+    if not isinstance(signature, dict):
+        return None
+    inputs = signature.get("inputs")
+    if not isinstance(inputs, list):
+        return None
+    accepts = declared.get("accepts")
+    accepts = accepts if isinstance(accepts, dict) else {}
+    for path, call in iter_calls(forward):
+        if "splat" not in call:
+            continue
+        kwargs = call.get("kwargs", {})
+        for key in kwargs:
+            if key in inputs:
+                return {
+                    "code": "PIR-E-NODE-003",
+                    "component": "5_forward",
+                    "key": key,
+                    "location": render_path(path),
+                    "detail": {"reason": "collision", "splat": record},
+                    "message": f"splat and explicit kwarg both name "
+                               f"{key!r} (D-041) — never last-writer-wins",
+                }
+        leaf = call["leaf"]
+        ref = leaf.get("ref")
+        pool = accepts.get(_KIND_POOL.get(leaf.get("kind"), ""), {})
+        accepted = (pool.get(ref)
+                    if isinstance(pool, dict) and isinstance(ref, str)
+                    else None)
+        if isinstance(accepted, list):
+            for field_name in inputs:
+                if field_name not in accepted:
+                    return {
+                        "code": "PIR-E-NODE-003",
+                        "component": "5_forward",
+                        "key": field_name,
+                        "location": render_path(path),
+                        "detail": {"reason": "unaccepted",
+                                   "leaf": leaf.get("kind"), "entry": ref},
+                        "message": f"callee {ref!r} does not accept record "
+                                   f"key {field_name!r} (D-041: the callee "
+                                   "must accept every key)",
+                    }
+    return None
+
+
 def leaf_census(forward: dict) -> list[dict]:
     """The distinct leaves a forward calls, sorted (kind, then ref).
 
@@ -800,6 +975,17 @@ def forward_refusal(forward: Any, declared: dict | None = None) -> dict | None:
     nothing declared), every static leaf ref must also resolve or the
     compile refuses PIR-E-NODE-002 naming ``leaf`` + ``entry``. Dynamic
     tool dispatch resolves at runtime by convention, never here.
+
+    The v0.4 record checks (D-041) run after the schema sweep,
+    PASS-ORDERED (contract-sync wave 2026-08-12), in two layers
+    mirroring the declared-context layering:
+
+    - Standalone: the read-only-record rule (PIR-E-NODE-004) and splat
+      resolution against the forward's own record envelope
+      (PIR-E-NODE-002 naming ``target`` — the LM-decided-dict line).
+    - With context: leaf resolution first, then splat/kwarg collision,
+      then callee acceptance (both PIR-E-NODE-003 naming ``key``),
+      driven by the `declared` extension ``signature``/``accepts``.
     """
     unknown = _unknown_call_target(forward, ())
     if unknown is not None:
@@ -842,6 +1028,10 @@ def forward_refusal(forward: Any, declared: dict | None = None) -> dict | None:
                        "constraint": v.constraint},
             "message": v.message,
         }
+    record = record_param(forward)
+    record_refusal = _record_refusal(forward, record)
+    if record_refusal is not None:
+        return record_refusal
     if declared is None:
         return None
     pools = {
@@ -865,6 +1055,8 @@ def forward_refusal(forward: Any, declared: dict | None = None) -> dict | None:
                 "message": f"call resolves to no declared {kind} leaf "
                            f"{ref!r} (the leaf rule, spec/node-set.md)",
             }
+    if record is not None:
+        return _splat_context_refusal(forward, record, declared)
     return None
 
 

@@ -7,11 +7,14 @@ and every grade-1 op here is pure by construction: stdlib only, no
 network, no filesystem beyond loading the two schema files
 (schema/README.md; the lm15 zero-dep discipline).
 
-Ops implemented (grade 1, D-028): ``capabilities``, ``load_manifest``,
-``check_versions``, ``link``, ``profile_check``, ``diff``,
-``node_compile``, ``explain``. Grade-2 ops (``node_execute``, ``verify``)
-and ``serde_roundtrip`` are deliberately absent from capabilities so the
-harness skips their fixtures honestly (CASES-FORMAT.md: skips are never
+Ops implemented: the grade-1 set (D-028) — ``capabilities``,
+``load_manifest``, ``check_versions``, ``link``, ``profile_check``,
+``diff``, ``node_compile``, ``explain`` — plus the grade-2
+``node_execute`` (scripted execution over the engine interpreter,
+harness/PROTOCOL.md wire shape, with the View-2 ``attribution`` map on
+``record_attribution: true``). The remaining grade-2 op (``verify``)
+and ``serde_roundtrip`` stay absent from capabilities so the harness
+skips their fixtures honestly (CASES-FORMAT.md: skips are never
 passes).
 
 Refusal discipline (spec/errors.md): artifact refusals are
@@ -78,6 +81,8 @@ from typing import Any, Callable
 
 from dspy.programir import contract_validate as validate
 from dspy.programir import explain_view
+from dspy.programir.engine import errors as interp_errors
+from dspy.programir.engine import interpret as interp
 from dspy.programir.versions import IMPLEMENTED_VERSIONS, supported_versions
 
 JsonObject = dict[str, Any]
@@ -116,6 +121,7 @@ _OP_FAMILY: dict[str, str] = {
     "link": "LINK",
     "profile_check": "PROFILE",
     "node_compile": "NODE",
+    "node_execute": "NODE",
     "diff": "MANIFEST",
     "explain": "MANIFEST",
 }
@@ -207,7 +213,7 @@ def op_capabilities(payload: JsonObject) -> JsonObject:
         "language": "python",
         "impl": "dspy-programir",
         "impl_version": IMPL_VERSION,
-        "grades": [1],
+        "grades": [1, 2],
         "profiles": ["declared-tier"],
         "versions": dict(IMPLEMENTED_VERSIONS),
         "ops": sorted(HANDLERS),
@@ -285,6 +291,36 @@ def op_node_compile(payload: JsonObject) -> JsonObject:
                 {"field": "declared", "type": validate.json_type(declared)},
                 "declared must be an object (wrongly typed op payload)")
         for key, value in declared.items():
+            if key == "signature":
+                # v0.4 declared extension (D-041): the module's own input
+                # fields in declared order — the record's static key set.
+                if (not isinstance(value, dict)
+                        or set(value) != {"inputs"}
+                        or not isinstance(value["inputs"], list)
+                        or not all(isinstance(f, str)
+                                   for f in value["inputs"])):
+                    raise _input_refusal(
+                        "node_compile", {"field": "declared.signature"},
+                        "declared.signature must be {'inputs': "
+                        "[<field name>, ...]} (D-041)")
+                continue
+            if key == "accepts":
+                # v0.4 declared extension (D-041): per-callee accepted
+                # input keys, {<pool key>: {<ref>: [<key>, ...]}}.
+                ok_shape = isinstance(value, dict) and all(
+                    pool in ("predict", "module", "tools", "interpreters")
+                    and isinstance(table, dict)
+                    and all(isinstance(ref, str)
+                            and isinstance(keys, list)
+                            and all(isinstance(k, str) for k in keys)
+                            for ref, keys in table.items())
+                    for pool, table in value.items())
+                if not ok_shape:
+                    raise _input_refusal(
+                        "node_compile", {"field": "declared.accepts"},
+                        "declared.accepts must be {<pool key>: {<ref>: "
+                        "[<key>, ...]}} (D-041)")
+                continue
             if key not in ("predict", "module", "tools", "interpreters"):
                 raise _input_refusal(
                     "node_compile", {"field": "declared", "unknown_key": key},
@@ -297,6 +333,138 @@ def op_node_compile(payload: JsonObject) -> JsonObject:
     _refuse_if(validate.forward_refusal(forward, declared))
     # Identity normalization, whole-result pinning (cases/node-set/compile/).
     return {"forward": forward}
+
+
+def op_node_execute(payload: JsonObject) -> JsonObject:
+    """Grade-2 op: run a forward map against SCRIPTED leaves (no live
+    LMs) and return the structural trace — the ex-14 equivalence
+    criterion as data. Wire shape is provisional (harness/PROTOCOL.md).
+
+    Input: ``forwards`` (path → forward), ``inputs`` (root kwargs),
+    ``leaves`` — ``{predicts?, tools?, interpreters?}``, each a map from
+    target to a QUEUE of scripted outcomes consumed in call order; an
+    outcome is ``{"value": …}`` or ``{"error": {"type": <SEM-3 name>}}``.
+
+    Result: ``calls`` (ordered: kind, target, kwargs, outcome), ``logs``
+    (the Log channel), and ``outcome`` — ``{"kind": "prediction",
+    "prediction": …}`` or ``{"kind": "error", "error": <type name>,
+    "channel": "catchable"|"uncatchable"}``. A program error is a RESULT,
+    never a PIR-E refusal — the artifact executed as specified. With
+    ``record_attribution: true`` the result also carries ``attribution``
+    (leaf name → int), the View-2 byte shape (PIR-021).
+    """
+    forwards = _op_input(payload, "node_execute", "forwards",
+                         _is_object, "an object")
+    inputs = _op_input(payload, "node_execute", "inputs",
+                       _is_object, "an object")
+    record_attribution = payload.get("record_attribution", False)
+    if not isinstance(record_attribution, bool):
+        raise _input_refusal(
+            "node_execute",
+            {"field": "record_attribution",
+             "type": validate.json_type(record_attribution)},
+            "record_attribution must be a boolean (wrongly typed op payload)")
+    scripts = payload.get("leaves", {})
+    if not _is_object(scripts):
+        raise _input_refusal(
+            "node_execute",
+            {"field": "leaves", "type": validate.json_type(scripts)},
+            "leaves must be an object (wrongly typed op payload)")
+
+    queues: dict[tuple[str, str], list] = {}
+    for family, kind in (("predicts", "predict"), ("tools", "tool"),
+                         ("interpreters", "interpreter")):
+        table = scripts.get(family, {})
+        if not _is_object(table):
+            raise _input_refusal(
+                "node_execute", {"field": f"leaves.{family}"},
+                f"leaves.{family} must be an object")
+        for target, queue in table.items():
+            if not isinstance(queue, list):
+                raise _input_refusal(
+                    "node_execute",
+                    {"field": f"leaves.{family}.{target}"},
+                    "each scripted leaf is a QUEUE (a list) of outcomes")
+            queues[(kind, target)] = list(queue)
+
+    calls: list[JsonObject] = []
+    logs: list[str] = []
+
+    def scripted(kind: str, target: str, kwargs: dict, *,
+                 code: str | None = None) -> Any:
+        queue = queues.get((kind, target))
+        if not queue:
+            raise _input_refusal(
+                "node_execute", {"leaf": kind, "target": target},
+                f"scripted queue for {kind} {target!r} is absent or "
+                "exhausted — the fixture under-scripts the program")
+        outcome = queue.pop(0)
+        record: JsonObject = {"kind": kind, "target": target,
+                              "kwargs": kwargs}
+        if code is not None:
+            record["kwargs"] = {"code": code}
+        if isinstance(outcome, dict) and "error" in outcome:
+            err = outcome["error"]
+            name = err.get("type") if isinstance(err, dict) else None
+            cls = getattr(interp_errors, str(name), None)
+            if not (isinstance(cls, type)
+                    and issubclass(cls, interp_errors.CatchableError)):
+                raise _input_refusal(
+                    "node_execute", {"scripted_error": name},
+                    "scripted errors must name a catchable SEM-3 type")
+            record["outcome"] = {"error": name}
+            calls.append(record)
+            raise cls(str(err.get("message", "")))
+        if not (isinstance(outcome, dict) and "value" in outcome):
+            raise _input_refusal(
+                "node_execute", {"leaf": kind, "target": target},
+                "a scripted outcome is {'value': …} or {'error': …}")
+        record["outcome"] = {"value": outcome["value"]}
+        calls.append(record)
+        return outcome["value"]
+
+    class ScriptedLeaves:
+        def predict(self, path: str, kwargs: dict) -> dict:
+            value = scripted("predict", path, kwargs)
+            if not isinstance(value, dict):
+                raise _input_refusal(
+                    "node_execute", {"leaf": "predict", "target": path},
+                    "a scripted predict outcome must be a Prediction "
+                    "record (an object)")
+            return value
+
+        def tool(self, name: str, kwargs: dict) -> Any:
+            return scripted("tool", name, kwargs)
+
+        def interpreter(self, ref: str, code: str) -> Any:
+            return scripted("interpreter", ref, {}, code=code)
+
+    try:
+        prediction = interp.run_forward(
+            forwards, "", dict(inputs), ScriptedLeaves(),
+            log_sink=logs)
+        outcome: JsonObject = {"kind": "prediction",
+                               "prediction": prediction}
+    except interp_errors.CatchableError as err:
+        outcome = {"kind": "error", "error": type(err).__name__,
+                   "channel": "catchable"}
+    except interp_errors.UncatchableError as err:
+        outcome = {"kind": "error", "error": type(err).__name__,
+                   "channel": "uncatchable"}
+    result: JsonObject = {"calls": calls, "logs": logs, "outcome": outcome}
+    if record_attribution:
+        # View-2 attribution map (PIR-021, contract-sync wave 2026-08-12):
+        # leaf name -> int. The total (len(calls)) counts each call once;
+        # attribution is LABELING — a call made through a `leaf` grant
+        # bridge labels both the session leaf and the bridged target.
+        # Scripted execution has no live bridge, so every call here labels
+        # exactly its own target; double-labeling activates with the bridge.
+        attribution: dict[str, int] = {}
+        for record in calls:
+            target = record["target"]
+            attribution[target] = attribution.get(target, 0) + 1
+        result["attribution"] = attribution
+    return result
 
 
 def op_explain(payload: JsonObject) -> JsonObject:
@@ -314,6 +482,7 @@ HANDLERS: dict[str, Callable[[JsonObject], JsonObject]] = {
     "profile_check": op_profile_check,
     "diff": op_diff,
     "node_compile": op_node_compile,
+    "node_execute": op_node_execute,
     "explain": op_explain,
 }
 

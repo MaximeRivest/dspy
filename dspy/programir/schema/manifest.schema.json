@@ -110,8 +110,16 @@
           "description": "Advisory default URL for endpoint_ref, spec/placement.md placement block."
         },
         "isolation": {
-          "type": ["string", "null"],
-          "description": "Isolation level, spec/placement.md placement block. Observed: 'none'. No closed vocabulary ratified."
+          "enum": ["none", "namespace", "fork", "fork_cgroup", "fork_ratchet", "sandbox", "remote", null],
+          "description": "The receiver's isolation envelope, spec/placement.md isolation gradient (D-042, ratified 2026-08-12): the ordered closed vocabulary v1.0, comparable by position (PIR-015). Artifacts using the gradient stamp versions.isolation = '1.0' (spec/versions.md). Null reads as unset (receiver default)."
+        },
+        "isolation_floor": {
+          "$ref": "#/$defs/isolation_level",
+          "description": "Optional baked minimum isolation demand on this placement (D-042; PIR-015): the receiver's envelope may exceed the floor, never under-run it -- under-floor is a loud load refusal (PIR-E-VERIFY-004). Mirrors the interpreter structural profile's required isolation_floor."
+        },
+        "floor_lowered_by": {
+          "$ref": "#/$defs/floor_provenance",
+          "description": "Provenance of a floor-lowering edit (D-042; PIR-017): lowering a floor is an artifact edit producing a new artifact version, never an engine flag. Absent when the floor was never lowered."
         },
         "credential_ref": {
           "type": ["string", "null"],
@@ -119,6 +127,53 @@
         }
       },
       "required": ["rung", "contract"],
+      "additionalProperties": false
+    },
+    "isolation_level": {
+      "enum": ["none", "namespace", "fork", "fork_cgroup", "fork_ratchet", "sandbox", "remote"],
+      "description": "The ordered isolation vocabulary v1.0 (D-042, spec/placement.md): none < namespace < fork < fork_cgroup < fork_ratchet < sandbox < remote. Ordering is normative -- 'floor' is defined by position comparison (PIR-015). Closed; extension is a versioned act (versions.isolation)."
+    },
+    "floor_provenance": {
+      "type": "object",
+      "description": "The floor-lowering provenance record (D-042 point 7; PIR-017): who lowered the floor, when, from what to what. Rides the placement block of the edited entry.",
+      "properties": {
+        "by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who signed for the lowered floor (PIR-014 provenance discipline)."
+        },
+        "date": {
+          "type": "string",
+          "minLength": 1,
+          "description": "When the floor was lowered."
+        },
+        "old": {
+          "$ref": "#/$defs/isolation_level",
+          "description": "The floor before the edit."
+        },
+        "new": {
+          "$ref": "#/$defs/isolation_level",
+          "description": "The floor after the edit (strictly lower than old -- raising needs no edit; it is a binding)."
+        }
+      },
+      "required": ["by", "date", "old", "new"],
+      "additionalProperties": false
+    },
+    "grant": {
+      "type": "object",
+      "description": "One entry of the closed static effect row (D-043 unified leaf substrate; PIR-021): a capability the parent explicitly hands the leaf. Grants are orthogonal to the isolation level -- every envelope must supply every declared grant or load refuses (PIR-E-VERIFY-005; PIR-018).",
+      "properties": {
+        "kind": {
+          "enum": ["fd", "broker_route", "leaf"],
+          "description": "Closed grant kind: 'fd' -- a passed/inherited file descriptor (sealed-memfd data plane, listening sockets); 'broker_route' -- a hostname route through the parent-owned broker proxy (D-043: credential injection, per-request log); 'leaf' -- a pool leaf the granted (session) leaf may call back into through the engine bridge (the PIR-021 grant-bridge byte shape; contract-sync wave 2026-08-12)."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The grant's name: the FD's declared role, the broker route's hostname pattern, or the granted pool leaf's name ('leaf' kind)."
+        }
+      },
+      "required": ["kind", "name"],
       "additionalProperties": false
     },
     "code_identity": {
@@ -457,7 +512,16 @@
         },
         "authored_by": {
           "type": "string",
-          "description": "PIR-014 provenance for machine-written tool code."
+          "description": "PIR-014 provenance for machine-written tool code. Under D-043, 'optimizer' defaults the leaf's binding-level isolation floor through the receiver's trust profile (spec/trust.md)."
+        },
+        "kind": {
+          "enum": ["call", "session"],
+          "description": "Optional unified-leaf-substrate invocation discriminant (D-043; PIR-021): 'call' -- one request/response (the default when absent); 'session' -- a held stateful context, fork-scoped (lifetime = leaf span) at fork_ratchet and above."
+        },
+        "grants": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/grant"},
+          "description": "The closed static effect row (D-043; PIR-021): every capability this leaf may be handed, readable from the manifest without executing anything. Absent means no grants."
         }
       },
       "required": ["return_schema", "source", "deps", "language", "placement"],
@@ -533,13 +597,21 @@
           "description": "Declared resource limits; empty means no limits are claimed."
         },
         "isolation_floor": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Least isolation this identity permits; placement may move outward, never inward."
+          "$ref": "#/$defs/isolation_level",
+          "description": "Least isolation this identity permits, drawn from the ordered vocabulary (D-042, spec/placement.md; PIR-015); placement may move outward, never inward."
         },
         "placement": {
           "$ref": "#/$defs/placement",
           "description": "Receiver-controlled execution placement."
+        },
+        "kind_invocation": {
+          "enum": ["call", "session"],
+          "description": "Optional unified-leaf-substrate invocation discriminant (D-043; PIR-021); interpreters default to 'session'. Named kind_invocation here because 'kind' is the legacy fused-profile discriminator."
+        },
+        "grants": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/grant"},
+          "description": "The closed static effect row (D-043; PIR-021). Absent means no grants."
         }
       },
       "required": [

@@ -9,15 +9,21 @@ def request(op, **payload):
     return handle_line(json.dumps({"id": "test", "op": op, **payload}))
 
 
-def test_shim_advertises_grade1_and_interpreter_profiles():
+def test_shim_advertises_grades_and_interpreter_profiles():
     reply = request("capabilities")
 
     assert reply["ok"] is True
-    assert reply["result"]["grades"] == [1]
+    # Grade 2 arrived with node_execute (scripted execution, PROTOCOL.md).
+    assert reply["result"]["grades"] == [1, 2]
     assert reply["result"]["versions"]["interpreter_profile"] == "1.0"
-    assert {"load_manifest", "check_versions", "link", "profile_check", "node_compile"} <= set(
-        reply["result"]["ops"]
-    )
+    assert {
+        "load_manifest",
+        "check_versions",
+        "link",
+        "profile_check",
+        "node_compile",
+        "node_execute",
+    } <= set(reply["result"]["ops"])
 
 
 def test_shim_load_link_and_explain_compiler_output():
@@ -44,6 +50,52 @@ def test_shim_uses_contract_refusal_codes():
 
     assert reply["ok"] is False
     assert reply["error"]["code"] == "PIR-E-MANIFEST-002"
+
+
+def test_shim_node_execute_traces_calls_and_attribution():
+    forwards = {
+        "self": {
+            "language": "restricted-python-ast",
+            "args": [{"name": "inputs", "record": "self"}],
+            "body": [
+                {
+                    "node": "Assign",
+                    "target": "pred",
+                    "value": {
+                        "node": "Call",
+                        "leaf": {"kind": "predict", "ref": "inner"},
+                        "splat": "inputs",
+                        "kwargs": {},
+                    },
+                },
+                {"node": "Return", "value": {"node": "Var", "name": "pred"}},
+            ],
+        }
+    }
+    leaves = {"predicts": {"inner": [{"value": {"answer": "4"}}]}}
+
+    reply = request(
+        "node_execute",
+        forwards=forwards,
+        inputs={"question": "2+2?"},
+        leaves=leaves,
+        record_attribution=True,
+    )
+
+    assert reply["ok"] is True
+    result = reply["result"]
+    assert result["outcome"] == {"kind": "prediction", "prediction": {"answer": "4"}}
+    assert result["calls"] == [
+        {
+            "kind": "predict",
+            "target": "inner",
+            "kwargs": {"question": "2+2?"},
+            "outcome": {"value": {"answer": "4"}},
+        }
+    ]
+    # View-2 attribution (PIR-021): total counts each call once; scripted
+    # execution has no live bridge, so each call labels its own target.
+    assert result["attribution"] == {"inner": 1}
 
 
 def _predictor_with_lm():
