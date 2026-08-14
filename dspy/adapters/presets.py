@@ -1,10 +1,12 @@
 """Built-in presets: chat, json, xml — templates in, adapters out.
 
 A preset is nothing but an entry: a template in the constrained language,
-the lens as its parser (the four historical parser programs are lens
-derivations of their own templates now), text codecs both ways, and the
-auto strategy block. `ChatAdapter()`, `JSONAdapter()`, `XMLAdapter()` are
-thin constructors over those entries — same user syntax, no class bodies.
+a data parser (chat and xml carry the derived lens of their own templates;
+json carries its parse policy as declared pipeline data — a JSON object is
+a meaning, not a spelling, so no lens derives), text codecs both ways, and
+the auto strategy block. `ChatAdapter()`, `JSONAdapter()`, `XMLAdapter()`
+are thin constructors over those entries — same user syntax, no class
+bodies.
 
 `make_adapter` is the general door: template-first adapter construction,
 the derived lens as the default parser when `parser` is omitted.
@@ -142,6 +144,24 @@ JSON_TEMPLATE: list[dict[str, Any]] = [
     {"role": "user", "content": _JSON_USER},
 ]
 
+#: The json preset's parse policy, written down (example 02's recipe): a
+#: JSON object is a meaning with many spellings, so it cannot be lensed —
+#: the tolerance decisions are declared as pipeline data instead.
+JSON_PARSER: dict[str, Any] = {
+    "kind": "pipeline",
+    "steps": [
+        {"op": "fenced_block", "language": "json", "policy": "prefer"},
+        {
+            "op": "alternatives",
+            "try": [
+                {"op": "json_object", "repair": "none"},
+                {"op": "json_object", "repair": "json_repair"},
+            ],
+        },
+        {"op": "fields_from_object", "unknown_keys": "exhaust"},
+    ],
+}
+
 
 # ---------------------------------------------------------------------------
 # xml
@@ -222,6 +242,7 @@ class _PresetAdapter(Adapter):
 
     preset_name: str
     preset_template: list[dict[str, Any]]
+    preset_parser: dict[str, Any] | None = None  # None = the derived lens
 
     def __init__(
         self,
@@ -237,7 +258,7 @@ class _PresetAdapter(Adapter):
         super().__init__(
             name=self.preset_name,
             template=self.preset_template,
-            parser=parser,
+            parser=parser if parser is not None else self.preset_parser,
             codecs=codecs,
             strategies=merged_strategies,
             config=config,
@@ -259,10 +280,17 @@ class ChatAdapter(_PresetAdapter):
 
 
 class JSONAdapter(_PresetAdapter):
-    """The json preset: one JSON object of output fields, lens-parsed."""
+    """The json preset: one JSON object of output fields, pipeline-parsed.
+
+    A JSON reply is a meaning, not a spelling, so no lens derives from the
+    template; the entry carries its parse policy as declared pipeline data
+    (`JSON_PARSER`): prefer a fenced block, strict parse then repair, map
+    keys to output fields, exhaust unknown keys.
+    """
 
     preset_name = "json"
     preset_template = JSON_TEMPLATE
+    preset_parser = JSON_PARSER
 
 
 class XMLAdapter(_PresetAdapter):

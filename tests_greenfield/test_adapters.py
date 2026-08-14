@@ -42,9 +42,19 @@ class TestPresets:
         (want,) = example_entries("01-chat-baseline")
         assert dspy.ChatAdapter().dump_entry() == want
 
-    def test_all_presets_carry_the_lens(self):
-        for cls in (dspy.ChatAdapter, dspy.JSONAdapter, dspy.XMLAdapter):
+    def test_lens_presets_carry_the_lens(self):
+        for cls in (dspy.ChatAdapter, dspy.XMLAdapter):
             assert cls().dump_entry()["parser"] == {"kind": "lens", "of": "template"}
+
+    def test_json_preset_carries_the_declared_pipeline(self):
+        entry = dspy.JSONAdapter().dump_entry()
+        assert entry["parser"]["kind"] == "pipeline"
+        assert [step["op"] for step in entry["parser"]["steps"]] == [
+            "fenced_block",
+            "alternatives",
+            "fields_from_object",
+        ]
+        assert entry["versions"]["parse_combinators"] == "0.1.0"
 
     def test_chat_preview_bytes(self):
         messages = dspy.ChatAdapter().preview(QA, {"question": "Why?"})
@@ -94,18 +104,27 @@ class TestLensDerivation:
         completion = "[[ ## noise ## ]]\nignored\n\n[[ ## answer ## ]]\nParis\n\n[[ ## completed ## ]]"
         assert dspy.ChatAdapter().parse_preview(QA, completion) == {"answer": "Paris"}
 
-    def test_json_lens_is_object_mode(self):
-        assert dspy.JSONAdapter().lens()["mode"] == "json_object"
+    def test_json_preset_has_no_lens(self):
+        assert dspy.JSONAdapter().lens() is None
 
-    def test_json_lens_parses_object(self):
+    def test_json_object_template_refuses_the_lens(self):
+        from dspy.adapters.lens import LensError
+
+        with pytest.raises(LensError, match="many spellings"):
+            make_adapter(
+                name="naive_json",
+                template=[{"role": "user", "content": "{outputs(style='json_object')}"}],
+            )
+
+    def test_json_pipeline_parses_object(self):
         out = dspy.JSONAdapter().parse_preview(QA, '{"answer": "Paris"}')
         assert out == {"answer": "Paris"}
 
-    def test_json_lens_prefers_fenced_block_and_repairs(self):
+    def test_json_pipeline_prefers_fenced_block_and_repairs(self):
         completion = 'Sure!\n```json\n{"answer": "Paris",}\n```\nDone.'
         assert dspy.JSONAdapter().parse_preview(QA, completion) == {"answer": "Paris"}
 
-    def test_json_lens_coerces_types(self):
+    def test_json_pipeline_coerces_types(self):
         out = dspy.JSONAdapter().parse_preview(TwoOut, '{"entities": ["a", "b"], "summary": "s"}')
         assert out == {"entities": ["a", "b"], "summary": "s"}
 

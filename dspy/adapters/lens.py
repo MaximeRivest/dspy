@@ -12,23 +12,25 @@ Where the derivation looks, in order:
 1. the demos directive's authored assistant pattern (what an example
    completion looks like IS what the parser reads back);
 2. an authored assistant message;
-3. an outputs loop or outputs aggregate anywhere in the template (the
-   base-model case: the trailing label the template renders is the
-   boundary the completion continues from);
+3. an outputs loop anywhere in the template (the base-model case: the
+   trailing label the template renders is the boundary the completion
+   continues from);
 4. an inputs loop in the last user message (the exchange's labeling
    convention, generalized to outputs — the instructed-marker case);
 5. nothing found: the degenerate full-text lens (one plain output field).
 
 With one output field and no labels in the completion, every labeled lens
 degenerates to full_text: everything after the last label.
+
+A lens inverts spellings, byte for byte. A `{outputs(style='json_object')}`
+aggregate promises a meaning, not a spelling — reordered keys and different
+whitespace are the same object — so it cannot be lensed; the derivation
+refuses and points at the declared pipeline route.
 """
 
-import json
 import re
 from dataclasses import dataclass
 from typing import Any
-
-import json_repair
 
 from dspy.adapters._engine.template.parser import (
     AggregateSlot,
@@ -49,7 +51,7 @@ class Lens:
     """A derived parser: the template read backwards.
 
     Attributes:
-        mode: `labeled`, `json_object`, or `full_text`.
+        mode: `labeled` or `full_text`.
         boundary: The boundary regex (labeled mode), with a `name` group
             when the label carries the field name.
         named: Whether boundaries carry the field name; unnamed boundaries
@@ -81,8 +83,6 @@ class Lens:
         Returns the fields it found; completeness is the caller's check
         (the adapter knows which fields strategies routed elsewhere).
         """
-        if self.mode == "json_object":
-            return _parse_json_object(signature, completion, codec)
         if self.mode == "labeled":
             return _parse_labeled(self, signature, completion, codec)
         return _parse_full_text(signature, completion, codec)
@@ -107,7 +107,11 @@ def derive_lens(template: ParsedTemplate) -> Lens:
     for nodes, source in _pattern_sources(template):
         aggregate = _find_outputs_json_aggregate(nodes)
         if aggregate is not None:
-            return Lens(mode="json_object", source=source)
+            raise LensError(
+                "the lens cannot invert {outputs(style='json_object')} — a JSON object is a meaning "
+                "with many spellings (key order, whitespace), and a lens inverts one spelling; "
+                "declare a pipeline parser instead (fenced_block -> json_object -> fields_from_object)"
+            )
         loop = _find_loop(nodes, "outputs")
         if loop is not None:
             return _lens_from_loop(loop, source)
@@ -283,39 +287,6 @@ def _cut_suffix(content: str, suffix: str | None, name: str) -> str:
     if cut != -1:
         return content[:cut]
     return content
-
-
-def _parse_json_object(signature, completion: str, codec) -> dict[str, Any]:
-    """The json lens: the pinned object-reading of a json_object template.
-
-    Prefer a fenced json block; strict parse, then the repair policy; keys
-    map to output fields; unknown keys are exhaust (ADP-004).
-    """
-    text = completion
-    fence = re.search(r"```(?:json)?[ \t]*\n(.*?)```", text, re.DOTALL)
-    if fence is not None:
-        text = fence.group(1)
-    text = text.strip()
-    try:
-        obj = json.loads(text)
-    except json.JSONDecodeError:
-        obj = json_repair.loads(text)
-    if not isinstance(obj, dict):
-        raise AdapterParseError(
-            f"expected the completion to carry one JSON object with the output fields, got: {completion!r}"
-        )
-    fields: dict[str, Any] = {}
-    for key, value in obj.items():
-        if key not in signature.output_fields:
-            continue  # exhaust
-        annotation = signature.output_fields[key].annotation
-        try:
-            fields[key] = codec.parse_value(value, annotation)
-        except Exception as error:
-            raise AdapterParseError(
-                f"Failed to parse field {key} with value {value!r} from the LM response. Error message: {error}"
-            ) from error
-    return fields
 
 
 def _parse_full_text(signature, completion: str, codec) -> dict[str, Any]:
