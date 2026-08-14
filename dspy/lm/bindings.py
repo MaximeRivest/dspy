@@ -34,7 +34,7 @@ def configure(**bindings: Any) -> None:
 
     Examples:
         ```python
-        dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
+        dspy.configure(lm=dspy.LM("gpt-4o-mini"))
         dspy.configure(lm=None)  # unbind
         ```
     """

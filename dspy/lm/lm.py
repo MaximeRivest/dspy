@@ -1,9 +1,14 @@
-"""One LM class: litellm-backed chat completions with declared capabilities.
+"""One LM class: lm15-routed chat completions with declared capabilities.
 
-Deliberately minimal (stage A1): synchronous chat completions only — no
-streaming, no callbacks, no caching, no retries. Failures surface as the
-typed `LMError` from the contract table, never as provider-specific
-exceptions.
+The canonical representation is lm15's `Request`/`Response`. `LM.__call__`
+is the dict-in/strings-out convenience for adapters; `LM.complete` speaks
+canonical lm15 for callers that need parts, tools, usage, or citations.
+Routing (model string -> provider -> credential) is lm15's `LMRouter`;
+`ROUTER` is the shared module-level instance, and any object with a
+`complete(Request) -> Response` method can stand in for it per-LM.
+
+Failures surface as the typed `LMError` from the contract table — carrying
+lm15's canonical error code — never as provider-specific exceptions.
 """
 
 from __future__ import annotations
@@ -12,9 +17,51 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from lm15 import Config, Message, ModelRegistry, Request, Response, TextPart
+from lm15.errors import LM15Error
+from lm15.router import LMRouter, RouterConfig
+
 from dspy.core.errors import LMError
 
-__all__ = ["LM", "LMCapabilities"]
+__all__ = ["LM", "LMCapabilities", "ROUTER"]
+
+#: The shared default router (`dspy.lm.ROUTER`): one per process, one
+#: provider LM per provider inside it, built lazily. Its model catalog
+#: is hydrated from installed entry-point catalogs (e.g. the `aimo`
+#: registry package) — advisory metadata plus catalog-rung resolution;
+#: discovery is offline-safe and never raises. Hydration costs ~1s for
+#: a large catalog, so it runs on FIRST USE, not at import — `ROUTER`
+#: is a module `__getattr__` attribute backed by `default_router()`.
+_ROUTER: LMRouter | None = None
+
+
+def default_router() -> LMRouter:
+    """Build (once) and return the shared catalog-backed router."""
+    global _ROUTER
+    if _ROUTER is None:
+        _ROUTER = LMRouter(RouterConfig(registry=ModelRegistry.discover()))
+    return _ROUTER
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ROUTER":
+        return default_router()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+#: Request kwargs that are universal generation parameters (lm15
+#: `Config` fields). Everything else a caller passes goes to
+#: `Config.extensions` — the clearly-separated provider-specific
+#: namespace — instead of pretending to be universal.
+_CONFIG_FIELDS = frozenset(
+    {"max_tokens", "temperature", "top_p", "top_k", "stop", "response_format", "tool_choice", "reasoning", "cache"}
+)
+
+#: Request kwargs that are endpoint configuration, not generation
+#: parameters. They stay in `lm.kwargs` (the serialization layer treats
+#: `api_key` as a credential there) but never travel in a request body;
+#: at call time they pin the credential and, for `api_base`, the
+#: OpenAI-compatible endpoint the request goes to.
+_ENDPOINT_FIELDS = ("api_key", "api_base", "base_url")
 
 
 @dataclass(frozen=True)
@@ -46,23 +93,37 @@ class LMCapabilities:
 
 
 class LM:
-    """A litellm-backed chat-completions language model.
+    """An lm15-routed chat-completions language model.
 
     Args:
-        model: The litellm model identifier, e.g. `"openai/gpt-4o-mini"`.
+        model: The model string. Bare family names route by built-in
+            rule (`"gpt-4o-mini"`, `"claude-sonnet-4-5"`, `"gemini-2.5-pro"`);
+            a `provider:` prefix is explicit (`"openai-chat:qwen3"`,
+            `"ollama:llama3.2"`). lm15's router resolves it
+            (prefix > catalog > rules) and picks up the provider's API
+            key from its declared env var.
         instruct: Capability fact — instruction-tuned (True) or base model.
         native_reasoning: Capability fact — native reasoning channel.
         native_fc: Capability fact — native function calling.
         native_citations: Capability fact — native citations.
         image_input: Capability fact — image content parts accepted.
         temperature: Default sampling temperature for every request.
+            `None` (the default) sends nothing — lm15 and the provider
+            decide.
         max_tokens: Default completion-token cap for every request.
-        **kwargs: Extra default request kwargs forwarded to litellm on
-            every call (per-call kwargs override them).
+            `None` (the default) sends nothing — lm15 and the provider
+            decide.
+        router: Anything with `complete(lm15.Request) -> lm15.Response`.
+            Defaults to the shared module-level `ROUTER`. Pass an
+            `LMRouter` with your own `RouterConfig` for explicit keys or
+            a custom transport, or `lm15.testing.FakeLM` in tests.
+        **kwargs: Extra default request kwargs applied to every call.
+            Universal ones (`top_p`, `stop`, ...) become lm15 `Config`
+            fields; anything else travels in `Config.extensions`.
 
     Examples:
         ```python
-        lm = dspy.LM("openai/gpt-4o-mini", native_fc=True)
+        lm = dspy.LM("gpt-4o-mini", native_fc=True)
         dspy.configure(lm=lm)
         outputs = lm(prompt="Say hello.")
         ```
@@ -77,11 +138,13 @@ class LM:
         native_fc: bool = False,
         native_citations: bool = False,
         image_input: bool = False,
-        temperature: float = 0.0,
-        max_tokens: int = 4000,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        router: Any | None = None,
         **kwargs: Any,
     ):
         self.model = model
+        self.router = router if router is not None else default_router()
         self.capabilities = LMCapabilities(
             instruct=instruct,
             native_reasoning=native_reasoning,
@@ -89,7 +152,8 @@ class LM:
             native_citations=native_citations,
             image_input=image_input,
         )
-        self.kwargs: dict[str, Any] = {"temperature": temperature, "max_tokens": max_tokens, **kwargs}
+        defaults = {"temperature": temperature, "max_tokens": max_tokens}
+        self.kwargs: dict[str, Any] = {k: v for k, v in defaults.items() if v is not None} | kwargs
         self.history: list[dict[str, Any]] = []
 
     def __call__(
@@ -103,6 +167,11 @@ class LM:
 
         Args:
             messages: Chat messages, `[{"role": ..., "content": ...}, ...]`.
+                Roles `user`, `assistant`, and `developer` become lm15
+                messages; `system` messages fold into the request's
+                system prompt. Content must be text — for images, tools,
+                or other parts, build an `lm15.Request` and use
+                `complete()`.
             prompt: Sugar for a single user message; exclusive with `messages`.
             **kwargs: Per-call request kwargs; override the constructor defaults.
 
@@ -110,8 +179,9 @@ class LM:
             One string per returned choice (usually one).
 
         Raises:
-            LMError: On any transport or provider failure, and on a
-                response with no text content.
+            LMError: On any routing, transport, or provider failure, and
+                on a response with no text content. The message carries
+                lm15's canonical error code.
         """
         messages = self._coerce_messages(messages, prompt)
         request_kwargs = {**self.kwargs, **kwargs}
@@ -127,6 +197,28 @@ class LM:
         )
         return outputs
 
+    def complete(self, request: Request) -> Response:
+        """Run one canonical lm15 request — the full-surface escape hatch.
+
+        Use this when the dict-in/strings-out convenience is too small:
+        tool calls, image parts, citations, usage accounting, or
+        provider extensions. The request routes through this LM's
+        router; errors map to the same typed `LMError`.
+
+        Args:
+            request: A complete `lm15.Request`, including the model string.
+
+        Returns:
+            The canonical `lm15.Response`.
+
+        Raises:
+            LMError: On any routing, transport, or provider failure.
+        """
+        try:
+            return self.router.complete(request)
+        except LM15Error as e:
+            raise self._wrap(e) from e
+
     def _coerce_messages(self, messages: list[dict[str, Any]] | None, prompt: str | None) -> list[dict[str, Any]]:
         if (messages is None) == (prompt is None):
             raise ValueError("Pass exactly one of `messages` or `prompt`.")
@@ -135,24 +227,116 @@ class LM:
         return messages
 
     def _request(self, messages: list[dict[str, Any]], request_kwargs: dict[str, Any]) -> list[str]:
-        import litellm
-
+        request_kwargs = dict(request_kwargs)
+        endpoint = {k: request_kwargs.pop(k) for k in _ENDPOINT_FIELDS if request_kwargs.get(k) is not None}
         try:
-            response = litellm.completion(model=self.model, messages=messages, **request_kwargs)
-        except Exception as e:
-            raise LMError(f"LM request to {self.model!r} failed: {e}") from e
+            engine, wire_model = self._engine_for(endpoint)
+            request = self._build_request(messages, request_kwargs, model=wire_model)
+            response = engine.complete(request)
+        except LM15Error as e:
+            raise self._wrap(e) from e
 
-        outputs: list[str] = []
-        for choice in response.choices:
-            content = choice.message.content
-            if content is None:
-                raise LMError(
-                    f"LM {self.model!r} returned a choice with no text content "
-                    f"(finish_reason={choice.finish_reason!r}). The minimal LM speaks "
-                    "text-only chat completions; richer channels arrive with adapters v2."
+        text = response.text
+        if text is None:
+            raise LMError(
+                f"LM {self.model!r} returned no text content "
+                f"(finish_reason={response.finish_reason!r}). The dict-in/strings-out "
+                "call speaks text-only chat; for tool calls and richer parts use "
+                "`lm.complete(lm15.Request(...))`."
+            )
+        return [text]
+
+    def _engine_for(self, endpoint: dict[str, Any]) -> tuple[Any, str]:
+        """Pick the engine and wire model for one call.
+
+        No endpoint config — or an explicitly passed router, which always
+        wins: the router as-is, routing `self.model`. Otherwise
+        `api_key` alone builds a private router that binds the key to
+        the resolved provider, and `api_base`/`base_url` pins the
+        RESOLVED provider's adapter at that URL — the endpoint moves,
+        the dialect does not. `"anthropic:claude-..."` with `api_base`
+        speaks Anthropic to your URL; an unresolvable bare model with
+        `api_base` defaults to an OpenAI-compatible chat server, the
+        self-hosted convention.
+        """
+        if not endpoint or self.router is not default_router():
+            return self.router, self.model
+
+        cache_key = tuple(sorted(endpoint.items()))
+        cached = getattr(self, "_pinned", {}).get(cache_key)
+        if cached is not None:
+            return cached
+
+        base_url = endpoint.get("api_base") or endpoint.get("base_url")
+        api_key = endpoint.get("api_key")
+        try:
+            resolution = default_router().resolve(self.model)
+        except LM15Error:
+            resolution = None
+
+        if base_url is not None:
+            from lm15.router import ADAPTERS, CHAT_PRESET_ROUTES
+
+            # lm15's transport honors HTTP(S)_PROXY/NO_PROXY, so a
+            # mandated proxy (e.g. the FlexIR egress broker) is respected.
+            extra: dict[str, Any] = {}
+            if resolution is None:
+                cls, wire_model = ADAPTERS["openai-chat"], self.model
+            else:
+                wire_model = resolution.model
+                cls = ADAPTERS.get(resolution.provider)
+                if cls is None:  # chat-compat preset (ollama, vllm, ...)
+                    cls = ADAPTERS["openai-chat"]
+                    route = CHAT_PRESET_ROUTES.get(resolution.provider)
+                    if route is not None:
+                        extra["compat"] = route.provider
+            engine: Any = cls(api_key=api_key or "", base_url=base_url, **extra)
+        else:
+            provider = resolution.provider if resolution is not None else self.model
+            engine = LMRouter(RouterConfig(api_keys={provider: api_key}))
+            wire_model = self.model  # the private router re-resolves it
+
+        pinned = self.__dict__.setdefault("_pinned", {})
+        pinned[cache_key] = (engine, wire_model)
+        return engine, wire_model
+
+    def _build_request(
+        self, messages: list[dict[str, Any]], request_kwargs: dict[str, Any], *, model: str | None = None
+    ) -> Request:
+        system_texts: list[str] = []
+        lm15_messages: list[Message] = []
+        for m in messages:
+            role, content = m.get("role"), m.get("content")
+            if not isinstance(content, str):
+                raise ValueError(
+                    f"Message content must be text, got {type(content).__name__}. For "
+                    "images, tool results, or other parts, build an lm15.Request and "
+                    "call `lm.complete(request)`."
                 )
-            outputs.append(content)
-        return outputs
+            if role == "system":
+                system_texts.append(content)
+            elif role in ("user", "assistant", "developer"):
+                lm15_messages.append(Message(role=role, parts=(TextPart(content),)))
+            else:
+                raise ValueError(
+                    f"Unsupported message role {role!r}. The chat convenience takes "
+                    "system/user/assistant/developer text messages."
+                )
+
+        config_kwargs = {k: v for k, v in request_kwargs.items() if k in _CONFIG_FIELDS}
+        extensions = {k: v for k, v in request_kwargs.items() if k not in _CONFIG_FIELDS}
+        if extensions:
+            config_kwargs["extensions"] = extensions
+
+        return Request(
+            model=model if model is not None else self.model,
+            messages=tuple(lm15_messages),
+            system="\n\n".join(system_texts) or None,
+            config=Config(**config_kwargs),
+        )
+
+    def _wrap(self, e: LM15Error) -> LMError:
+        return LMError(f"LM request to {self.model!r} failed ({e.code}): {e}")
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(model={self.model!r}, capabilities={self.capabilities})"

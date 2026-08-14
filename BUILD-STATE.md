@@ -39,10 +39,20 @@ Each builder agent appends a dated section. Read `GREENFIELD.md` first.
     layer no longer imports `dspy.adapters.types.*`. Subclass lookup
     still works. Conflict/unknown-role refusals unchanged and eager.
 - `dspy/lm/` — the whole model story:
-  - `lm.py` — ONE `LM` class: litellm `completion()` chat, synchronous,
-    no streaming / callbacks / caching / retries. Any transport or
-    provider failure raises the typed `LMError` (with `__cause__`); a
-    contentless choice also refuses loudly. `lm.history` records
+  - `lm.py` — ONE `LM` class: lm15-routed chat, synchronous, no
+    streaming / callbacks / caching. The canonical representation is
+    lm15's `Request`/`Response`; `__call__` is the dict-in/strings-out
+    convenience and `complete()` the full-surface escape hatch. Routing
+    is lm15's `LMRouter` (shared module-level `ROUTER`; `router=` per
+    LM overrides — `lm15.testing.FakeLM` slots in for tests).
+    `api_key`/`api_base` kwargs are endpoint config: they stay in
+    `lm.kwargs` for the flex serializer but never enter a request body;
+    `api_base` pins an OpenAI-compatible chat engine (lm15's own
+    transport honors `HTTP_PROXY`/`NO_PROXY`, so the egress broker
+    still brokers). Any routing/transport/provider failure raises the
+    typed `LMError` carrying lm15's canonical error code (with
+    `__cause__`); a contentless response also refuses loudly.
+    `lm.history` records
     model/messages/kwargs/outputs/timestamp. Capability facts
     (`instruct`, `native_reasoning`, `native_fc`, `native_citations`)
     are constructor data, exposed as frozen `LMCapabilities`

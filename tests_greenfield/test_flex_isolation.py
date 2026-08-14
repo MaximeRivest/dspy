@@ -476,7 +476,7 @@ class TestBrokerEndToEnd:
         host = "127.0.0.1"
         # api_base points at the stub; the broker allowlists its host and
         # injects the credential. The child gets proxy vars, NOT the key.
-        lm = dspy.LM("openai/stub-model", api_key="sk-child-must-not-have", api_base=f"http://{host}:{port}/v1")
+        lm = dspy.LM("openai-chat:stub-model", api_key="sk-child-must-not-have", api_base=f"http://{host}:{port}/v1")
         dspy.configure(lm=lm)
         program = Tagger()
         optimizer = optim.FlexIR(
@@ -501,7 +501,7 @@ class TestBrokerEndToEnd:
     def test_child_env_is_secret_free_under_the_broker(self):
         # With the broker active, the credential rides NO child env var.
         host = "127.0.0.1"
-        lm = dspy.LM("openai/stub-model", api_key="sk-secret-xyz", api_base=f"http://{host}:9/v1")
+        lm = dspy.LM("openai-chat:stub-model", api_key="sk-secret-xyz", api_base=f"http://{host}:9/v1")
         dspy.configure(lm=lm)
         program = Tagger()
         optimizer = optim.FlexIR(

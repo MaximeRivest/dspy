@@ -1,7 +1,5 @@
 """Stage A1 tests: the LM layer — capabilities, DummyLM, bindings."""
 
-from types import SimpleNamespace
-
 import pytest
 
 import dspy
@@ -55,6 +53,12 @@ class TestCapabilities:
     def test_default_request_kwargs(self):
         lm = dspy.LM("m", temperature=0.7, max_tokens=100, top_p=0.9)
         assert lm.kwargs == {"temperature": 0.7, "max_tokens": 100, "top_p": 0.9}
+
+    def test_no_baked_in_generation_defaults(self):
+        # Unset temperature/max_tokens stay out of the request; lm15
+        # and the provider decide.
+        lm = dspy.LM("m")
+        assert lm.kwargs == {}
 
 
 # ---------------------------------------------------------------------------
@@ -160,53 +164,107 @@ class TestBindings:
 
 
 # ---------------------------------------------------------------------------
-# The litellm-backed transport (faked; no network)
+# The lm15-routed transport (faked at the canonical level; no network)
 # ---------------------------------------------------------------------------
 
 
-def _fake_response(*contents, finish_reason="stop"):
-    return SimpleNamespace(
-        choices=[
-            SimpleNamespace(message=SimpleNamespace(content=c), finish_reason=finish_reason) for c in contents
-        ]
+def _tool_call_response():
+    from lm15 import Message, Response, ToolCallPart, Usage
+
+    return Response(
+        id="r1",
+        model="fake",
+        message=Message(
+            role="assistant",
+            parts=(ToolCallPart(id="c1", name="f", input={}),),
+        ),
+        finish_reason="tool_call",
+        usage=Usage(),
     )
 
 
 class TestLMTransport:
-    def test_completion_call_and_history(self, monkeypatch):
-        import litellm
+    def test_completion_call_and_history(self):
+        from lm15.testing import FakeLM
 
-        seen = {}
-
-        def fake_completion(model, messages, **kwargs):
-            seen.update({"model": model, "messages": messages, "kwargs": kwargs})
-            return _fake_response("hello")
-
-        monkeypatch.setattr(litellm, "completion", fake_completion)
-        lm = dspy.LM("openai/gpt-4o-mini", temperature=0.2)
+        fake = FakeLM(["hello"])
+        lm = dspy.LM("openai/gpt-4o-mini", temperature=0.2, router=fake)
         outputs = lm(prompt="hi", max_tokens=5)
         assert outputs == ["hello"]
-        assert seen["model"] == "openai/gpt-4o-mini"
-        assert seen["kwargs"]["temperature"] == 0.2
-        assert seen["kwargs"]["max_tokens"] == 5  # per-call override
+        request = fake.requests[0]
+        assert request.model == "openai/gpt-4o-mini"
+        assert request.config.temperature == 0.2
+        assert request.config.max_tokens == 5  # per-call override
+        assert request.messages[0].role == "user"
         assert lm.history[0]["outputs"] == ["hello"]
 
-    def test_provider_failure_maps_to_typed_lm_error(self, monkeypatch):
-        import litellm
+    def test_provider_failure_maps_to_typed_lm_error(self):
+        from lm15.errors import RateLimitError
+        from lm15.testing import FakeLM
 
-        def failing_completion(**kwargs):
-            raise RuntimeError("boom from provider")
-
-        monkeypatch.setattr(litellm, "completion", failing_completion)
-        lm = dspy.LM("m")
+        fake = FakeLM([RateLimitError("boom from provider")])
+        lm = dspy.LM("m", router=fake)
         with pytest.raises(dspy.LMError, match="boom from provider") as err:
             lm(prompt="hi")
-        assert isinstance(err.value.__cause__, RuntimeError)
+        assert "rate_limit" in str(err.value)  # canonical code travels along
+        assert isinstance(err.value.__cause__, RateLimitError)
 
-    def test_contentless_choice_refuses(self, monkeypatch):
-        import litellm
+    def test_contentless_response_refuses(self):
+        from lm15.testing import FakeLM
 
-        monkeypatch.setattr(litellm, "completion", lambda **kwargs: _fake_response(None, finish_reason="tool_calls"))
-        lm = dspy.LM("m")
+        lm = dspy.LM("m", router=FakeLM([_tool_call_response()]))
         with pytest.raises(dspy.LMError, match="no text content"):
             lm(prompt="hi")
+
+    def test_system_messages_fold_into_system_prompt(self):
+        from lm15.testing import FakeLM
+
+        fake = FakeLM(["ok"])
+        lm = dspy.LM("m", router=fake)
+        lm(
+            messages=[
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        request = fake.requests[0]
+        assert "Be terse." in str(request.system)
+        assert [m.role for m in request.messages] == ["user"]
+
+    def test_unknown_kwargs_travel_as_extensions(self):
+        from lm15.testing import FakeLM
+
+        fake = FakeLM(["ok"])
+        lm = dspy.LM("m", router=fake, seed=7)
+        lm(prompt="hi")
+        assert fake.requests[0].config.extensions == {"seed": 7}
+
+    def test_non_text_content_refuses_with_pointer(self):
+        from lm15.testing import FakeLM
+
+        lm = dspy.LM("m", router=FakeLM(["ok"]))
+        with pytest.raises(ValueError, match="lm.complete"):
+            lm(messages=[{"role": "user", "content": [{"type": "image"}]}])
+
+    def test_unknown_model_maps_to_typed_lm_error(self):
+        lm = dspy.LM("no-such-model-xyz")  # real shared router
+        with pytest.raises(dspy.LMError, match="unknown_model"):
+            lm(prompt="hi")
+
+    def test_endpoint_kwargs_never_enter_the_request_body(self):
+        from lm15.testing import FakeLM
+
+        fake = FakeLM(["ok"])
+        # An explicit router wins over endpoint kwargs; they are still
+        # stripped from the body.
+        lm = dspy.LM("m", router=fake, api_key="sk-secret", api_base="http://example.invalid/v1")
+        lm(prompt="hi")
+        assert fake.requests[0].config.extensions is None
+
+    def test_canonical_escape_hatch(self):
+        from lm15 import Message, Request
+        from lm15.testing import FakeLM
+
+        lm = dspy.LM("m", router=FakeLM(["canon"]))
+        response = lm.complete(Request(model="m", messages=(Message.user("hi"),)))
+        assert response.text == "canon"

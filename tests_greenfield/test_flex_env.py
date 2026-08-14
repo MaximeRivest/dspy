@@ -403,7 +403,7 @@ class TestRealLMBinding:
         assert spec["model"] == "openai/gpt-fake"
         assert spec["capabilities"]["instruct"] is True
         assert spec["kwargs"]["api_base"] == "http://example.invalid/v1"
-        assert spec["kwargs"]["temperature"] == 0.0
+        assert "temperature" not in spec["kwargs"]  # no baked-in defaults
         # ...and the credential crosses as the env var's NAME only.
         assert spec["credentials"] == {"api_key": {"env": "FLEX_TEST_KEY"}}
         assert extra_env == {}
@@ -503,7 +503,7 @@ def stub_server():
 class TestRealLMEndToEnd:
     def run(self, stub_server, api_key):
         port = stub_server.server_address[1]
-        lm = dspy.LM("openai/stub-model", api_key=api_key, api_base=f"http://127.0.0.1:{port}/v1")
+        lm = dspy.LM("openai-chat:stub-model", api_key=api_key, api_base=f"http://127.0.0.1:{port}/v1")
         dspy.configure(lm=lm)
         program = Tagger()
         optimizer = optim.FlexIR(

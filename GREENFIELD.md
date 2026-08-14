@@ -29,7 +29,7 @@ The program IS the IR; the engine IS the executor; adapters ARE data.
 
 1. **New package layout** — rebuild `dspy/` in place on this branch:
    `dspy/core/` (signature, prediction+trajectory, typed errors),
-   `dspy/lm/` (ONE `LM` class, litellm-backed, plus `DummyLM`;
+   `dspy/lm/` (ONE `LM` class, lm15-routed, plus `DummyLM`;
    `dspy.configure(lm=...)` sets an explicit DEFAULT BINDING TABLE —
    a plain dict, no thread-local magic, no `dspy.context`),
    `dspy/adapters/` (v2, per the adapter-ir-stage design),

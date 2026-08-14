@@ -1,4 +1,4 @@
-"""The LM layer: one litellm-backed LM, a scripted DummyLM, explicit bindings.
+"""The LM layer: one lm15-routed LM, a scripted DummyLM, explicit bindings.
 
 Capability facts (instruct/base, native_reasoning, native_fc,
 native_citations) are declared constructor data — strategies predicate
@@ -10,7 +10,18 @@ settings object.
 
 from dspy.lm.bindings import BINDINGS, BindingError, configure, resolve
 from dspy.lm.dummy import DummyLM
-from dspy.lm.lm import LM, LMCapabilities
+from dspy.lm.lm import LM, LMCapabilities, default_router
+
+
+def __getattr__(name: str):
+    # `ROUTER` hydrates its model catalog on first use — importing it
+    # eagerly would put ~1s of catalog loading on `import dspy`.
+    if name == "ROUTER":
+        from dspy.lm import lm as _lm
+
+        return _lm.ROUTER
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "BINDINGS",
@@ -18,6 +29,7 @@ __all__ = [
     "DummyLM",
     "LM",
     "LMCapabilities",
+    "ROUTER",
     "configure",
     "resolve",
 ]
