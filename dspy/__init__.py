@@ -39,7 +39,18 @@ from dspy.core import (
     handler_matches,
     make_signature,
 )
-from dspy.lm import LM, BindingError, DummyLM, LMCapabilities, configure
+from dspy.lm import (
+    LM,
+    Assistant,
+    BindingError,
+    DummyLM,
+    LMCapabilities,
+    System,
+    ToolCall,
+    ToolResult,
+    User,
+    configure,
+)
 from dspy import roles
 from dspy import adapters
 from dspy.adapters import (

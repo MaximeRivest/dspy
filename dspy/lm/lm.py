@@ -1,8 +1,12 @@
 """One LM class: lm15-routed chat completions with declared capabilities.
 
 The canonical representation is lm15's `Request`/`Response`. `LM.__call__`
-is the dict-in/strings-out convenience for adapters; `LM.complete` speaks
-canonical lm15 for callers that need parts, tools, usage, or citations.
+has two faces: the keyword `messages=`/`prompt=` path is the
+dict-in/strings-out convenience for adapters, and the positional typed
+path — `lm("hi")`, `lm(dspy.System(...), dspy.User(...))` — returns the
+canonical `lm15.Response` (text, tool calls, usage, citations).
+`LM.complete` speaks full canonical lm15 for callers that build their
+own `Request`.
 Routing (model string -> provider -> credential) is lm15's `LMRouter`;
 `ROUTER` is the shared module-level instance, and any object with a
 `complete(Request) -> Response` method can stand in for it per-LM.
@@ -22,6 +26,7 @@ from lm15.errors import LM15Error
 from lm15.router import LMRouter, RouterConfig
 
 from dspy.core.errors import LMError
+from dspy.lm.direct import System
 
 __all__ = ["LM", "LMCapabilities", "ROUTER"]
 
@@ -158,31 +163,61 @@ class LM:
 
     def __call__(
         self,
+        *inputs: Any,
         messages: list[dict[str, Any]] | None = None,
-        *,
         prompt: str | None = None,
         **kwargs: Any,
-    ) -> list[str]:
-        """Run one chat completion and return the completion texts.
+    ) -> list[str] | Response:
+        """Run one chat completion.
+
+        Two faces, split by how the input arrives:
+
+        - **Typed (positional)** — strings, `dspy.System`/`dspy.User`/
+          `dspy.Assistant`/`dspy.ToolResult` messages, and previous
+          `lm15.Response` values (folded in as their assistant turn).
+          Returns the canonical `lm15.Response`: `.text`, `.tool_calls`,
+          `.usage`, `.citations`, `.provider_data`.
+        - **Legacy (keyword)** — `messages=[{"role": ..., "content": ...}]`
+          or `prompt="..."` (also accepted as a single positional list).
+          Returns one string per choice, the adapter convenience.
 
         Args:
+            *inputs: Typed conversation items (typed face), or one
+                list of role/content dicts (legacy face).
             messages: Chat messages, `[{"role": ..., "content": ...}, ...]`.
                 Roles `user`, `assistant`, and `developer` become lm15
                 messages; `system` messages fold into the request's
-                system prompt. Content must be text — for images, tools,
-                or other parts, build an `lm15.Request` and use
-                `complete()`.
-            prompt: Sugar for a single user message; exclusive with `messages`.
+                system prompt. Content must be text.
+            prompt: Sugar for a single user message; exclusive with the rest.
             **kwargs: Per-call request kwargs; override the constructor defaults.
-
-        Returns:
-            One string per returned choice (usually one).
 
         Raises:
             LMError: On any routing, transport, or provider failure, and
-                on a response with no text content. The message carries
-                lm15's canonical error code.
+                (legacy face) on a response with no text content. The
+                message carries lm15's canonical error code.
+
+        Examples:
+            ```python
+            outputs = lm(prompt="Say hello.")          # -> list[str]
+            response = lm("Say hello.")                # -> lm15.Response
+            follow = lm(
+                dspy.System("Be concise."),
+                dspy.User("What is DSPy?"),
+                response,
+                dspy.User("Shorter."),
+            )
+            print(follow.text, follow.usage)
+            ```
         """
+        typed = bool(inputs) and not (len(inputs) == 1 and isinstance(inputs[0], list))
+        if typed:
+            if messages is not None or prompt is not None:
+                raise ValueError("Pass typed items positionally OR `messages=`/`prompt=`, not both.")
+            return self._call_typed(inputs, kwargs)
+        if inputs:
+            if messages is not None:
+                raise ValueError("Pass `messages` positionally or by keyword, not both.")
+            messages = inputs[0]
         messages = self._coerce_messages(messages, prompt)
         request_kwargs = {**self.kwargs, **kwargs}
         outputs = self._request(messages, request_kwargs)
@@ -215,9 +250,60 @@ class LM:
             LMError: On any routing, transport, or provider failure.
         """
         try:
-            return self.router.complete(request)
+            return self._complete(self.router, request)
         except LM15Error as e:
             raise self._wrap(e) from e
+
+    def _call_typed(self, items: tuple[Any, ...], kwargs: dict[str, Any]) -> Response:
+        """The typed positional face: lm15 messages in, `Response` out."""
+        request_kwargs = {**self.kwargs, **kwargs}
+        endpoint = {k: request_kwargs.pop(k) for k in _ENDPOINT_FIELDS if request_kwargs.get(k) is not None}
+
+        system_texts: list[str] = []
+        lm15_messages: list[Message] = []
+        for item in items:
+            if isinstance(item, str):
+                lm15_messages.append(Message.user(item))
+            elif isinstance(item, System):
+                system_texts.append(item.text)
+            elif isinstance(item, Message):
+                lm15_messages.append(item)
+            elif isinstance(item, Response):
+                lm15_messages.append(item.message)
+            else:
+                raise TypeError(
+                    f"Typed lm(...) items must be str, dspy.System/User/Assistant/"
+                    f"ToolResult, lm15.Message, or lm15.Response — got {type(item).__name__}. "
+                    "A dspy.ToolCall goes inside dspy.Assistant(...)."
+                )
+
+        try:
+            engine, wire_model = self._engine_for(endpoint)
+            request = Request(
+                model=wire_model,
+                messages=tuple(lm15_messages),
+                system="\n\n".join(system_texts) or None,
+                config=self._config(request_kwargs),
+            )
+            response = self._complete(engine, request)
+        except LM15Error as e:
+            raise self._wrap(e) from e
+
+        self.history.append(
+            {
+                "model": self.model,
+                "messages": list(request.messages),
+                "kwargs": request_kwargs,
+                "outputs": [response.text] if response.text is not None else [],
+                "response": response,
+                "timestamp": time.time(),
+            }
+        )
+        return response
+
+    def _complete(self, engine: Any, request: Request) -> Response:
+        """The one transport seam: every path funnels here (DummyLM overrides)."""
+        return engine.complete(request)
 
     def _coerce_messages(self, messages: list[dict[str, Any]] | None, prompt: str | None) -> list[dict[str, Any]]:
         if (messages is None) == (prompt is None):
@@ -232,7 +318,7 @@ class LM:
         try:
             engine, wire_model = self._engine_for(endpoint)
             request = self._build_request(messages, request_kwargs, model=wire_model)
-            response = engine.complete(request)
+            response = self._complete(engine, request)
         except LM15Error as e:
             raise self._wrap(e) from e
 
@@ -323,17 +409,20 @@ class LM:
                     "system/user/assistant/developer text messages."
                 )
 
-        config_kwargs = {k: v for k, v in request_kwargs.items() if k in _CONFIG_FIELDS}
-        extensions = {k: v for k, v in request_kwargs.items() if k not in _CONFIG_FIELDS}
-        if extensions:
-            config_kwargs["extensions"] = extensions
-
         return Request(
             model=model if model is not None else self.model,
             messages=tuple(lm15_messages),
             system="\n\n".join(system_texts) or None,
-            config=Config(**config_kwargs),
+            config=self._config(request_kwargs),
         )
+
+    def _config(self, request_kwargs: dict[str, Any]) -> Config:
+        """Split kwargs into universal `Config` fields and provider extensions."""
+        config_kwargs = {k: v for k, v in request_kwargs.items() if k in _CONFIG_FIELDS}
+        extensions = {k: v for k, v in request_kwargs.items() if k not in _CONFIG_FIELDS}
+        if extensions:
+            config_kwargs["extensions"] = extensions
+        return Config(**config_kwargs)
 
     def _wrap(self, e: LM15Error) -> LMError:
         return LMError(f"LM request to {self.model!r} failed ({e.code}): {e}")

@@ -9,6 +9,7 @@ settings object.
 """
 
 from dspy.lm.bindings import BINDINGS, BindingError, configure, resolve
+from dspy.lm.direct import Assistant, System, ToolCall, ToolResult, User
 from dspy.lm.dummy import DummyLM
 from dspy.lm.lm import LM, LMCapabilities, default_router
 
@@ -25,11 +26,16 @@ def __getattr__(name: str):
 
 __all__ = [
     "BINDINGS",
+    "Assistant",
     "BindingError",
     "DummyLM",
     "LM",
     "LMCapabilities",
     "ROUTER",
+    "System",
+    "ToolCall",
+    "ToolResult",
+    "User",
     "configure",
     "resolve",
 ]

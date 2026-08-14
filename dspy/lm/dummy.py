@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Sequence
 
+from lm15 import Message, Request, Response, Usage
+
 from dspy.core.errors import LMError
 from dspy.lm.lm import LM
 
@@ -46,8 +48,25 @@ class DummyLM(LM):
 
     def _request(self, messages: list[dict[str, Any]], request_kwargs: dict[str, Any]) -> list[str]:
         self.calls.append({"messages": messages, "kwargs": request_kwargs, "timestamp": time.time()})
+        return [self._next_output(messages)]
+
+    def _complete(self, engine: Any, request: Request) -> Response:
+        """Script the typed face too: every `Request` replays the same script."""
+        messages = [{"role": "system", "content": request.system}] if request.system else []
+        messages += [{"role": m.role, "content": m.text} for m in request.messages]
+        self.calls.append({"messages": messages, "request": request, "timestamp": time.time()})
+        output = self._next_output(messages)
+        return Response(
+            id=None,
+            model=self.model,
+            message=Message.assistant(output),
+            finish_reason="stop",
+            usage=Usage(),
+        )
+
+    def _next_output(self, messages: list[dict[str, Any]]) -> str:
         if self._fn is not None:
-            return [self._fn(messages)]
+            return self._fn(messages)
         if self._cursor >= len(self._script):
             raise LMError(
                 f"DummyLM script exhausted: {len(self._script)} scripted output(s), "
@@ -56,4 +75,4 @@ class DummyLM(LM):
             )
         output = self._script[self._cursor]
         self._cursor += 1
-        return [output]
+        return output

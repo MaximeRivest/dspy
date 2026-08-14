@@ -2047,3 +2047,42 @@ on that rung unless granted), **`tests_greenfield/test_flex_v2.py`**
 grant contract). Non-optimizer tool leaves (ReAct etc.) are untouched:
 they carry no `authored_by` stamp, keep `in_process`, and load without a
 grant exactly as before.
+
+## 2026-08-14 — Typed direct-call LM surface (lm15 sugar)
+
+The typed `lm(...)` API from the upstream migration plan
+(`docs/docs/community/normalized-lm-api-migration.md`) now works on this
+branch — without `BaseLM`, `forward_contract`, or an `experimental`
+flag, because lm15 IS the canonical representation and the sugar is a
+constructor layer over it:
+
+- **`dspy/lm/direct.py`** — `dspy.System` (a marker; lm15 carries system
+  on the request), `dspy.User`/`dspy.Assistant` (build `lm15.Message`,
+  accepting strings, lm15 parts, and `dspy.Image` — converted to
+  `ImagePart`, data-URI aware), `dspy.ToolCall` (an `lm15.ToolCallPart`
+  for `Assistant(...)` turns), `dspy.ToolResult` (a tool-role message
+  via `lm15.tool_result`). Unknown content refuses loudly with teaching
+  errors.
+- **`LM.__call__` has two faces.** The keyword face
+  (`messages=`/`prompt=`, or one positional list) is unchanged:
+  `list[str]`, the adapter convenience. The typed positional face —
+  `lm("hi")`, `lm(dspy.System(...), dspy.User(...), previous_response,
+  ...)` — returns the canonical `lm15.Response` (`.text`,
+  `.tool_calls`, `.usage`, `.citations`, `.provider_data`). A previous
+  `Response` folds in as its assistant message (continuation state
+  travels with it). Mixing the faces refuses. Endpoint kwargs
+  (`api_key`/`api_base`) and the Config/extensions split work
+  identically on both faces; typed calls record history with the
+  canonical request and response. A tool-call-only response is data on
+  the typed face (returned as-is), still a loud refusal on the
+  strings-out face.
+- **One transport seam: `LM._complete(engine, request)`.** Every path —
+  legacy, typed, and public `complete()` — funnels through it.
+  `DummyLM` overrides that one seam, so typed calls and `complete()`
+  replay the same script (assistant `Response`, `finish_reason="stop"`)
+  and land in `lm.calls` with both dict-shaped messages and the lm15
+  request.
+
+Tests: `tests_greenfield/test_lm_direct.py` (33) — vocabulary
+construction, both call faces, response fold-in, tool transcripts,
+FakeLM transport, error mapping. Full suite green.
