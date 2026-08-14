@@ -21,7 +21,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from lm15 import Config, Message, ModelRegistry, Request, Response, TextPart
+from lm15 import Config, Message, ModelRegistry, Request, Response, ResponseStream, TextPart
 from lm15.errors import LM15Error
 from lm15.router import LMRouter, RouterConfig
 
@@ -254,8 +254,74 @@ class LM:
         except LM15Error as e:
             raise self._wrap(e) from e
 
+    def stream(
+        self,
+        *inputs: Any,
+        messages: list[dict[str, Any]] | None = None,
+        prompt: str | None = None,
+        **kwargs: Any,
+    ) -> ResponseStream:
+        """Run one completion as a stream — same inputs as `lm(...)`.
+
+        A separate method, never a flag: `stream()` accepts every input
+        face `__call__` accepts and always returns an lm15
+        `ResponseStream`. Iterate it for text as it arrives, iterate
+        `.events()` for the canonical typed events, then read
+        `.response` (or `.text`, `.usage`, ...) for the same `Response`
+        a buffered call returns. Engines that cannot stream natively
+        replay the finished response as events — one vocabulary, no
+        branching on the backend. History records once, when the
+        stream completes, exactly as a buffered call.
+
+        Raises:
+            LMError: On routing/transport failures at call time, and
+                during iteration when the provider streams an error.
+
+        Examples:
+            ```python
+            stream = lm.stream("Write a haiku about rivers.")
+            for text in stream:
+                print(text, end="", flush=True)
+            print(stream.response.usage)
+            ```
+        """
+        typed = bool(inputs) and not (len(inputs) == 1 and isinstance(inputs[0], list))
+        if typed:
+            if messages is not None or prompt is not None:
+                raise ValueError("Pass typed items positionally OR `messages=`/`prompt=`, not both.")
+            items = inputs
+        else:
+            if inputs:
+                if messages is not None:
+                    raise ValueError("Pass `messages` positionally or by keyword, not both.")
+                messages = inputs[0]
+            items = tuple(self._dict_to_typed(m) for m in self._coerce_messages(messages, prompt))
+
+        try:
+            engine, request, request_kwargs = self._prepare_typed(items, kwargs)
+        except LM15Error as e:
+            raise self._wrap(e) from e
+
+        def record(response: Response) -> None:
+            self._record_typed(request, request_kwargs, response)
+
+        return _RecordingStream(self._guard_events(engine, request), request, record)
+
     def _call_typed(self, items: tuple[Any, ...], kwargs: dict[str, Any]) -> Response:
         """The typed positional face: lm15 messages in, `Response` out."""
+        try:
+            engine, request, request_kwargs = self._prepare_typed(items, kwargs)
+            response = self._complete(engine, request)
+        except LM15Error as e:
+            raise self._wrap(e) from e
+
+        self._record_typed(request, request_kwargs, response)
+        return response
+
+    def _prepare_typed(
+        self, items: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> tuple[Any, Request, dict[str, Any]]:
+        """Build the canonical request (and pick the engine) for one typed call."""
         request_kwargs = {**self.kwargs, **kwargs}
         endpoint = {k: request_kwargs.pop(k) for k in _ENDPOINT_FIELDS if request_kwargs.get(k) is not None}
 
@@ -277,18 +343,30 @@ class LM:
                     "A dspy.ToolCall goes inside dspy.Assistant(...)."
                 )
 
-        try:
-            engine, wire_model = self._engine_for(endpoint)
-            request = Request(
-                model=wire_model,
-                messages=tuple(lm15_messages),
-                system="\n\n".join(system_texts) or None,
-                config=self._config(request_kwargs),
-            )
-            response = self._complete(engine, request)
-        except LM15Error as e:
-            raise self._wrap(e) from e
+        engine, wire_model = self._engine_for(endpoint)
+        request = Request(
+            model=wire_model,
+            messages=tuple(lm15_messages),
+            system="\n\n".join(system_texts) or None,
+            config=self._config(request_kwargs),
+        )
+        return engine, request, request_kwargs
 
+    def _dict_to_typed(self, message: dict[str, Any]) -> Any:
+        """Lift one legacy role/content dict into the typed vocabulary."""
+        role, content = message.get("role"), message.get("content")
+        if not isinstance(content, str):
+            raise ValueError(f"Message content must be text, got {type(content).__name__}.")
+        if role == "system":
+            return System(content)
+        if role in ("user", "assistant", "developer"):
+            return Message(role=role, parts=(TextPart(content),))
+        raise ValueError(
+            f"Unsupported message role {role!r}. The chat convenience takes "
+            "system/user/assistant/developer text messages."
+        )
+
+    def _record_typed(self, request: Request, request_kwargs: dict[str, Any], response: Response) -> None:
         self.history.append(
             {
                 "model": self.model,
@@ -299,11 +377,27 @@ class LM:
                 "timestamp": time.time(),
             }
         )
-        return response
 
     def _complete(self, engine: Any, request: Request) -> Response:
-        """The one transport seam: every path funnels here (DummyLM overrides)."""
+        """The buffered transport seam: every non-stream path funnels here."""
         return engine.complete(request)
+
+    def _stream(self, engine: Any, request: Request) -> Any:
+        """The streaming transport seam (DummyLM replays its script)."""
+        return engine.stream(request)
+
+    def _guard_events(self, engine: Any, request: Request) -> Any:
+        """Yield stream events; map provider failures to the typed `LMError`."""
+        try:
+            for event in self._stream(engine, request):
+                if event.type == "error":
+                    raise LMError(
+                        f"LM stream for {self.model!r} failed "
+                        f"({event.error.code}): {event.error.message}"
+                    )
+                yield event
+        except LM15Error as e:
+            raise self._wrap(e) from e
 
     def _coerce_messages(self, messages: list[dict[str, Any]] | None, prompt: str | None) -> list[dict[str, Any]]:
         if (messages is None) == (prompt is None):
@@ -429,3 +523,25 @@ class LM:
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(model={self.model!r}, capabilities={self.capabilities})"
+
+
+class _RecordingStream(ResponseStream):
+    """An lm15 `ResponseStream` that records LM history once, on clean completion.
+
+    Streamed and buffered calls are observationally identical afterward:
+    the record lands through the same shape as a buffered typed call,
+    and only when the stream finished without failure.
+    """
+
+    def __init__(self, events: Any, request: Request, record: Any) -> None:
+        super().__init__(events, request)
+        self._record = record
+        self._recorded = False
+
+    def events(self) -> Any:
+        yield from super().events()
+        # Reached only when the stream completed cleanly — a failure
+        # propagates out of the `yield from` and skips the record.
+        if not self._recorded:
+            self._recorded = True
+            self._record(self.response)

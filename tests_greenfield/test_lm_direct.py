@@ -213,3 +213,82 @@ class TestTypedCallTransport:
         response = lm(dspy.User("hi"))
         assert response.text is None
         assert response.tool_calls
+
+
+# ---------------------------------------------------------------------------
+# Streaming: a separate method, one event vocabulary, history on completion
+# ---------------------------------------------------------------------------
+
+
+class TestStream:
+    def test_iterating_yields_text_then_response(self):
+        lm = dspy.DummyLM(["Rivers run to the sea."])
+        stream = lm.stream("Write a haiku about rivers.")
+        chunks = list(stream)
+        assert "".join(chunks) == "Rivers run to the sea."
+        assert stream.response.text == "Rivers run to the sea."
+        assert stream.finish_reason == "stop"
+
+    def test_events_speak_the_lm15_vocabulary(self):
+        lm = dspy.DummyLM(["hello"])
+        events = list(lm.stream("hi").events())
+        assert [e.type for e in events] == ["start", "delta", "end"]
+        assert events[1].delta.type == "text"
+        assert events[1].delta.text == "hello"
+
+    def test_accepts_every_input_face(self):
+        lm = dspy.DummyLM(["a", "b", "c"])
+        assert lm.stream(dspy.System("terse"), dspy.User("hi")).text == "a"
+        assert lm.stream(prompt="hi").text == "b"
+        assert lm.stream(messages=[{"role": "user", "content": "hi"}]).text == "c"
+
+    def test_legacy_system_dict_folds_into_request_system(self):
+        lm = dspy.DummyLM(["ok"])
+        stream = lm.stream(messages=[{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}])
+        assert stream.response.text == "ok"
+        assert lm.calls[0]["request"].system == "Be terse."
+
+    def test_history_records_once_on_completion(self):
+        lm = dspy.DummyLM(["hello"])
+        stream = lm.stream("hi")
+        assert lm.history == []  # nothing recorded before the stream ends
+        list(stream)
+        assert stream.response is stream.response
+        assert len(lm.history) == 1
+        assert lm.history[0]["outputs"] == ["hello"]
+
+    def test_streamed_and_buffered_calls_record_the_same_shape(self):
+        lm = dspy.DummyLM(["same", "same"])
+        lm("hi")
+        lm.stream("hi").response
+        buffered, streamed = lm.history
+        assert buffered.keys() == streamed.keys()
+        assert buffered["outputs"] == streamed["outputs"]
+
+    def test_native_stream_via_fake_transport(self):
+        from lm15.testing import FakeLM
+
+        fake = FakeLM(["hello"])
+        lm = dspy.LM("m", router=fake)
+        stream = lm.stream(dspy.User("hi"))
+        assert "".join(stream) == "hello"
+        assert stream.response.text == "hello"
+
+    def test_provider_failure_maps_to_typed_lm_error(self):
+        from lm15.errors import RateLimitError
+        from lm15.testing import FakeLM
+
+        lm = dspy.LM("m", router=FakeLM([RateLimitError("boom")]))
+        with pytest.raises(dspy.LMError, match="rate_limit"):
+            list(lm.stream("hi"))
+        assert lm.history == []  # a failed stream records nothing
+
+    def test_mixing_typed_and_keyword_refuses(self):
+        lm = dspy.DummyLM(["ok"])
+        with pytest.raises(ValueError, match="not both"):
+            lm.stream(dspy.User("hi"), prompt="hi")
+
+    def test_script_exhaustion_refuses(self):
+        lm = dspy.DummyLM([])
+        with pytest.raises(dspy.LMError, match="script exhausted"):
+            list(lm.stream("hi"))

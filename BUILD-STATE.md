@@ -2086,3 +2086,25 @@ constructor layer over it:
 Tests: `tests_greenfield/test_lm_direct.py` (33) — vocabulary
 construction, both call faces, response fold-in, tool transcripts,
 FakeLM transport, error mapping. Full suite green.
+
+## 2026-08-14 — LM streaming + the getting-started walkthrough
+
+- **`LM.stream(...)`** — a separate method, never a flag. Accepts every
+  input face `__call__` accepts (typed positional, `prompt=`,
+  `messages=`) and returns lm15's `ResponseStream`: iterate for text
+  chunks, `.events()` for the canonical typed events
+  (start/delta/end), `.response` for the same `Response` a buffered
+  call returns. The seam is `LM._stream(engine, request)`;
+  `_guard_events` maps provider stream errors to the typed `LMError`.
+  `DummyLM._stream` replays its script through lm15's
+  `response_to_events` — engines that cannot stream natively replay
+  buffered, one event vocabulary, no backend branching. History
+  records once, on clean completion, through the same record shape as
+  a buffered typed call (`_RecordingStream`); a failed stream records
+  nothing. Ten stream tests in `test_lm_direct.py` (66 total).
+- **`explore_lm.md`** rewritten as the getting-started walkthrough:
+  hello → Response anatomy → real model strings → conversations
+  (System/User/Assistant + Response fold-in) → tool transcripts →
+  streaming (chunks, then events) → the plain-strings face → Signature
+  + Predict → `lm.history`. All cells DummyLM, validated end-to-end in
+  order; outputs are real captured runs.

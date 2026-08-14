@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Sequence
 
-from lm15 import Message, Request, Response, Usage
+from lm15 import Message, Request, Response, Usage, response_to_events
 
 from dspy.core.errors import LMError
 from dspy.lm.lm import LM
@@ -63,6 +63,10 @@ class DummyLM(LM):
             finish_reason="stop",
             usage=Usage(),
         )
+
+    def _stream(self, engine: Any, request: Request) -> Any:
+        """Replay the scripted response as canonical stream events."""
+        return response_to_events(self._complete(engine, request))
 
     def _next_output(self, messages: list[dict[str, Any]]) -> str:
         if self._fn is not None:
