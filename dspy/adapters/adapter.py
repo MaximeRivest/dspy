@@ -260,6 +260,7 @@ class Adapter:
             input_codec=self.input_codec,
             output_codec=self.output_codec,
             fragments=rendered_fragments,
+            turns_spec=effects.turns,
         )
         messages = self._split_media_parts(messages)
 

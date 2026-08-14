@@ -50,6 +50,7 @@ def render_template_messages(
     output_codec,
     fragments: dict[str, list[str]] | None = None,
     parser: str | None = None,
+    turns_spec: dict | None = None,
 ) -> list[dict[str, Any]]:
     """Walk a parsed template into the full chat message list, purely.
 
@@ -103,7 +104,7 @@ def render_template_messages(
         elif isinstance(message, DemosDirective):
             rendered.extend(_expand_demos(message, signature, demos, ctx, parser))
         elif isinstance(message, HistoryDirective):
-            rendered.extend(_expand_history(message, history_turns, ctx, parser))
+            rendered.extend(_expand_history(message, history_turns, ctx, parser, turns_spec))
     return rendered
 
 
@@ -158,16 +159,66 @@ def _expand_demos(directive: DemosDirective, signature, demos, ctx, parser=None)
     return messages
 
 
-def _expand_history(directive: HistoryDirective, turns, ctx, parser=None) -> list[dict[str, Any]]:
+def _expand_history(
+    directive: HistoryDirective, turns, ctx, parser=None, turns_spec=None
+) -> list[dict[str, Any]]:
+    from dspy.adapters.types.tool import ToolCalls
+
     user_nodes, assistant_nodes = directive_pair(directive, parser)
     messages = []
     for turn in turns:
-        user = render_user_content(user_nodes, ctx("user_values", values=dict(turn)))
+        turn = dict(turn)
+        calls_value = next((v for v in turn.values() if isinstance(v, ToolCalls)), None)
+        if turns_spec is not None and calls_value is not None:
+            messages.extend(
+                _expand_tool_turn(turn, calls_value, turns_spec, user_nodes, assistant_nodes, ctx)
+            )
+            continue
+        user = render_user_content(user_nodes, ctx("user_values", values=turn))
         if user:
             messages.append({"role": "user", "content": user})
-        assistant = render_nodes(assistant_nodes, ctx("assistant_values", values=dict(turn), missing=None))
+        assistant = render_nodes(assistant_nodes, ctx("assistant_values", values=turn, missing=None))
         if assistant:
             messages.append({"role": "assistant", "content": assistant})
+    return messages
+
+
+def _expand_tool_turn(turn, calls_value, turns_spec, user_nodes, assistant_nodes, ctx) -> list[dict[str, Any]]:
+    """One past tool exchange, spelled by the active tools rule's `turns`
+    face: user inputs, then the calls as the assistant turn, then the
+    results — template text or native message shapes."""
+    from dspy.adapters._engine.template.turns import normalized_results, render_turn_content, result_text
+    from dspy.adapters.types.tool import ToolCalls
+
+    values = {name: value for name, value in turn.items() if not isinstance(value, ToolCalls)}
+    messages: list[dict[str, Any]] = []
+    user = render_user_content(user_nodes, ctx("user_values", values=values))
+    if user:
+        messages.append({"role": "user", "content": user})
+
+    assistant_text = render_nodes(assistant_nodes, ctx("assistant_values", values=values, missing=None)) or ""
+    calls = [{"id": call.id, "name": call.name, "args": call.args} for call in calls_value.tool_calls]
+    assistant_spec = turns_spec.get("assistant")
+    if assistant_spec is None:
+        if assistant_text:
+            messages.append({"role": "assistant", "content": assistant_text})
+    elif assistant_spec["kind"] == "native":
+        messages.append({"role": "assistant", "content": assistant_text, "tool_calls": [dict(c) for c in calls]})
+    else:
+        spelled = render_turn_content(assistant_spec["content"], calls=calls)
+        content = f"{assistant_text}\n{spelled}".strip("\n") if assistant_text else spelled
+        messages.append({"role": "assistant", "content": content})
+
+    result_spec = turns_spec.get("result")
+    results = normalized_results(calls, calls_value.tool_call_results)
+    if result_spec is not None and results:
+        if result_spec["kind"] == "native":
+            for item in results:
+                messages.append(
+                    {"role": "tool", "tool_call_id": item.get("id"), "content": result_text(item["value"])}
+                )
+        else:
+            messages.append({"role": "user", "content": render_turn_content(result_spec["content"], results=results)})
     return messages
 
 

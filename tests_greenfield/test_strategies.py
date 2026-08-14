@@ -347,3 +347,128 @@ class TestResolution:
         )
         with pytest.raises(AdapterError, match="fragment references field 'sources'"):
             adapter.format(CoT, {"question": "Why?"}, capabilities=INSTRUCT)
+
+
+# ---------------------------------------------------------------------------
+# The turns face: spelling past tool exchanges into the next prompt
+# ---------------------------------------------------------------------------
+
+
+class ToolHistoryChat(dspy.Signature):
+    """Answer with tools."""
+
+    question: str = dspy.InputField()
+    history: dspy.History = dspy.InputField()
+    tools: list[dspy.Tool] = dspy.InputField(role="tools")
+    tool_calls: dspy.ToolCalls = dspy.OutputField(role="tool_calls")
+    answer: str = dspy.OutputField()
+
+
+def _tool_history():
+    past = dspy.ToolCalls(
+        tool_calls=[dspy.ToolCalls.ToolCall(id="c1", name="search", args={"query": "weather"})],
+        tool_call_results=["sunny"],
+    )
+    return dspy.History(messages=[{"question": "weather?", "tool_calls": past, "answer": "It is sunny."}])
+
+
+def _tool_inputs():
+    return {"question": "and tomorrow?", "history": _tool_history(), "tools": [dspy.Tool(search)]}
+
+
+class TestTurnsValidation:
+    def test_unknown_slot_refuses(self):
+        bad = strategy.rule(predicate=strategy.capability("instruct"))
+        bad["turns"] = {"observer": {"kind": "native"}}
+        with pytest.raises(EntryError, match="unknown turns slots"):
+            validate_rule(bad, where="strategies.tools")
+
+    def test_unknown_kind_refuses(self):
+        bad = strategy.rule(predicate=strategy.capability("instruct"))
+        bad["turns"] = {"assistant": {"kind": "yaml"}}
+        with pytest.raises(EntryError, match="turns slot"):
+            validate_rule(bad, where="strategies.tools")
+
+    def test_template_slot_needs_content(self):
+        bad = strategy.rule(predicate=strategy.capability("instruct"))
+        bad["turns"] = {"result": {"kind": "template"}}
+        with pytest.raises(EntryError, match="content"):
+            validate_rule(bad, where="strategies.tools")
+
+    def test_drifted_spelling_refuses_at_the_door(self):
+        # The routing reads `!call name {...}` but the turns spell `CALL name(...)`.
+        from dspy.adapters.strategies import BUILTIN_RULES
+        import copy
+
+        drifted = copy.deepcopy(BUILTIN_RULES["tools"]["cli_text"])
+        drifted["turns"]["assistant"]["content"] = "{% for c in calls %}\nCALL {c.name}({c.args})\n{% endfor %}"
+        with pytest.raises(EntryError, match="round-trip"):
+            validate_rule(drifted, where="strategies.tools")
+
+    def test_builtin_tool_rules_pass_their_own_probe(self):
+        from dspy.adapters.strategies import BUILTIN_RULES
+
+        for name, rule in BUILTIN_RULES["tools"].items():
+            validate_rule(rule, where=f"strategies.tools[{name}]")
+
+
+class TestTurnsRendering:
+    def test_cli_text_spells_calls_and_results(self):
+        from dspy.adapters import make_adapter
+        from dspy.adapters.presets import CHAT_TEMPLATE
+
+        adapter = make_adapter(name="cli", template=CHAT_TEMPLATE, strategies={"tools": "cli_text"})
+        messages = adapter.preview(ToolHistoryChat, _tool_inputs(), capabilities=INSTRUCT)
+        assistant = next(m for m in messages if m["role"] == "assistant")
+        assert '!call search {"query": "weather"}' in assistant["content"]
+        result_msg = messages[messages.index(assistant) + 1]
+        assert result_msg["role"] == "user"
+        assert result_msg["content"] == "search returned:\nsunny"
+
+    def test_xml_blocks_spells_calls_and_results(self):
+        from dspy.adapters import make_adapter
+        from dspy.adapters.presets import CHAT_TEMPLATE
+
+        adapter = make_adapter(name="x", template=CHAT_TEMPLATE, strategies={"tools": "xml_blocks"})
+        messages = adapter.preview(ToolHistoryChat, _tool_inputs(), capabilities=INSTRUCT)
+        assistant = next(m for m in messages if m["role"] == "assistant")
+        assert '<tool_call name="search">{"query": "weather"}</tool_call>' in assistant["content"]
+        result_msg = messages[messages.index(assistant) + 1]
+        assert result_msg["content"] == '<tool_result name="search">sunny</tool_result>'
+
+    def test_native_fc_emits_structured_messages(self):
+        from dspy.adapters import make_adapter
+        from dspy.adapters.presets import CHAT_TEMPLATE
+
+        adapter = make_adapter(name="nat", template=CHAT_TEMPLATE, strategies={"tools": "native_fc"})
+        messages = adapter.preview(ToolHistoryChat, _tool_inputs(), capabilities=NATIVE_FC)
+        assistant = next(m for m in messages if m["role"] == "assistant")
+        assert assistant["tool_calls"] == [{"id": "c1", "name": "search", "args": {"query": "weather"}}]
+        tool_msg = messages[messages.index(assistant) + 1]
+        assert tool_msg == {"role": "tool", "tool_call_id": "c1", "content": "sunny"}
+
+    def test_no_turns_face_keeps_the_generic_path(self):
+        from dspy.adapters import make_adapter
+        from dspy.adapters.presets import CHAT_TEMPLATE
+
+        rule = strategy.rule(predicate=strategy.capability("instruct"), hides=["tool_calls"])
+        adapter = make_adapter(name="plain", template=CHAT_TEMPLATE, strategies={"tools": rule})
+        messages = adapter.preview(ToolHistoryChat, _tool_inputs(), capabilities=INSTRUCT)
+        assert not any(m["role"] == "tool" for m in messages)
+        assert not any("tool_calls" in m for m in messages)
+
+
+class TestTurnsSerde:
+    def test_inline_rule_with_turns_bumps_the_vocabulary(self):
+        import copy
+
+        from dspy.adapters import load_entry, make_adapter
+        from dspy.adapters.presets import CHAT_TEMPLATE
+        from dspy.adapters.strategies import BUILTIN_RULES
+
+        rule = copy.deepcopy(BUILTIN_RULES["tools"]["cli_text"])
+        adapter = make_adapter(name="cli_inline", template=CHAT_TEMPLATE, strategies={"tools": rule})
+        entry = adapter.dump_entry()
+        assert entry["versions"]["strategies"] == "1.2.0-draft"
+        assert entry["strategies"]["tools"]["turns"]["assistant"]["kind"] == "template"
+        load_entry(entry)

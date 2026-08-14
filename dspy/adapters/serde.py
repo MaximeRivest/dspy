@@ -31,6 +31,7 @@ from dspy.adapters.strategies import (
     LM_CAPABILITIES_VERSION,
     LM_CAPABILITY_FACTS,
     STRATEGIES_RULES_VERSION,
+    STRATEGIES_TURNS_VERSION,
     STRATEGIES_VERSION,
     predicate_capabilities,
 )
@@ -64,7 +65,7 @@ REQUIRED_VOCABULARIES = ("roles", "strategies", "codecs", "template_language")
 SPOKEN_VERSIONS = {
     "adapter_ir": ADAPTER_IR_VERSION,
     "roles": SEMANTIC_ROLES_VERSION,
-    "strategies": STRATEGIES_RULES_VERSION,
+    "strategies": STRATEGIES_TURNS_VERSION,
     "codecs": CODECS_EXTENDED_VERSION,
     "template_language": TEMPLATE_LANGUAGE_VERSION,
     "parse_combinators": PARSE_COMBINATORS_VERSION,
@@ -140,7 +141,11 @@ def build_entry(adapter: Adapter, *, for_signature=None) -> dict[str, Any]:
 
     versions: dict[str, str] = {
         "roles": SEMANTIC_ROLES_VERSION,
-        "strategies": STRATEGIES_RULES_VERSION if rules else STRATEGIES_VERSION,
+        "strategies": (
+            STRATEGIES_TURNS_VERSION
+            if any("turns" in rule for rule in rules)
+            else (STRATEGIES_RULES_VERSION if rules else STRATEGIES_VERSION)
+        ),
         "codecs": CODECS_EXTENDED_VERSION if uses_families else CODECS_VERSION,
         "template_language": TEMPLATE_LANGUAGE_VERSION,
     }

@@ -18,15 +18,19 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from dspy.adapters._engine.template.turns import render_turn_content
 from dspy.adapters.codecs import COERCE_SHAPES
 from dspy.adapters.errors import AdapterError, EntryError
-from dspy.adapters.parse import validate_pipeline
+from dspy.adapters.parse import run_pipeline, validate_pipeline
 
 #: Version of the name-binding strategy vocabulary.
 STRATEGIES_VERSION = "1.0.0"
 
 #: Version an entry carries when any strategy value is a rule object.
 STRATEGIES_RULES_VERSION = "1.1.0-draft"
+
+#: Version an entry carries when any rule declares the `turns` face.
+STRATEGIES_TURNS_VERSION = "1.2.0-draft"
 
 #: Version of the LM-capability vocabulary (predicates and `requires`).
 LM_CAPABILITIES_VERSION = "0.1.0"
@@ -144,7 +148,9 @@ def describe_predicate(predicate: dict) -> str:
 # Rule validation
 # ---------------------------------------------------------------------------
 
-_RULE_FACES = ("kind", "predicate", "hides", "transforms", "fragments", "engine_controls", "routings")
+_RULE_FACES = ("kind", "predicate", "hides", "transforms", "fragments", "engine_controls", "routings", "turns")
+_TURN_SLOTS = ("assistant", "result")
+_TURN_KINDS = ("native", "template")
 _FRAGMENT_TARGETS = ("system", "user")
 
 #: The fragment dialect: literal text plus `{field('name')}` slots. Bare
@@ -232,6 +238,66 @@ def validate_rule(rule: Any, *, where: str) -> None:
         raise EntryError(f"{where}: 'routings' is a list, got {routings!r}")
     for index, routing in enumerate(routings):
         _validate_routing(routing, where=f"{where}.routings[{index}]")
+
+    if "turns" in rule:
+        _validate_turns(rule["turns"], where=f"{where}.turns")
+        _check_turns_roundtrip(rule, where=f"{where}.turns")
+
+
+def _validate_turns(turns, *, where: str) -> None:
+    if not isinstance(turns, dict) or not turns:
+        raise EntryError(f"{where}: 'turns' is a non-empty dict with slots among {', '.join(_TURN_SLOTS)}")
+    unknown = set(turns) - set(_TURN_SLOTS)
+    if unknown:
+        raise EntryError(f"{where}: unknown turns slots {sorted(unknown)} — valid slots: {', '.join(_TURN_SLOTS)}")
+    for slot, spec in turns.items():
+        s_where = f"{where}.{slot}"
+        if not isinstance(spec, dict) or spec.get("kind") not in _TURN_KINDS:
+            raise EntryError(
+                f"{s_where}: a turns slot is {{'kind': 'native'}} or {{'kind': 'template', 'content': ...}}"
+            )
+        if spec["kind"] == "native":
+            if set(spec) != {"kind"}:
+                raise EntryError(f"{s_where}: a native turns slot carries only 'kind'")
+        elif set(spec) != {"kind", "content"} or not isinstance(spec.get("content"), str) or not spec["content"]:
+            raise EntryError(f"{s_where}: a template turns slot carries 'kind' and a non-empty string 'content'")
+
+
+#: The synthetic call the turns round-trip probe renders and reads back.
+_PROBE_CALL = {"id": "probe_0", "name": "probe_tool", "args": {"probe": 1}}
+
+
+def _check_turns_roundtrip(rule: dict, *, where: str) -> None:
+    """The lens law at the strategy level: the assistant turns spelling
+    must read back through the rule's own tool-calls routing. A convention
+    with two drifting descriptions is refused at the door."""
+    assistant = rule["turns"].get("assistant")
+    if not assistant or assistant["kind"] != "template":
+        return
+    routing = next(
+        (
+            r
+            for r in rule["routings"]
+            if "text" in r and any(step.get("op") == "tool_calls" for step in r["text"]["steps"])
+        ),
+        None,
+    )
+    if routing is None:
+        return
+    rendered = render_turn_content(assistant["content"], calls=[dict(_PROBE_CALL)])
+    try:
+        state = run_pipeline(routing["text"], rendered)
+        parsed = [(call.name, call.args) for call in (getattr(state.value, "tool_calls", None) or [])]
+    except Exception as error:
+        raise EntryError(
+            f"{where}.assistant does not round-trip through this rule's own text routing — rendered "
+            f"{rendered!r}, and reading it back failed: {error}"
+        ) from error
+    if parsed != [(_PROBE_CALL["name"], _PROBE_CALL["args"])]:
+        raise EntryError(
+            f"{where}.assistant does not round-trip through this rule's own text routing — rendered "
+            f"{rendered!r}, read back {parsed!r}; the call spelling and the reading have drifted"
+        )
 
 
 def _validate_routing(routing: Any, *, where: str) -> None:
@@ -331,6 +397,7 @@ BUILTIN_RULES: dict[str, dict[str, dict]] = {
             "fragments": [],
             "engine_controls": {"request_patch": {"tools": {"$from": "field:tools"}, "tool_choice": "auto"}},
             "routings": [{"channel": "tool_calls", "field": "tool_calls", "coerce": "ToolCalls"}],
+            "turns": {"assistant": {"kind": "native"}, "result": {"kind": "native"}},
         },
         "cli_text": {
             "kind": "rule",
@@ -362,6 +429,16 @@ BUILTIN_RULES: dict[str, dict[str, dict]] = {
                     "consume": True,
                 }
             ],
+            "turns": {
+                "assistant": {
+                    "kind": "template",
+                    "content": "{% for c in calls %}\n!call {c.name} {c.args}\n{% endfor %}",
+                },
+                "result": {
+                    "kind": "template",
+                    "content": "{% for r in results %}\n{r.name} returned:\n{r.value}\n{% endfor %}",
+                },
+            },
         },
         "xml_blocks": {
             "kind": "rule",
@@ -393,6 +470,16 @@ BUILTIN_RULES: dict[str, dict[str, dict]] = {
                     "consume": True,
                 }
             ],
+            "turns": {
+                "assistant": {
+                    "kind": "template",
+                    "content": '{% for c in calls %}\n<tool_call name="{c.name}">{c.args}</tool_call>\n{% endfor %}',
+                },
+                "result": {
+                    "kind": "template",
+                    "content": '{% for r in results %}\n<tool_result name="{r.name}">{r.value}</tool_result>\n{% endfor %}',
+                },
+            },
         },
     },
     "citations": {
@@ -563,6 +650,7 @@ class StrategyEffects:
     engine_controls: dict = field(default_factory=dict)
     channel_routings: list[dict] = field(default_factory=list)
     text_routings: list[dict] = field(default_factory=list)
+    turns: dict | None = None
     resolutions: dict[str, str] = field(default_factory=dict)
 
 
@@ -605,6 +693,8 @@ def active_effects(strategies: dict, signature, capabilities) -> StrategyEffects
                 effects.channel_routings.append(routing)
             else:
                 effects.text_routings.append(routing)
+        if rule.get("turns"):
+            effects.turns = dict(rule["turns"])
     return effects
 
 
