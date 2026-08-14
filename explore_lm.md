@@ -1,102 +1,100 @@
 # Getting started with the LM
 
-A walkthrough of the LM layer, from "hello" to a full program. Run each
-cell in order. All cells use `DummyLM` — a fake model that replays
-answers you script — so you need no network and no API keys.
+A walkthrough of the LM layer, from "hello" to a full program. Run the
+cells in order. All outputs below are real runs against
+`openai-codex:gpt-5.6-luna`.
 
-One idea to hold on to: every call builds one canonical **request**, and
-the model sends back one canonical **response**. Everything below is a
-different way to build that request or read that response.
+One idea to hold on to: every call builds one canonical **request**,
+and the model sends back one canonical **response**. Everything below
+is a different way to build that request or read that response.
 
 ## 1. Say hello
 
-A `DummyLM` takes a list of answers. Each call consumes the next one.
-Call it with a string, and you get a `Response` back.
+Construct an LM from a model string — a bare family name
+(`"gpt-4o-mini"`) or an explicit `provider:` prefix
+(`"openai-codex:gpt-5.6-luna"`, `"ollama:llama3.2"`). The router picks
+up the provider's API key from its usual environment variable. Then
+call it with a string:
 
 ```python
 import dspy
 
-lm = dspy.DummyLM([
-    "Hello! Nice to meet you.",
-    "DSPy is a way to program language models instead of prompting them.",
-    "Programming, not prompting.",
-    "Hello again!",
-])
-
+lm = dspy.LM("openai-codex:gpt-5.6-luna")
 response = lm("hello")
 response
 ```
-```output | ✓ 2.3s | 3 vars
+```output | ✓ 3.7s | 3 vars
 Response(
-    text='Hello! Nice to meet you.',
-    model='dummy',
+    text='Hello! How can I help you today?',
+    model='gpt-5.6-luna',
     finish_reason='stop',
-    usage=Usage(input_tokens=None, output_tokens=None, total_tokens=None, cache_read_tokens=None, cache_write_tokens=None, reasoning_tokens=None, input_audio_tokens=None, output_audio_tokens=None),
+    usage=Usage(input_tokens=17, output_tokens=13, total_tokens=30, cache_read_tokens=0, cache_write_tokens=None, reasoning_tokens=0, input_audio_tokens=None, output_audio_tokens=None),
+    id='resp_0c0b90c356d0f1b0016a7faab30a50819792336b2f9c31fa48',
+    provider_data=<dict: 35 keys>,
 )
 ```
 
-The response is a rich object, not a bare string. The parts you will
-use most:
+You get a rich `Response`, not a bare string. The parts you will use
+most:
 
 ```python
 response.text
 ```
 ```output | ✓ 22ms | 3 vars
-'Hello! Nice to meet you.'
+'Hello! How can I help you today?'
 ```
-
-There is also `response.usage` (token counts), `response.tool_calls`,
-and `response.citations` — they matter later, with real models.
-
-## 2. Use a real model
-
-For a real model, swap `DummyLM` for `LM` and give it a model string:
 
 ```python
-lm = dspy.LM("gpt-4o-mini")            # bare family name
-lm = dspy.LM("ollama:llama3.2")        # explicit provider: prefix
+response.usage.total_tokens
+```
+```output | ✓ 22ms | 3 vars
+30
 ```
 
-The router resolves the model string to a provider and reads that
-provider's API key from its usual environment variable (for example
-`OPENAI_API_KEY`). That is the whole setup. Everything else in this
-walkthrough works the same on `LM` and `DummyLM`.
+There is also `response.tool_calls` and `response.citations` — data
+when the model uses those channels, empty otherwise.
 
-## 3. Build a conversation
+## 2. Build a conversation
 
-A conversation is a list of turns. You spell each turn with a
-constructor named after the speaker: `dspy.System` (instructions),
-`dspy.User` (you), `dspy.Assistant` (the model, in earlier turns).
-And a previous `Response` drops straight in as its own turn:
+A conversation is a list of turns, spelled with constructors named
+after the speaker: `dspy.System` (instructions), `dspy.User` (you),
+`dspy.Assistant` (the model, in earlier turns). And a previous
+`Response` drops straight in as its own turn:
 
 ```python
 first = lm(dspy.User("What is DSPy?"))
+print(first.text[:130] + " ...")
+```
+```output | ✓ 6.7s | 4 vars
+**DSPy** is a Python framework for building applications powered by language models using **declarative, programmable components** ...
+```
 
+The model wrote a whole essay. Feed it back and ask for less:
+
+```python
 follow = lm(
     dspy.System("Answer in five words or less."),
     dspy.User("What is DSPy?"),
-    first,                                # the model's earlier answer
+    first,
     dspy.User("Say it shorter."),
 )
 print(follow.text)
 ```
-```output | ✓ 22ms | 5 vars
-Programming, not prompting.
+```output | ✓ 1.3s | 5 vars
+DSPy is a framework for programming and optimizing language-model applications.
 ```
 
 That is the whole conversation API: pass the turns in order, get a
 `Response` back.
 
-## 4. Show the model a tool exchange
+## 3. Show the model a tool exchange
 
 Two more constructors describe tool use: `dspy.ToolCall` (the model
 asked to run a tool) and `dspy.ToolResult` (what the tool returned).
 Here we replay a finished tool exchange and ask for a summary:
 
 ```python
-weather_lm = dspy.DummyLM(["It is 22 C and sunny in Paris right now."])
-
-answer = weather_lm(
+answer = lm(
     dspy.User("What is the weather in Paris?"),
     dspy.Assistant(dspy.ToolCall(id="call_1", name="get_weather", args={"city": "Paris"})),
     dspy.ToolResult('{"temperature": "22 C", "sky": "sunny"}', call_id="call_1", name="get_weather"),
@@ -104,56 +102,63 @@ answer = weather_lm(
 )
 print(answer.text)
 ```
-```output | ✓ 23ms | 7 vars
-It is 22 C and sunny in Paris right now.
+```output | ✓ 961ms | 6 vars
+Paris is sunny with a temperature of 22°C.
 ```
 
-## 5. Stream the answer
+## 4. Stream the answer
 
 `lm.stream(...)` takes the same inputs as `lm(...)`, but you get the
-text piece by piece while the model writes it. Loop over the stream to
-print each piece:
+text piece by piece while the model writes it:
 
 ```python
-poet = dspy.DummyLM(["A river carries / every cloud it swallowed / back to the ocean."])
-
-stream = poet.stream("Write a haiku about rivers.")
+stream = lm.stream("Write a haiku about rivers.")
 for text in stream:
     print(text, end="", flush=True)
 ```
-```output | ✓ 23ms | 10 vars
-A river carries / every cloud it swallowed / back to the ocean.
+```output | ✓ 1.2s | 8 vars
+River stones whisper  
+Moonlight drifts on silver waves  
+Willows bow softly
 ```
 
 After the loop, the finished `Response` is right there — the same
 object a non-streamed call returns:
 
 ```python
-stream.response.text
+stream.response.usage
 ```
-```output | ✓ 22ms | 10 vars
-'A river carries / every cloud it swallowed / back to the ocean.'
+```output | ✓ 22ms | 8 vars
+Usage(input_tokens=23, output_tokens=20, total_tokens=43, cache_read_tokens=0, cache_write_tokens=None, reasoning_tokens=0, input_audio_tokens=None, output_audio_tokens=None)
 ```
 
 Under the text there is a typed event stream — start, deltas, end.
 You rarely need it, but it is one `.events()` away:
 
 ```python
-poet = dspy.DummyLM(["Snow melts on the peak / the river remembers it / all the way down."])
-for event in poet.stream("Another haiku, please.").events():
+for event in lm.stream("Count from 1 to 5, one number per line.").events():
     print(event)
 ```
-```output | ✓ 22ms | 11 vars
-StreamStartEvent(id=None, model='dummy', type='start')
-StreamDeltaEvent(delta=TextDelta(text='Snow melts on the peak / the river remembers it / all the way down.', part_index=0, type='text'), type='delta')
+```output | ✓ 2.1s | 9 vars
+StreamStartEvent(id='resp_069980fa41eeb332016a7faadcef8887d287e1f2035e561382', model='gpt-5.6-luna', type='start')
+StreamDeltaEvent(delta=TextDelta(text='1', part_index=0, type='text'), type='delta')
+StreamDeltaEvent(delta=TextDelta(text='\n', part_index=0, type='text'), type='delta')
+StreamDeltaEvent(delta=TextDelta(text='2', part_index=0, type='text'), type='delta')
+StreamDeltaEvent(delta=TextDelta(text='\n', part_index=0, type='text'), type='delta')
+StreamDeltaEvent(delta=TextDelta(text='3', part_index=0, type='text'), type='delta')
+StreamDeltaEvent(delta=TextDelta(text='\n', part_index=0, type='text'), type='delta')
+StreamDeltaEvent(delta=TextDelta(text='4', part_index=0, type='text'), type='delta')
+StreamDeltaEvent(delta=TextDelta(text='\n', part_index=0, type='text'), type='delta')
+StreamDeltaEvent(delta=TextDelta(text='5', part_index=0, type='text'), type='delta')
 StreamEndEvent(
     finish_reason='stop',
-    usage=Usage(input_tokens=None, output_tokens=None, total_tokens=None, cache_read_tokens=None, cache_write_tokens=None, reasoning_tokens=None, input_audio_tokens=None, output_audio_tokens=None),
+    usage=Usage(input_tokens=29, output_tokens=13, total_tokens=42, cache_read_tokens=0, cache_write_tokens=None, reasoning_tokens=0, input_audio_tokens=None, output_audio_tokens=None),
+    provider_data=<dict: 35 keys>,
     type='end',
 )
 ```
 
-## 6. The plain-strings call
+## 5. The plain-strings call
 
 There is a second, older way to call the LM: keyword arguments
 (`prompt=` or `messages=`) in, a list of strings out. This is the face
@@ -163,57 +168,49 @@ not write it:
 ```python
 lm(prompt="hello")
 ```
-```output | ✓ 22ms | 11 vars
-['Hello again!']
+```output | ✓ 1.9s | 9 vars
+['Hello! How can I help you today?']
 ```
 
 The rule of thumb: positional inputs → rich `Response`; keyword
 `prompt=`/`messages=` → plain list of strings.
 
-## 7. From calls to programs
+## 6. From calls to programs
 
 Direct calls are for exploring. The real DSPy move is to declare *what*
 you want — a `Signature` — and let a program handle the prompting.
 `dspy.configure(lm=...)` tells programs which model to use:
 
 ```python
-qa_lm = dspy.DummyLM([
-    "[[ ## answer ## ]]\nBlue light bounces around in the air more than other colors.\n\n[[ ## completed ## ]]"
-])
-
 class QA(dspy.Signature):
     """Answer in one short sentence, for a curious teenager."""
 
     question: str = dspy.InputField()
     answer: str = dspy.OutputField()
 
-dspy.configure(lm=qa_lm)
+dspy.configure(lm=lm)
 program = dspy.Predict(QA)
 
 prediction = program(question="Why is the sky blue?")
 print(prediction.answer)
 ```
-```output | ✓ 31ms | 15 vars
-Blue light bounces around in the air more than other colors.
+```output | ✓ 1.6s | 12 vars
+The sky looks blue because air molecules scatter blue sunlight more strongly than other colors, sending blue light across the sky to our eyes.
 ```
 
-(The scripted answer wears `[[ ## ... ## ]]` markers because that is
-the wire format the default adapter asks the model to use — see for
-yourself below.)
-
-## 8. See the exact prompt
+## 7. See the exact prompt
 
 Every call is recorded in `lm.history`. Look at the last one to see
 exactly what the program put on the wire — the adapter turned your
 signature into instructions and markers:
 
 ```python
-qa_lm.history[-1]["messages"]
+lm.history[-1]["messages"]
 ```
-```output | ✓ 22ms | 15 vars
+```output | ✓ 22ms | 12 vars
 [{'role': 'system', 'content': 'Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer in one short sentence, for a curious teenager.'}, {'role': 'user', 'content': '[[ ## question ## ]]\nWhy is the sky blue?\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.'}]
 ```
 
 That is the full tour: call a model, hold a conversation, stream an
 answer, then let a program write the prompts for you — and check its
-work in `history`.
+work in `lm.history`.
