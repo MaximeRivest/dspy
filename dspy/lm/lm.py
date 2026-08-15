@@ -72,6 +72,24 @@ _ENDPOINT_FIELDS = ("api_key", "api_base", "base_url")
 _PRICING_UNSET = object()
 
 
+def _in_process_target(model: str) -> str | None:
+    """Return the repo id / path when a model string means in-process.
+
+    Two spellings, both explicit: the `hf:` prefix (an HF repo id,
+    downloaded to the HF cache on first use) and a local directory that
+    holds a `config.json` (an already-downloaded model). Everything
+    else routes over the network as before.
+    """
+    if model.startswith("hf:"):
+        return model[len("hf:") :]
+    from pathlib import Path
+
+    path = Path(model).expanduser()
+    if (path / "config.json").is_file():
+        return str(path)
+    return None
+
+
 class Outputs(list):
     """The strings-out result: a `list[str]` that also carries the response.
 
@@ -144,7 +162,12 @@ class LM:
             a `provider:` prefix is explicit (`"openai-chat:qwen3"`,
             `"ollama:llama3.2"`). lm15's router resolves it
             (prefix > catalog > rules) and picks up the provider's API
-            key from its declared env var.
+            key from its declared env var. Two spellings go **in-process**
+            instead — no server, weights loaded into this process:
+            `"hf:org/model"` (downloads to the HF cache on first use)
+            and a local model directory path. In-process LMs load
+            lazily, run on the best available device, and declare the
+            ProgramIR weight-baking protocol.
         instruct: Capability fact — instruction-tuned (True) or base model.
         native_reasoning: Capability fact — native reasoning channel.
         native_fc: Capability fact — native function calling.
@@ -156,6 +179,9 @@ class LM:
         max_tokens: Default completion-token cap for every request.
             `None` (the default) sends nothing — lm15 and the provider
             decide.
+        device: In-process models only — pin the compute device
+            (`"cuda"`, `"mps"`, `"cpu"`). `None` picks the best
+            available. Refused loudly for served models.
         router: Anything with `complete(lm15.Request) -> lm15.Response`.
             Defaults to the shared module-level `ROUTER`. Pass an
             `LMRouter` with your own `RouterConfig` for explicit keys or
@@ -169,6 +195,8 @@ class LM:
         lm = dspy.LM("gpt-4o-mini", native_fc=True)
         dspy.configure(lm=lm)
         outputs = lm(prompt="Say hello.")
+
+        lm = dspy.LM("hf:PleIAs/Baguettotron")   # in-process, one line
         ```
     """
 
@@ -183,11 +211,34 @@ class LM:
         image_input: bool = False,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        device: str | None = None,
         router: Any | None = None,
         **kwargs: Any,
     ):
         self.model = model
-        self.router = router if router is not None else default_router()
+        target = _in_process_target(model)
+        if target is not None:
+            if router is not None:
+                raise ValueError(
+                    f"Model {model!r} means in-process; pass a router OR an in-process "
+                    "model string, not both."
+                )
+            from dspy.lm.inprocess import InProcessEngine
+
+            self.router = InProcessEngine(target, device=device)
+        else:
+            if device is not None:
+                raise ValueError(
+                    "device= applies to in-process models only (an 'hf:' repo id or a "
+                    f"local model directory); {model!r} routes to a served provider."
+                )
+            self.router = router if router is not None else default_router()
+        # Forward the structural weight-baking hook whenever this LM's
+        # engine declares it, so the ProgramIR exporter sees it on the
+        # LM object it inspects (structural admission, D-036).
+        weight_hook = getattr(self.router, "programir_weight_spec", None)
+        if callable(weight_hook):
+            self.programir_weight_spec = weight_hook
         self.capabilities = LMCapabilities(
             instruct=instruct,
             native_reasoning=native_reasoning,

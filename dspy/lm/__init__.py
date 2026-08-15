@@ -11,6 +11,7 @@ settings object.
 from dspy.lm.bindings import BINDINGS, BindingError, configure, resolve
 from dspy.lm.direct import Assistant, System, ToolCall, ToolResult, User
 from dspy.lm.dummy import DummyLM
+from dspy.lm.inprocess import InProcessEngine
 from dspy.lm.lm import LM, LMCapabilities, default_router
 
 
@@ -29,6 +30,7 @@ __all__ = [
     "Assistant",
     "BindingError",
     "DummyLM",
+    "InProcessEngine",
     "LM",
     "LMCapabilities",
     "ROUTER",

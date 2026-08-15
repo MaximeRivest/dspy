@@ -36,10 +36,16 @@ def bake_lm(lm: Any, *, name: str, weights_root: str = "weights") -> BakedLM:
     The hook returns plain metadata and names the attributes that own the model
     and tokenizer. This keeps detection structural: the exporter never depends
     on a particular Transformers model or an application-defined LM class.
+
+    The hook's OWNER (the object the bound method belongs to) is where the
+    attributes resolve. A `dspy.LM` over an in-process engine forwards the
+    engine's hook, so the owner is the engine — the object that actually holds
+    the model and tokenizer.
     """
     hook = getattr(lm, "programir_weight_spec", None)
     if not callable(hook):
         raise ValueError(f"ProgramIR LM {type(lm).__name__} does not declare programir_weight_spec()")
+    owner = getattr(hook, "__self__", lm)
     spec = hook()
     if not isinstance(spec, Mapping):
         raise ValueError("ProgramIR programir_weight_spec() must return a mapping")
@@ -61,8 +67,8 @@ def bake_lm(lm: Any, *, name: str, weights_root: str = "weights") -> BakedLM:
     if unknown:
         raise ValueError(f"ProgramIR weight spec for LM {name!r} has unknown fields {unknown}")
 
-    model = _owned_attribute(lm, spec["model_attribute"], role="model", name=name)
-    tokenizer = _owned_attribute(lm, spec["tokenizer_attribute"], role="tokenizer", name=name)
+    model = _owned_attribute(owner, spec["model_attribute"], role="model", name=name)
+    tokenizer = _owned_attribute(owner, spec["tokenizer_attribute"], role="tokenizer", name=name)
     identity = _nonempty_string(spec["weights_identity"], field="weights_identity", name=name)
     engine = _nonempty_string(spec["engine"], field="engine", name=name)
     if not isinstance(spec["frozen"], bool):
@@ -111,10 +117,8 @@ def bake_lm(lm: Any, *, name: str, weights_root: str = "weights") -> BakedLM:
     }
     sidecars.update(_save_tokenizer(tokenizer, root=f"{root}/tokenizer"))
 
-    source, dependencies = _authored_lm_source(type(lm), name=name)
-    module_name = _authored_module_name(type(lm))
-    source_path = f"lm/{module_name}.py"
-    sidecars[source_path] = source.encode("utf-8")
+    class_block, class_sidecars, dependencies = _class_block(type(owner), name=name)
+    sidecars.update(class_sidecars)
     placement = _in_process_placement()
     weights = {
         "format": "safetensors",
@@ -125,14 +129,8 @@ def bake_lm(lm: Any, *, name: str, weights_root: str = "weights") -> BakedLM:
     if "weight_ref" in spec:
         weights["weight_ref"] = _nonempty_string(spec["weight_ref"], field="weight_ref", name=name)
     entry = {
-        "forward_contract": getattr(type(lm), "forward_contract", "legacy"),
-        "class": {
-            "identity": f"{module_name}.{type(lm).__name__}",
-            "origin": "authored",
-            "language": "python",
-            "source": source_path,
-            "deps": dependencies,
-        },
+        "forward_contract": getattr(type(owner), "forward_contract", "legacy"),
+        "class": class_block,
         "weights_identity": identity,
         "engine": engine,
         "weights": weights,
@@ -199,6 +197,40 @@ def _save_tokenizer(tokenizer: Any, *, root: str) -> dict[str, bytes]:
         return {f"{root}/{path.relative_to(directory).as_posix()}": path.read_bytes() for path in files}
 
 
+def _class_block(cls: type, *, name: str) -> tuple[dict[str, Any], dict[str, bytes], list[str]]:
+    """Build the `lm.class` block: packaged for dspy-shipped engines, else authored.
+
+    A class dspy itself ships (e.g. `InProcessEngine`) is a PACKAGED identity:
+    the env manifest's dspy dependency provides it, so no source travels. Any
+    other class is AUTHORED: its introspected source bakes as a sidecar.
+    """
+    module = cls.__module__ or ""
+    if module == "dspy" or module.startswith("dspy."):
+        try:
+            dependencies = parse_deps(textwrap.dedent(inspect.getsource(cls)))
+        except (OSError, TypeError):
+            dependencies = []
+        block = {
+            "identity": f"{module}.{cls.__name__}",
+            "origin": "packaged",
+            "language": "python",
+            "deps": dependencies,
+        }
+        return block, {}, dependencies
+
+    source, dependencies = _authored_lm_source(cls, name=name)
+    module_name = _authored_module_name(cls)
+    source_path = f"lm/{module_name}.py"
+    block = {
+        "identity": f"{module_name}.{cls.__name__}",
+        "origin": "authored",
+        "language": "python",
+        "source": source_path,
+        "deps": dependencies,
+    }
+    return block, {source_path: source.encode("utf-8")}, dependencies
+
+
 def _authored_lm_source(cls: type, *, name: str) -> tuple[str, list[str]]:
     try:
         source = textwrap.dedent(inspect.getsource(cls)).strip() + "\n"
@@ -210,7 +242,9 @@ def _authored_lm_source(cls: type, *, name: str) -> tuple[str, list[str]]:
     if tree.body[0].decorator_list:
         raise ValueError(f"ProgramIR authored LM {name!r} uses decorators; bake the undecorated class instead")
     dependencies = parse_deps(source)
-    source = "import dspy\nfrom dspy import BaseLM, LMRequest, LMResponse\n\n" + source
+    # The preamble supplies the canonical contract types an authored engine
+    # implements: lm15's Request/Response family, plus dspy for its errors.
+    source = "import dspy\nfrom lm15 import Config, Message, Request, Response, Usage\n\n" + source
     return source, dependencies
 
 

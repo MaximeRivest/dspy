@@ -44,6 +44,7 @@ from dspy.lm import (
     Assistant,
     BindingError,
     DummyLM,
+    InProcessEngine,
     LMCapabilities,
     System,
     ToolCall,

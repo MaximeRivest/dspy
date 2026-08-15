@@ -24,8 +24,25 @@ def _close_cache(cache: Any) -> None:
 
 @pytest.fixture(autouse=True)
 def clear_settings(tmp_path: Path) -> Iterator[None]:
-    """Ensure each test gets fresh DSPy settings and an isolated cache."""
+    """Ensure each test gets fresh DSPy configuration.
+
+    Greenfield dspy has no ambient settings object and no cache — its
+    whole configuration is the plain `BINDINGS` dict, so isolation is
+    save/restore of one dict. The legacy branch (dspy.cache + settings
+    module) is kept for tests that still run against old dspy.
+    """
     import dspy
+
+    if not hasattr(dspy, "cache"):
+        from dspy.lm.bindings import BINDINGS
+
+        saved = dict(BINDINGS)
+        try:
+            yield
+        finally:
+            BINDINGS.clear()
+            BINDINGS.update(saved)
+        return
 
     original_cache = dspy.cache
     dspy.configure_cache(disk_cache_dir=tmp_path / ".dspy_cache")

@@ -28,12 +28,14 @@ class _Tokenizer:
         (path / "tokenizer_config.json").write_text('{"model_max_length":32}\n')
 
 
-class WeightOwningLM(dspy.BaseLM):
+class WeightOwningLM:
+    """A structural weight-owning LM: no base class, just the contract."""
+
     forward_contract = "typed_lm"
 
     def __init__(self, transformer, tokenizer):
         # deps: torch, transformers, safetensors
-        super().__init__(model="test/tiny")
+        self.model = "test/tiny"
         self.transformer = transformer
         self.tokenizer = tokenizer
 
@@ -49,7 +51,7 @@ class WeightOwningLM(dspy.BaseLM):
             "ties": [{"target": "lm_head.weight", "source": "embed.weight"}],
         }
 
-    def forward(self, request):
+    def complete(self, request):
         raise NotImplementedError
 
 
@@ -57,7 +59,8 @@ class SharedWeightProgram(dspy.Module):
     def __init__(self, lm):
         self.left = dspy.Predict("question -> answer")
         self.right = dspy.Predict("question -> answer")
-        self.set_lm(lm)
+        self.left.set_lm(lm)
+        self.right.set_lm(lm)
 
     def forward(self, question):
         left = self.left(question=question)
@@ -123,11 +126,41 @@ def test_weight_protocol_refuses_implicit_ties(monkeypatch):
 
 
 def test_custom_lm_without_weight_protocol_refuses():
-    class UndeclaredLM(dspy.BaseLM):
-        pass
+    class UndeclaredLM:
+        """Neither a dspy.LM nor a weight-owning structural LM."""
+
+        def __init__(self, model):
+            self.model = model
 
     program = dspy.Predict("question -> answer")
     program.set_lm(UndeclaredLM("test/undeclared"))
 
-    with pytest.raises(ValueError, match=r"must declare programir_weight_spec\(\)"):
+    with pytest.raises(ValueError, match=r"programir_weight_spec\(\)"):
         compile(program)
+
+
+def test_lm_over_inprocess_engine_bakes_packaged_class(monkeypatch):
+    """A dspy.LM over the shipped engine bakes a PACKAGED class: no source sidecar."""
+    monkeypatch.setattr("dspy.programir.weights._save_safetensors", lambda tensors: b"bytes")
+    engine = dspy.InProcessEngine("test/tiny")
+    engine.transformer = _Model()  # pre-loaded stubs: the bake never hits torch
+    engine.tokenizer = _Tokenizer()
+    engine.device = "cpu"
+
+    program = dspy.Predict("question -> answer")
+    program.set_lm(dspy.LM("test/tiny", router=engine))
+    ir = compile(program)
+    validate_manifest(ir.to_manifest())
+
+    entry = ir.manifest["components"]["8_lm"]["test-tiny"]
+    assert entry["forward_contract"] == "typed_lm"
+    assert entry["class"] == {
+        "identity": "dspy.lm.inprocess.InProcessEngine",
+        "origin": "packaged",
+        "language": "python",
+        "deps": ["torch", "transformers", "safetensors"],
+    }
+    assert not any(path.startswith("lm/") for path in ir.sidecars)
+    assert json.loads(ir.sidecars["weights/tying.json"]) == [
+        {"source": "embed.weight", "target": "lm_head.weight"}
+    ]
