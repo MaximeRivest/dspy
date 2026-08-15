@@ -34,7 +34,6 @@ class Prediction(Example):
         del self._input_keys
 
         self._completions = None
-        self._lm_usage = None
         self._trajectory = {}
 
     def __getattr__(self, key):
@@ -56,10 +55,28 @@ class Prediction(Example):
             raise
 
     def get_lm_usage(self):
-        return self._lm_usage
+        """Token usage for the run that produced this prediction.
+
+        Returns a dict keyed by model string with an lm15 `Usage` per
+        model, aggregated over every LM call in the run. Empty dict when
+        no usage was recorded (e.g. a hand-built Prediction). Usage is
+        exhaust — observability data riding `_trajectory` — so it is
+        always on; no flag to set.
+        """
+        return self._trajectory.get("lm_usage", {})
 
     def set_lm_usage(self, value):
-        self._lm_usage = value
+        self._trajectory["lm_usage"] = value
+
+    def get_lm_cost(self):
+        """Estimated USD cost of the run, from catalog pricing.
+
+        `None` when no call had a catalog price (local endpoints,
+        subscription-billed providers, dummies) — an honest unknown,
+        never a guess. When some calls are priced and some are not, the
+        figure is a lower bound over the priced ones.
+        """
+        return self._trajectory.get("lm_cost")
 
     @classmethod
     def from_completions(cls, list_or_dict, signature=None):

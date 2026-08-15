@@ -46,15 +46,18 @@ class DummyLM(LM):
         self._cursor = 0
         self.calls: list[dict[str, Any]] = []
 
-    def _request(self, messages: list[dict[str, Any]], request_kwargs: dict[str, Any]) -> list[str]:
-        self.calls.append({"messages": messages, "kwargs": request_kwargs, "timestamp": time.time()})
-        return [self._next_output(messages)]
-
     def _complete(self, engine: Any, request: Request) -> Response:
-        """Script the typed face too: every `Request` replays the same script."""
+        """Script every face: each `Request` consumes the next output."""
         messages = [{"role": "system", "content": request.system}] if request.system else []
         messages += [{"role": m.role, "content": m.text} for m in request.messages]
-        self.calls.append({"messages": messages, "request": request, "timestamp": time.time()})
+        self.calls.append(
+            {
+                "messages": messages,
+                "kwargs": self._config_kwargs(request),
+                "request": request,
+                "timestamp": time.time(),
+            }
+        )
         output = self._next_output(messages)
         return Response(
             id=None,
@@ -64,8 +67,19 @@ class DummyLM(LM):
             usage=Usage(),
         )
 
+    @staticmethod
+    def _config_kwargs(request: Request) -> dict[str, Any]:
+        """The request's generation kwargs as a plain dict, for assertions."""
+        from dspy.lm.lm import _CONFIG_FIELDS
+
+        config = request.config
+        kwargs = {k: getattr(config, k) for k in _CONFIG_FIELDS if getattr(config, k) is not None}
+        if config.extensions:
+            kwargs.update(config.extensions)
+        return kwargs
+
     def _stream(self, engine: Any, request: Request) -> Any:
-        """Replay the scripted response as canonical stream events."""
+        """Replay the scripted response as canonical stream events (both faces)."""
         return response_to_events(self._complete(engine, request))
 
     def _next_output(self, messages: list[dict[str, Any]]) -> str:

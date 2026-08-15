@@ -132,6 +132,12 @@ class Predict(Module):
         fields = adapter.parse(self.signature, outputs[0], lm=lm)
         prediction = Prediction(**fields)
         prediction._trajectory["completion"] = outputs[0]
+        response = getattr(outputs, "response", None)
+        if response is not None:
+            # Usage facts are exhaust: free observability data, never a
+            # declared output. Cost is catalog-priced or an honest None.
+            prediction._trajectory["lm_usage"] = {lm.model: response.usage}
+            prediction._trajectory["lm_cost"] = lm._cost(response.usage)
         return prediction
 
     def __call__(self, **inputs: Any) -> Prediction:

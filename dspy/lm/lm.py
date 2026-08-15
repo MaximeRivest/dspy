@@ -28,7 +28,7 @@ from lm15.router import LMRouter, RouterConfig
 from dspy.core.errors import LMError
 from dspy.lm.direct import System
 
-__all__ = ["LM", "LMCapabilities", "ROUTER"]
+__all__ = ["LM", "LMCapabilities", "Outputs", "ROUTER", "merge_usage"]
 
 #: The shared default router (`dspy.lm.ROUTER`): one per process, one
 #: provider LM per provider inside it, built lazily. Its model catalog
@@ -67,6 +67,44 @@ _CONFIG_FIELDS = frozenset(
 #: at call time they pin the credential and, for `api_base`, the
 #: OpenAI-compatible endpoint the request goes to.
 _ENDPOINT_FIELDS = ("api_key", "api_base", "base_url")
+
+#: Sentinel: catalog pricing not yet looked up for this LM.
+_PRICING_UNSET = object()
+
+
+class Outputs(list):
+    """The strings-out result: a `list[str]` that also carries the response.
+
+    Fully compatible with a plain list (equality, indexing, iteration).
+    The canonical `lm15.Response` rides on `.response`, so callers that
+    need usage or cost read it without a second surface.
+    """
+
+    response: Response | None = None
+
+
+def merge_usage(a: Any, b: Any) -> Any:
+    """Sum two lm15 `Usage` values field-wise; `None` means unknown, not zero."""
+    from lm15 import Usage
+
+    def add(x: int | None, y: int | None) -> int | None:
+        if x is None:
+            return y
+        if y is None:
+            return x
+        return x + y
+
+    fields = (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "input_audio_tokens",
+        "output_audio_tokens",
+    )
+    return Usage(**{f: add(getattr(a, f), getattr(b, f)) for f in fields})
 
 
 @dataclass(frozen=True)
@@ -160,6 +198,7 @@ class LM:
         defaults = {"temperature": temperature, "max_tokens": max_tokens}
         self.kwargs: dict[str, Any] = {k: v for k, v in defaults.items() if v is not None} | kwargs
         self.history: list[dict[str, Any]] = []
+        self._pricing_cache: Any = _PRICING_UNSET
 
     def __call__(
         self,
@@ -219,14 +258,32 @@ class LM:
                 raise ValueError("Pass `messages` positionally or by keyword, not both.")
             messages = inputs[0]
         messages = self._coerce_messages(messages, prompt)
-        request_kwargs = {**self.kwargs, **kwargs}
-        outputs = self._request(messages, request_kwargs)
+        items = tuple(self._dict_to_typed(m) for m in messages)
+        try:
+            engine, request, request_kwargs = self._prepare_typed(items, kwargs)
+            response = self._complete(engine, request)
+        except LM15Error as e:
+            raise self._wrap(e) from e
+
+        text = response.text
+        if text is None:
+            raise LMError(
+                f"LM {self.model!r} returned no text content "
+                f"(finish_reason={response.finish_reason!r}). The dict-in/strings-out "
+                "call speaks text-only chat; for tool calls and richer parts use "
+                "the typed face (`lm(dspy.User(...))`) or `lm.complete(lm15.Request(...))`."
+            )
+        outputs = Outputs([text])
+        outputs.response = response
         self.history.append(
             {
                 "model": self.model,
                 "messages": messages,
                 "kwargs": request_kwargs,
-                "outputs": outputs,
+                "outputs": list(outputs),
+                "usage": response.usage,
+                "cost": self._cost(response.usage),
+                "response": response,
                 "timestamp": time.time(),
             }
         )
@@ -353,17 +410,36 @@ class LM:
         return engine, request, request_kwargs
 
     def _dict_to_typed(self, message: dict[str, Any]) -> Any:
-        """Lift one legacy role/content dict into the typed vocabulary."""
+        """Lift one legacy role/content dict into the typed vocabulary.
+
+        Accepts the shapes adapters emit: text messages for
+        system/user/assistant/developer, assistant messages carrying
+        `tool_calls` (`{"id", "name", "args"}` dicts), and tool-result
+        messages (`{"role": "tool", "tool_call_id": ..., "content": ...}`).
+        """
+        from lm15 import ToolCallPart
+
         role, content = message.get("role"), message.get("content")
+        if role == "tool":
+            return Message.tool(str(message.get("tool_call_id")), content)
         if not isinstance(content, str):
-            raise ValueError(f"Message content must be text, got {type(content).__name__}.")
+            raise ValueError(
+                f"Message content must be text, got {type(content).__name__}. For "
+                "images or other parts, use the typed face (`lm(dspy.User(...))`) or "
+                "build an lm15.Request and call `lm.complete(request)`."
+            )
         if role == "system":
             return System(content)
+        if role == "assistant" and message.get("tool_calls"):
+            parts: list[Any] = [TextPart(content)] if content else []
+            for call in message["tool_calls"]:
+                parts.append(ToolCallPart(id=str(call["id"]), name=call["name"], input=dict(call.get("args") or {})))
+            return Message(role="assistant", parts=tuple(parts))
         if role in ("user", "assistant", "developer"):
             return Message(role=role, parts=(TextPart(content),))
         raise ValueError(
             f"Unsupported message role {role!r}. The chat convenience takes "
-            "system/user/assistant/developer text messages."
+            "system/user/assistant/developer/tool messages."
         )
 
     def _record_typed(self, request: Request, request_kwargs: dict[str, Any], response: Response) -> None:
@@ -373,9 +449,55 @@ class LM:
                 "messages": list(request.messages),
                 "kwargs": request_kwargs,
                 "outputs": [response.text] if response.text is not None else [],
+                "usage": response.usage,
+                "cost": self._cost(response.usage),
                 "response": response,
                 "timestamp": time.time(),
             }
+        )
+
+    def _pricing(self) -> Any:
+        """Catalog pricing for this model, looked up once; `None` when unknown.
+
+        The catalog is advisory metadata: a model the catalog does not
+        price (a local server, a subscription-billed provider, a dummy)
+        yields `None` — never a guess.
+        """
+        if self._pricing_cache is _PRICING_UNSET:
+            self._pricing_cache = self._lookup_pricing()
+        return self._pricing_cache
+
+    def _lookup_pricing(self) -> Any:
+        resolver = self.router if hasattr(self.router, "resolve") else default_router()
+        try:
+            resolution = resolver.resolve(self.model)
+        except Exception:
+            return None
+        info = resolution.model_info
+        if info is None:
+            # Prefix/rule resolutions carry no catalog metadata; ask the
+            # catalog directly by (provider, wire model).
+            registry = getattr(getattr(default_router(), "config", None), "registry", None)
+            if registry is None:
+                return None
+            try:
+                info = registry.get(resolution.provider, resolution.model)
+            except Exception:
+                return None
+        if info is None or info.inference is None:
+            return None
+        return info.inference.pricing
+
+    def _cost(self, usage: Any) -> float | None:
+        """Estimate one call's cost in USD from catalog pricing; honest `None`."""
+        pricing = self._pricing()
+        if pricing is None or usage is None:
+            return None
+        return pricing.estimate(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
         )
 
     def _complete(self, engine: Any, request: Request) -> Response:
@@ -405,26 +527,6 @@ class LM:
         if prompt is not None:
             return [{"role": "user", "content": prompt}]
         return messages
-
-    def _request(self, messages: list[dict[str, Any]], request_kwargs: dict[str, Any]) -> list[str]:
-        request_kwargs = dict(request_kwargs)
-        endpoint = {k: request_kwargs.pop(k) for k in _ENDPOINT_FIELDS if request_kwargs.get(k) is not None}
-        try:
-            engine, wire_model = self._engine_for(endpoint)
-            request = self._build_request(messages, request_kwargs, model=wire_model)
-            response = self._complete(engine, request)
-        except LM15Error as e:
-            raise self._wrap(e) from e
-
-        text = response.text
-        if text is None:
-            raise LMError(
-                f"LM {self.model!r} returned no text content "
-                f"(finish_reason={response.finish_reason!r}). The dict-in/strings-out "
-                "call speaks text-only chat; for tool calls and richer parts use "
-                "`lm.complete(lm15.Request(...))`."
-            )
-        return [text]
 
     def _engine_for(self, endpoint: dict[str, Any]) -> tuple[Any, str]:
         """Pick the engine and wire model for one call.
@@ -479,36 +581,6 @@ class LM:
         pinned = self.__dict__.setdefault("_pinned", {})
         pinned[cache_key] = (engine, wire_model)
         return engine, wire_model
-
-    def _build_request(
-        self, messages: list[dict[str, Any]], request_kwargs: dict[str, Any], *, model: str | None = None
-    ) -> Request:
-        system_texts: list[str] = []
-        lm15_messages: list[Message] = []
-        for m in messages:
-            role, content = m.get("role"), m.get("content")
-            if not isinstance(content, str):
-                raise ValueError(
-                    f"Message content must be text, got {type(content).__name__}. For "
-                    "images, tool results, or other parts, build an lm15.Request and "
-                    "call `lm.complete(request)`."
-                )
-            if role == "system":
-                system_texts.append(content)
-            elif role in ("user", "assistant", "developer"):
-                lm15_messages.append(Message(role=role, parts=(TextPart(content),)))
-            else:
-                raise ValueError(
-                    f"Unsupported message role {role!r}. The chat convenience takes "
-                    "system/user/assistant/developer text messages."
-                )
-
-        return Request(
-            model=model if model is not None else self.model,
-            messages=tuple(lm15_messages),
-            system="\n\n".join(system_texts) or None,
-            config=self._config(request_kwargs),
-        )
 
     def _config(self, request_kwargs: dict[str, Any]) -> Config:
         """Split kwargs into universal `Config` fields and provider extensions."""

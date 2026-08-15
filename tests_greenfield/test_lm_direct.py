@@ -292,3 +292,117 @@ class TestStream:
         lm = dspy.DummyLM([])
         with pytest.raises(dspy.LMError, match="script exhausted"):
             list(lm.stream("hi"))
+
+
+# ---------------------------------------------------------------------------
+# Usage and cost: history keys, catalog pricing, prediction exhaust
+# ---------------------------------------------------------------------------
+
+
+def _priced_response(input_tokens=1_000_000, output_tokens=1_000_000):
+    from lm15 import Usage
+
+    return Response(
+        id=None,
+        model="gpt-4o-mini",
+        message=Message.assistant("hello"),
+        finish_reason="stop",
+        usage=Usage(input_tokens=input_tokens, output_tokens=output_tokens),
+    )
+
+
+class TestUsageAndCost:
+    def test_history_carries_usage_and_cost_keys(self):
+        lm = dspy.DummyLM(["ok"])
+        lm(prompt="hi")
+        record = lm.history[0]
+        assert "usage" in record and "cost" in record
+        assert record["cost"] is None  # a dummy has no catalog price — honest None
+
+    def test_catalog_priced_model_estimates_cost(self):
+        from lm15.testing import FakeLM
+
+        lm = dspy.LM("openai:gpt-4o-mini", router=FakeLM([_priced_response()] * 3))
+        lm("hi")
+        lm(prompt="hi")
+        list(lm.stream("hi"))
+        # 1M in @ $0.15 + 1M out @ $0.60 = $0.75, identical on all faces
+        assert [r["cost"] for r in lm.history] == [0.75, 0.75, 0.75]
+        assert sum(r["cost"] for r in lm.history if r["cost"]) == 2.25
+
+    def test_unpriced_model_reports_none_never_a_guess(self):
+        from lm15.testing import FakeLM
+
+        lm = dspy.LM("openai-codex:gpt-5.6-luna", router=FakeLM([_priced_response()]))
+        lm("hi")
+        assert lm.history[0]["cost"] is None  # subscription-billed: no per-token price
+        assert lm.history[0]["usage"].total_tokens == 2_000_000  # tokens still counted
+
+    def test_strings_out_face_carries_the_response(self):
+        lm = dspy.DummyLM(["Paris"])
+        outputs = lm(prompt="Capital of France?")
+        assert outputs == ["Paris"]  # still a plain list to consumers
+        assert outputs.response.text == "Paris"
+        assert outputs.response.usage is not None
+
+    def test_prediction_exposes_usage_always_on(self):
+        lm = dspy.DummyLM(["[[ ## answer ## ]]\n4\n\n[[ ## completed ## ]]"])
+
+        class QA(dspy.Signature):
+            question: str = dspy.InputField()
+            answer: str = dspy.OutputField()
+
+        prediction = dspy.Predict(QA, lm=lm)(question="2+2?")
+        usage = prediction.get_lm_usage()
+        assert list(usage) == ["dummy"]  # keyed by model, no flag to enable
+        assert prediction.get_lm_cost() is None
+
+    def test_module_run_aggregates_usage_across_calls(self):
+        lm = dspy.DummyLM(
+            [
+                "[[ ## reasoning ## ]]\nmath\n\n[[ ## answer ## ]]\n4\n\n[[ ## completed ## ]]",
+            ]
+        )
+
+        class QA(dspy.Signature):
+            question: str = dspy.InputField()
+            answer: str = dspy.OutputField()
+
+        dspy.configure(lm=lm)
+        try:
+            prediction = dspy.ChainOfThought(QA)(question="2+2?")
+        finally:
+            dspy.configure(lm=None)
+        assert "dummy" in prediction.get_lm_usage()
+
+    def test_merge_usage_sums_and_keeps_unknown(self):
+        from lm15 import Usage
+
+        from dspy.lm.lm import merge_usage
+
+        merged = merge_usage(
+            Usage(input_tokens=10, output_tokens=None, reasoning_tokens=1),
+            Usage(input_tokens=5, output_tokens=7, reasoning_tokens=None),
+        )
+        assert merged.input_tokens == 15
+        assert merged.output_tokens == 7  # None means unknown, not zero
+        assert merged.reasoning_tokens == 1
+        # lm15 derives a total (5 + 7) on the second value; the first had
+        # none, so the merged total is the sum of the KNOWN totals.
+        assert merged.total_tokens == 12
+
+    def test_tool_role_messages_flow_through_the_strings_face(self):
+        # Adapters' turns face emits native tool-role dicts; the legacy
+        # face lifts them into canonical lm15 messages.
+        lm = dspy.DummyLM(["ok"])
+        lm(
+            messages=[
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "name": "get_weather", "args": {"city": "Paris"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "22 C"},
+                {"role": "user", "content": "summarize"},
+            ]
+        )
+        request = lm.calls[0]["request"]
+        assert [m.role for m in request.messages] == ["user", "assistant", "tool", "user"]
+        assert request.messages[1].parts[0].name == "get_weather"

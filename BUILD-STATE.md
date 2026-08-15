@@ -2108,3 +2108,34 @@ FakeLM transport, error mapping. Full suite green.
   streaming (chunks, then events) → the plain-strings face → Signature
   + Predict → `lm.history`. All cells DummyLM, validated end-to-end in
   order; outputs are real captured runs.
+
+## 2026-08-14 — Usage and cost surfaces (upstream parity, IR-grounded)
+
+- **`lm.history` carries `usage` + `cost` on every record** (typed,
+  strings-out, and stream faces — one record shape). `usage` is the
+  lm15 `Usage`; `cost` is USD estimated from the lm15 catalog's
+  `InferencePricing.estimate()`, looked up once per LM
+  (resolution → catalog by provider+wire-model) and an HONEST `None`
+  when the catalog has no price (local endpoints, subscription-billed
+  providers like openai-codex, dummies) — never a guess.
+- **`prediction.get_lm_usage()` / `get_lm_cost()`** — always on, no
+  `track_usage` flag (divergence from upstream, by doctrine: usage is
+  exhaust, free observability data on `_trajectory`, never ambient
+  state). `get_lm_usage()` returns `{model: Usage}` aggregated over
+  the run; the engine (`_Leaves.predict`) merges every predict call's
+  usage field-wise (`merge_usage`: None = unknown, not zero) and sums
+  known costs. Single `Predict` calls attach their own.
+- **Internals**: the strings-out face now funnels through the same
+  `_prepare_typed`/`_complete` path as the typed face — `_request` and
+  `_build_request` are gone; `Outputs` (a `list[str]` subclass) carries
+  `.response` so `Predict` reads usage without racing `history`.
+  `_dict_to_typed` grew the adapter turn shapes: `{"role": "tool",
+  "tool_call_id", "content"}` and assistant `tool_calls`
+  (`{id, name, args}`) lift into canonical lm15 messages. DummyLM
+  is now ONE override surface (`_complete` + `_stream`); its legacy
+  `calls` records keep `messages`/`kwargs` shapes via reconstruction.
+- explore_lm.md §8: tokens + cost on the real model (206→1234-token
+  session sums, honest `None` cost for subscription billing).
+
+Tests: 8 usage/cost tests in `test_lm_direct.py` (74 in the LM family);
+full suite green.

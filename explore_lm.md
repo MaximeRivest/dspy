@@ -23,13 +23,13 @@ lm = dspy.LM("openai-codex:gpt-5.6-luna")
 response = lm("hello")
 response
 ```
-```output | ✓ 3.7s | 3 vars
+```output | ✓ 1.5s | 12 vars
 Response(
     text='Hello! How can I help you today?',
     model='gpt-5.6-luna',
     finish_reason='stop',
     usage=Usage(input_tokens=17, output_tokens=13, total_tokens=30, cache_read_tokens=0, cache_write_tokens=None, reasoning_tokens=0, input_audio_tokens=None, output_audio_tokens=None),
-    id='resp_0c0b90c356d0f1b0016a7faab30a50819792336b2f9c31fa48',
+    id='resp_0360b809c0c4ad02016a7fab5cacd88190b5a2188d59858f41',
     provider_data=<dict: 35 keys>,
 )
 ```
@@ -40,14 +40,14 @@ most:
 ```python
 response.text
 ```
-```output | ✓ 22ms | 3 vars
+```output | ✓ 22ms | 12 vars
 'Hello! How can I help you today?'
 ```
 
 ```python
 response.usage.total_tokens
 ```
-```output | ✓ 22ms | 3 vars
+```output | ✓ 23ms | 12 vars
 30
 ```
 
@@ -65,8 +65,10 @@ after the speaker: `dspy.System` (instructions), `dspy.User` (you),
 first = lm(dspy.User("What is DSPy?"))
 print(first.text[:130] + " ...")
 ```
-```output | ✓ 6.7s | 4 vars
-**DSPy** is a Python framework for building applications powered by language models using **declarative, programmable components** ...
+```output | ✓ 6.8s | 12 vars
+**DSPy** is a Python framework for building and optimizing applications that use language models.
+
+Instead of manually writing and ...
 ```
 
 The model wrote a whole essay. Feed it back and ask for less:
@@ -80,8 +82,8 @@ follow = lm(
 )
 print(follow.text)
 ```
-```output | ✓ 1.3s | 5 vars
-DSPy is a framework for programming and optimizing language-model applications.
+```output | ✓ 1.0s | 12 vars
+DSPy optimizes LLM programs automatically.
 ```
 
 That is the whole conversation API: pass the turns in order, get a
@@ -102,7 +104,7 @@ answer = lm(
 )
 print(answer.text)
 ```
-```output | ✓ 961ms | 6 vars
+```output | ✓ 1.7s | 12 vars
 Paris is sunny with a temperature of 22°C.
 ```
 
@@ -116,10 +118,10 @@ stream = lm.stream("Write a haiku about rivers.")
 for text in stream:
     print(text, end="", flush=True)
 ```
-```output | ✓ 1.2s | 8 vars
+```output | ✓ 1.6s | 12 vars
 River stones whisper  
-Moonlight drifts on silver waves  
-Willows bow softly
+Moonlight drifts along the current  
+Willows bend and breathe
 ```
 
 After the loop, the finished `Response` is right there — the same
@@ -128,8 +130,8 @@ object a non-streamed call returns:
 ```python
 stream.response.usage
 ```
-```output | ✓ 22ms | 8 vars
-Usage(input_tokens=23, output_tokens=20, total_tokens=43, cache_read_tokens=0, cache_write_tokens=None, reasoning_tokens=0, input_audio_tokens=None, output_audio_tokens=None)
+```output | ✓ 23ms | 12 vars
+Usage(input_tokens=23, output_tokens=21, total_tokens=44, cache_read_tokens=0, cache_write_tokens=None, reasoning_tokens=0, input_audio_tokens=None, output_audio_tokens=None)
 ```
 
 Under the text there is a typed event stream — start, deltas, end.
@@ -139,8 +141,8 @@ You rarely need it, but it is one `.events()` away:
 for event in lm.stream("Count from 1 to 5, one number per line.").events():
     print(event)
 ```
-```output | ✓ 2.1s | 9 vars
-StreamStartEvent(id='resp_069980fa41eeb332016a7faadcef8887d287e1f2035e561382', model='gpt-5.6-luna', type='start')
+```output | ✓ 1.6s | 12 vars
+StreamStartEvent(id='resp_0b871f119365cbcc016a7fab83ced88194a38bd2d6ba823f09', model='gpt-5.6-luna', type='start')
 StreamDeltaEvent(delta=TextDelta(text='1', part_index=0, type='text'), type='delta')
 StreamDeltaEvent(delta=TextDelta(text='\n', part_index=0, type='text'), type='delta')
 StreamDeltaEvent(delta=TextDelta(text='2', part_index=0, type='text'), type='delta')
@@ -168,7 +170,7 @@ not write it:
 ```python
 lm(prompt="hello")
 ```
-```output | ✓ 1.9s | 9 vars
+```output | ✓ 978ms | 12 vars
 ['Hello! How can I help you today?']
 ```
 
@@ -194,8 +196,8 @@ program = dspy.Predict(QA)
 prediction = program(question="Why is the sky blue?")
 print(prediction.answer)
 ```
-```output | ✓ 1.6s | 12 vars
-The sky looks blue because air molecules scatter blue sunlight more strongly than other colors, sending blue light across the sky to our eyes.
+```output | ✓ 4.3s | 12 vars
+The sky looks blue because air molecules scatter blue sunlight more strongly than other colors, sending more blue light into our eyes from every direction.
 ```
 
 ## 7. See the exact prompt
@@ -207,10 +209,42 @@ signature into instructions and markers:
 ```python
 lm.history[-1]["messages"]
 ```
-```output | ✓ 22ms | 12 vars
+```output | ✓ 23ms | 12 vars
 [{'role': 'system', 'content': 'Your input fields are:\n1. `question` (str):\nYour output fields are:\n1. `answer` (str):\nAll interactions will be structured in the following way, with the appropriate values filled in.\n\n[[ ## question ## ]]\n{question}\n\n[[ ## answer ## ]]\n{answer}\n\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is: \n        Answer in one short sentence, for a curious teenager.'}, {'role': 'user', 'content': '[[ ## question ## ]]\nWhy is the sky blue?\n\nRespond with the corresponding output fields, starting with the field `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.'}]
 ```
 
+## 8. Count tokens and cost
+
+Every prediction carries the usage of the run that made it — always
+on, no flag to set:
+
+```python
+prediction.get_lm_usage()
+```
+```output | ✓ 23ms | 13 vars
+{'openai-codex:gpt-5.6-luna': Usage(input_tokens=140, output_tokens=41, total_tokens=181, cache_read_tokens=0, cache_write_tokens=None, reasoning_tokens=0, input_audio_tokens=None, output_audio_tokens=None)}
+```
+
+And `lm.history` remembers every call, so the whole session sums in
+one line:
+
+```python
+len(lm.history), sum(x["usage"].total_tokens or 0 for x in lm.history)
+```
+```output | ✓ 24ms | 13 vars
+(8, 1234)
+```
+
+Dollar cost rides beside it — `lm.history[-1]["cost"]` and
+`prediction.get_lm_cost()` — estimated from the model catalog's
+per-token prices. For this model both return `None`, and that is
+correct, not missing: the codex provider bills through your ChatGPT
+subscription, not per token, so there is no honest per-call price.
+Catalog-priced models (for example `openai:gpt-4o-mini`) return real
+dollars, and `sum(x["cost"] for x in lm.history if x["cost"])` is your
+session total.
+
 That is the full tour: call a model, hold a conversation, stream an
-answer, then let a program write the prompts for you — and check its
-work in `lm.history`.
+answer, let a program write the prompts for you — then check its work
+and its bill in `lm.history`.
+

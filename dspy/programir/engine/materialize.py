@@ -87,6 +87,11 @@ class ExecutableProgram:
         record = interpret.run_forward(self.forwards, "", dict(inputs), leaves)
         prediction = Prediction(**record)
         prediction._trajectory["predictor_calls"] = leaves.trace
+        if leaves.lm_usage:
+            # Aggregated usage/cost exhaust: every predict call in the run,
+            # keyed by model — the run-level view of the per-call facts.
+            prediction._trajectory["lm_usage"] = leaves.lm_usage
+            prediction._trajectory["lm_cost"] = leaves.lm_cost
         # PIR-021 nested attribution: a call made through a session leaf's
         # grant bridge is LABELED with both the session leaf and the
         # predictor it reached, transitively. `predictor_calls` still has
@@ -148,6 +153,12 @@ class _Leaves:
     def __init__(self, program: ExecutableProgram):
         self.program = program
         self.trace: list[dict[str, Any]] = []
+        #: Aggregated LM usage across every predict call in this run,
+        #: keyed by model string; merged field-wise (None = unknown).
+        self.lm_usage: dict[str, Any] = {}
+        #: Summed catalog-priced cost over calls that HAVE a price;
+        #: None until any priced call lands (honest unknown).
+        self.lm_cost: float | None = None
         #: PIR-021 per-leaf measured attribution: name -> call count. A
         #: predictor reached DIRECTLY counts under its own path; a
         #: predictor reached THROUGH a session leaf's bridge counts under
@@ -161,11 +172,23 @@ class _Leaves:
     def _attribute(self, name: str) -> None:
         self.attribution[name] = self.attribution.get(name, 0) + 1
 
+    def _accumulate_usage(self, prediction: Prediction) -> None:
+        from dspy.lm.lm import merge_usage
+
+        for model, usage in prediction._trajectory.get("lm_usage", {}).items():
+            held = self.lm_usage.get(model)
+            self.lm_usage[model] = usage if held is None else merge_usage(held, usage)
+        cost = prediction._trajectory.get("lm_cost")
+        if cost is not None:
+            self.lm_cost = cost if self.lm_cost is None else self.lm_cost + cost
+
     def predict(self, path: str, kwargs: dict) -> dict:
         predictor = self.program.predictors.get(path)
         if predictor is None:
             raise interpret.MalformedNodeError(f"no materialized predictor at path {path!r}")
-        record = predictor(**kwargs).toDict()
+        prediction = predictor(**kwargs)
+        self._accumulate_usage(prediction)
+        record = prediction.toDict()
         self.trace.append({"predictor": path, "inputs": dict(kwargs), "outputs": dict(record)})
         self._attribute(path)
         if self._active_session is not None:
