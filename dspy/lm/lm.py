@@ -18,7 +18,7 @@ lm15's canonical error code — never as provider-specific exceptions.
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from lm15 import Config, Message, ModelRegistry, Request, Response, ResponseStream, TextPart
@@ -345,8 +345,11 @@ class LM:
 
         Use this when the dict-in/strings-out convenience is too small:
         tool calls, image parts, citations, usage accounting, or
-        provider extensions. The request routes through this LM's
-        router; errors map to the same typed `LMError`.
+        provider extensions. The request routes through the same engine
+        the typed face uses — an `api_base`/`api_key` endpoint pin on
+        this LM is honored, and a request naming this LM's model is
+        rewritten to the pinned engine's wire model. Errors map to the
+        same typed `LMError`.
 
         Args:
             request: A complete `lm15.Request`, including the model string.
@@ -357,8 +360,12 @@ class LM:
         Raises:
             LMError: On any routing, transport, or provider failure.
         """
+        endpoint = {k: self.kwargs[k] for k in _ENDPOINT_FIELDS if self.kwargs.get(k) is not None}
         try:
-            return self._complete(self.router, request)
+            engine, wire_model = self._engine_for(endpoint)
+            if request.model == self.model and wire_model != self.model:
+                request = replace(request, model=wire_model)
+            return self._complete(engine, request)
         except LM15Error as e:
             raise self._wrap(e) from e
 
