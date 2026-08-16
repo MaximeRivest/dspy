@@ -27,6 +27,7 @@ The `--llm_call` flag is required. Without it, every test skips.
 | `test_claude_code.py` | Claude Code | Claude Code OAuth credential | subscription, cost is None |
 | `test_gemini.py` | Google Gemini | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | per token, cost > 0 |
 | `test_ollama.py` | Ollama | none — local server on `OLLAMA_HOST` | local, cost is None |
+| `test_vllm.py` | vLLM (lab server, `api_base` style) | `DSPY_LIVE_VLLM_BASE_URL` + `DSPY_LIVE_VLLM_API_KEY` (defaults: 192.168.2.24:8000) | local, cost is None |
 
 ## Models
 
