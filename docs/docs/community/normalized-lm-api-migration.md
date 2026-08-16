@@ -1,465 +1,246 @@
-# Typed LM API migration plan
+# The typed LM API: the landed contract
 
-DSPy is moving toward a typed language-model boundary while keeping `dspy.BaseLM` as the public base class for language models.
+This page used to be the *migration plan* for DSPy's typed language-model
+boundary. The migration has landed, and it landed simpler than the plan.
+This page is now the contract: every behavior below is a promise, each
+promise is enforced by `tests/lm/test_api_promises.py` (offline, always
+run) and exercised against real providers by `tests/live/` (the live
+provider matrix). The [table at the end](#what-changed-from-the-plan)
+maps every name the old plan promised to what actually shipped.
 
-**Most DSPy users do not need to change anything in DSPy 3.3**. Existing `lm(...)`, modules, and programs keep their current behavior by default. The typed LM API is opt-in in 3.3 with `dspy.context(experimental=True)`.
+One idea to hold on to: every call builds one canonical **request**, and
+the model sends back one canonical **response**. The canonical types are
+[lm15](https://pypi.org/project/lm15/)'s `Request` and `Response`; DSPy
+does not wrap them in a second vocabulary.
 
-TLDR: `dspy.LM.forward` is currently untyped and mixes DSPy-specific behavior with OpenAI/LiteLLM-shaped inputs. We will migrate `BaseLM.forward` and `LM.forward` from:
+## The call surface
 
-```python
-def forward(self, prompt=None, messages=None, **kwargs):
-    ...
-```
+`dspy.LM` has two call faces, split by how the input arrives.
 
-to:
-
-```python
-def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-    ...
-```
-
-!!! note "Status"
-    This is a migration plan for the DSPy 3.3–3.6/4.0 series. Names and exact release timing may change before implementation lands, but the staged compatibility plan below should guide discussion.
-
-!!! info "Community feedback wanted"
-    This plan mostly affects custom LMs and adapters. If you maintain one, please review the proposed one-line `forward_contract` migration and share feedback before the default LM path changes.
-
-## Who is affected?
-
-| Group | What to do now | Future requirement |
-| --- | --- | --- |
-| Most DSPy users | Nothing required. Optionally try the direct `lm(...)` API with `dspy.context(experimental=True)` and provide feedback. | DSPy programs will keep working before, during, and after this migration without user changes. |
-| Existing custom LM authors | Nothing required in 3.3. If you want to be explicit, add `forward_contract = "legacy"`. | Add an explicit `forward_contract`; eventually migrate to `forward_contract = "typed_lm"` before legacy support is removed. |
-| New custom LM authors | Use `forward_contract = "typed_lm"` and implement `forward(request: dspy.LMRequest) -> dspy.LMResponse`. | No later migration needed if you start with the typed contract. |
-| Custom adapter authors | Call `lm(...)`, not `lm.forward(...)`. | Build `LMRequest` objects and parse `LMResponse` directly. |
-
-
-## Background
-
-Today, `BaseLM` subclasses implement an untyped forward method, with a few optional parameters:
+**Typed (positional) — the default, no flag.** Strings, typed turns, and
+previous responses in; the canonical `lm15.Response` out:
 
 ```python
-def forward(self, prompt=None, messages=None, **kwargs):
-    ...
+lm = dspy.LM("openai:gpt-5-nano")
+response = lm("hello")
+response.text          # 'Hello! How can I help you today?'
+response.usage         # Usage(input_tokens=..., output_tokens=..., ...)
+response.tool_calls    # data when the model used tools, () otherwise
+response.finish_reason # 'stop'
 ```
 
-That hook usually receives OpenAI/LiteLLM-shaped inputs and returns an OpenAI-like provider response. DSPy then post-processes that response into a `list[str | dict]` containing outputs.
-
-Because the current parameters are untyped, it is hard to know inside an LM exactly which inputs you will get and what types they will contain. The new contract is typed and provider-neutral. We have designed `LMRequest` and `LMResponse` to be flexible enough for LMs backed by many different provider APIs:
+**Legacy (keyword) — the adapter convenience.** `prompt=` or
+`messages=[{"role": ..., "content": ...}]` in; a list of strings out.
+The result compares equal to a plain `list[str]`, and the canonical
+response rides on `.response`:
 
 ```python
-def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-    ...
+outputs = lm(prompt="hello")   # ['Hello! How can I help you today?']
+outputs.response.usage         # the same canonical Response underneath
 ```
 
-DSPy has settled on the internal LM type system around `LMRequest`, `LMResponse`, typed messages, parts, config, usage, and stream events. These types should be treated as the stable direction for LM implementations. Concrete LMs translate between these DSPy types and their provider API.
+The rule of thumb: positional inputs → rich `Response`; keyword
+`prompt=`/`messages=` → plain strings.
 
-## Why this matters
+The old plan gated typed returns behind `dspy.context(experimental=True)`.
+That gate is gone: the typed face is the default, and there is no
+`experimental` flag.
 
-The typed boundary gives DSPy one clear internal representation for LM calls:
+## Conversations are typed turns
 
-```text
-LMRequest -> BaseLM -> LMResponse
-```
-
-That gives DSPy and the community:
-
-- cleaner custom LM implementations,
-- less OpenAI/LiteLLM-shaped logic inside adapters,
-- first-class support for multimodal inputs, tool calls, reasoning, citations, usage, and provider metadata,
-- a more expressive direct `lm(...)` UX,
-- a clearer path for community packages to ship LMs that feel and are treated like first-class DSPy LMs.
-
-The migration is staged so existing code keeps working while new code can opt into the typed path.
-
-## Guide for DSPy users
-
-Most users should not need to change anything in 3.3.
-
-Default behavior remains legacy:
+Turn constructors are named after the speaker. A previous `Response`
+drops in as its own turn:
 
 ```python
-outputs = lm("hello")
-# list[str | dict]
-```
-
-To try the typed LM API in 3.3, use the existing experimental switch:
-
-```python
-with dspy.context(experimental=True):
-    response = lm("hello")
-    print(response.text)
-```
-
-Typed responses carry structured data:
-
-```python
-response.text
-response.outputs
-response.usage
-response.cache_hit
-response.provider_data
-```
-
-The typed path also makes direct `lm(...)` calls more expressive. Strings, typed messages, media parts, previous responses, and explicit `LMRequest` objects all flow through one call API.
-
-!!! warning "Experimental 3.3 API"
-    The typed LM symbols are importable without `experimental=True`. In DSPy 3.3, direct typed `lm(...)` calls are available behind `dspy.context(experimental=True)` while the API settles. Key helpers such as `dspy.LMRequest`, `dspy.LMResponse`, `dspy.System`, `dspy.User`, `dspy.Assistant`, `dspy.ToolCall`, and `dspy.ToolResult` are available at the top level. The complete typed LM vocabulary is available under `dspy.core.types`, e.g. `dspy.core.types.LMTextPart` and `dspy.core.types.LMImagePart`.
-
-Multimodal request with instructions:
-
-```python
-from dspy.core.types import LMImagePart
-
-with dspy.context(experimental=True):
-    response = lm(
-        dspy.System("Be concise."),
-        dspy.User("Describe this image.", dspy.Image("https://example.com/dog.png")), #Coming soon!
-        temperature=0.2,
-    )
-```
-
-Multi-turn conversation:
-
-```python
-with dspy.context(experimental=True):
-    response = lm(
-        dspy.User("What is DSPy?"),
-        dspy.Assistant("DSPy is a framework for programming LM pipelines."),
-        dspy.User("Say that in five words."),
-    )
-```
-
-Tool-call transcript:
-
-```python
-with dspy.context(experimental=True):
-    response = lm(
-        dspy.User("What is the weather in Paris?"),
-        dspy.Assistant(dspy.ToolCall(id="call_1", name="get_weather", args={"city": "Paris"})),
-        dspy.ToolResult('{"temperature": "22 C"}', call_id="call_1", name="get_weather"),
-        dspy.User("Summarize the result."),
-    )
-```
-
-Passing a previous response back into the conversation:
-
-```python
-with dspy.context(experimental=True):
-    first = lm("Explain DSPy in one sentence.")
-    follow_up = lm(
-        dspy.User("Explain DSPy in one sentence."),
-        first,
-        dspy.User("Now make it even shorter."),
-    )
-```
-
-## Guide for custom LM authors
-
-Custom LM authors should declare which `forward()` contract their class implements.
-
-Legacy LMs should add:
-
-```python
-class MyLegacyLM(dspy.BaseLM):
-    forward_contract = "legacy"
-
-    def forward(self, prompt=None, messages=None, **kwargs):
-        ...
-```
-
-Typed LMs should add:
-
-```python
-class MyTypedLM(dspy.BaseLM):
-    forward_contract = "typed_lm"
-
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-        ...
-```
-
-In DSPy 3.3, classes without an explicit `forward_contract` are treated as legacy for compatibility. In later releases, missing declarations will warn and then may become errors or change defaults.
-
-A minimal typed LM looks like this:
-
-```python
-class EchoLM(dspy.BaseLM):
-    forward_contract = "typed_lm"
-
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-        return dspy.LMResponse.from_text("hello", model=request.model)
-```
-
-### Reference typed LM: the OpenAI-compat engine
-
-`_OpenAICompatLM` (in `dspy/clients/openai_compat_lm.py`) is the first full
-production typed LM shipped with DSPy. It connects directly to an OpenAI Chat
-Completions-compatible HTTP endpoint without LiteLLM or the OpenAI SDK. It is
-an internal engine, not a public API: `dspy.LM` is the user-facing interface,
-and the router constructs the engine under the hood. Serialized programs
-record `dspy.LM` router state (model string, `api_base`, request defaults)
-plus an `engine` block, never the engine class itself.
-
-```python
-from dspy.clients.openai_compat_lm import _OpenAICompatLM  # internal
-
-lm = _OpenAICompatLM(
-    model="meta-llama/Llama-3.1-8B-Instruct",
-    base_url="http://localhost:8000/v1",
-    api_key="local",  # Some servers require any non-empty token; omit if yours doesn't.
+follow = lm(
+    dspy.System("Answer in five words or less."),
+    dspy.User("What is DSPy?"),
+    first,                       # a previous lm15.Response, folded in
+    dspy.User("Say it shorter."),
 )
 ```
 
-Its implementation in `dspy/clients/openai_compat_lm.py` is the reference for
-translating `LMRequest` into a provider request, translating the provider
-response into `LMResponse`, and normalizing transport/provider failures into
-DSPy's `LMError` hierarchy. It is also the reference for credential handling in
-typed LMs: `api_key` accepts a string or a zero-argument callable resolved per
-request (so vaults and OAuth refreshers plug in), the resolution ladder is
-explicit key, then `api_key_env`, then an opt-in `OPENAI_API_KEY` fallback
-(`use_openai_api_key_env=True`), and keys are never serialized or written into
-cache keys in the clear. It supports Chat Completions only; the OpenAI
-Responses API is not part of its surface. It is also the reference streaming
-implementation — see "Streaming contract for typed LMs" below.
-
-### Credential patterns for typed LMs
-
-Typed LMs are data-plane objects: they perform inference, never setup. A missing
-credential is a typed, actionable error — not a prompt, a browser window, or a
-silent fallback to a different account. The OpenAI-compat engine sets the
-pattern that other typed LMs should follow.
-
-**1. Accept a handle, not only a string.** `api_key` takes a string or a
-zero-argument callable returning one:
+Tool exchanges replay with two more constructors:
 
 ```python
-lm = _OpenAICompatLM(
-    model="my-model",
-    base_url="https://gateway.example.com/v1",
-    api_key=lambda: my_vault.read("gateway-token"),
+answer = lm(
+    dspy.User("What is the weather in Paris?"),
+    dspy.Assistant(dspy.ToolCall(id="call_1", name="get_weather", args={"city": "Paris"})),
+    dspy.ToolResult('{"temperature": "22 C"}', call_id="call_1", name="get_weather"),
+    dspy.User("Summarize the result."),
 )
 ```
 
-The callable is invoked on every request, so vaults, OAuth refreshers, SSO
-resolvers, and rotating tokens all plug in without the LM knowing which. The
-resolved token travels only in the request header.
+Multimodal input rides the same face — `dspy.Image` values become image
+parts:
 
-**2. Keep the resolution ladder short, fixed, and documented.** Resolution
-order is:
+```python
+response = lm(dspy.User("Describe this image.", dspy.Image("https://example.com/dog.png")))
+```
 
-1. Explicit `api_key` (string or callable) — always wins.
-2. `api_key_env` — a named environment variable the user chose.
-3. `OPENAI_API_KEY` — only when `use_openai_api_key_env=True`. Ambient fallback
-   is opt-in so a key meant for one provider is never sent to another endpoint
-   by accident.
-4. No credential — by default the request is sent unauthenticated, which is
-   correct for local endpoints. Pass `require_auth=True` to instead fail
-   locally with a typed `LMNotConfiguredError` whose message names the exits;
-   endpoints that reject an unauthenticated request return a typed
-   `LMAuthError` either way.
+## The full-surface escape hatch: `lm.complete`
 
-Every rung is inspectable; nothing is discovered behind the user's back.
+When the convenience faces are too small — tool declarations, custom
+parts, provider extensions — build the canonical request yourself:
 
-**3. Secrets stay out of everything.** API keys must never appear in serialized
-state, logs, history, or cache keys:
+```python
+from lm15 import FunctionTool, Message, Request, TextPart
 
-- `dump_state()` never writes a key. When an explicit key was used, the saved
-  state also disables the ambient env fallback so loading a program cannot
-  silently switch accounts.
-- Sensitive headers (`Authorization`, `X-API-Key`, cookies) are stripped from
-  serialized `extra_headers`.
-- Cache identity uses a SHA-256 fingerprint of the resolved credential, so
-  responses from different accounts never collide while the key itself is
-  never stored.
+response = lm.complete(Request(
+    model=lm.model,
+    messages=(Message(role="user", parts=(TextPart(text="Weather in Paris?"),)),),
+    tools=(FunctionTool(name="get_weather", description="...", parameters={...}),),
+))
+response.tool_calls[0].name    # 'get_weather'
+```
 
-**4. Fail with typed errors.** Map provider auth failures onto DSPy's error
-hierarchy (`LMAuthError`, `LMBillingError`, `LMRateLimitError`, ...) with
-status, provider code, request ID, and `retry_after` populated. The error
-message should tell the user exactly what to set and where — for a missing
-credential, the error message is the onboarding.
+`complete()` routes through the same engine as the typed face: an
+`api_base`/`api_key` endpoint pin on the LM is honored, and a request
+naming the LM's model is rewritten to the pinned wire model, so the
+provider prefix never leaks onto the wire.
 
-New typed LM implementations should treat these four rules as the contract,
-even when the underlying provider SDK offers its own credential discovery.
+## Streaming: a separate method, one event vocabulary
 
-The callable-credential seam is validated against the major clouds'
-OpenAI-compatible surfaces:
-
-- **Azure OpenAI (v1 API):** `azure_ad_token_provider` and openai-python's
-  callable `api_key` have the same shape; use
-  `azure.identity.get_bearer_token_provider`.
-- **Amazon Bedrock (Chat Completions endpoint):** Bedrock API keys work as
-  bearer tokens; short-term keys expire, so a refreshing callable is the
-  natural fit.
-- **Vertex AI (OpenAI-compatible endpoint):** wrap `google-auth` credentials
-  in a callable that refreshes on expiry and returns `credentials.token`.
-
-Credentials that live in provider-specific headers, such as Azure's `api-key`
-or Google's `x-goog-api-key`, are supported for static keys via
-`extra_headers`, which strips sensitive header names from serialized state and
-folds header fingerprints into the cache identity. AWS SigV4 request signing
-is intentionally out of scope for a token-shaped seam: the signature covers
-the request body, so supporting it requires a separate request-signing hook.
-
-### Constructor conventions for typed LMs
-
-Typed LMs deliberately do not continue DSPy's historical reliance on
-`**kwargs` for behavior. The conventions, set by the OpenAI-compat engine:
-
-- **Behavioral parameters are explicit and keyword-only.** Endpoint identity,
-  credentials, transport, and capability flags are named parameters after
-  `(model, base_url)`. New behavioral parameters are added conservatively —
-  each must be justified by a real provider need before entering the
-  signature — and are never absorbed through `**kwargs`.
-- **Request parameters keep the familiar user path, then become typed.**
-  `temperature=`, `max_tokens=`, and provider extras still work at
-  construction and call time, but they normalize immediately into `LMConfig`
-  (with provider-specific extras in `config.extensions`, named and
-  inspectable). `**kwargs` exists only at the public constructor and call
-  surface for ergonomics; it never travels through internals.
-- **No typed LM assigns a new meaning to `**kwargs`.** Anything that would
-  have been a kwarg convention becomes either an explicit parameter (if
-  behavioral) or an `LMConfig` field or extension (if a request parameter).
-
-### Streaming contract for typed LMs
-
-Streaming is part of the typed LM contract, designed once so the whole typed
-LM family implements it the same way. The vocabulary is the stream types in
-`dspy/core/types.py`, now public: `LMStreamStartEvent`, `LMStreamDeltaEvent`
-(carrying `LMTextDelta`, `LMThinkingDelta`, `LMToolCallDelta`, and friends),
-`LMStreamOutputEndEvent`, `LMStreamEndEvent`, and `LMStreamErrorEvent`.
-
-**The user surface is a separate method, never a flag.** `lm.stream(...)` and
-`lm.astream(...)` accept the same inputs as `lm(...)` and return
-`dspy.LMStream` / `dspy.AsyncLMStream`: iterate for events, then call
-`.result()` for the final `LMResponse`. A `stream=True` kwarg that forks the
-return type of `__call__` is deliberately rejected.
+`lm.stream(...)` accepts every input `lm(...)` accepts and returns an
+`lm15.ResponseStream`. It is a method, never a `stream=True` flag that
+forks the return type:
 
 ```python
 stream = lm.stream("Write a haiku about rivers.")
-for event in stream:
-    if event.type == "delta" and event.delta.type == "text_delta":
-        print(event.delta.text, end="", flush=True)
-response = stream.result()
+for text in stream:            # text pieces as the model writes
+    print(text, end="")
+stream.response.usage          # the finished canonical Response
 ```
 
-**The provider seam is `forward_stream`.** A typed LM that streams natively
-implements `forward_stream(request) -> Iterator[LMStreamEvent]` and declares
-`supports_streaming = True`. Async callers get incremental events either from
-a native `aforward_stream` or, by default, from the base class bridging the
-synchronous stream through a worker thread. The rules, set by
-the OpenAI-compat engine:
-
-1. **Every LM streams; only some stream incrementally.** When
-   `supports_streaming` is False, `stream()` runs the buffered `forward()`
-   call and replays the finished response as events
-   (`dspy.core.response_to_stream_events`). Consumers program against one
-   event vocabulary and never branch on the backend.
-2. **Streamed and buffered calls are observationally identical afterward.**
-   History and usage are recorded once, when the stream completes, through
-   the same `_finalize_lm_response` path as a non-streaming call — and a
-   completed stream stores its final response under the same cache key as
-   the buffered call, so either form of the same request hits one cache
-   entry and a cache hit replays as events without an HTTP call.
-3. **Provider chunk translation is shape mapping, kept out of transport.**
-   `ChatCompletionChunkAssembler` in `openai_format.py` turns Chat
-   Completions chunks into normalized events; the concrete LM owns SSE
-   framing, retries, and errors. Retry only failures that occur before the
-   first event is yielded — a stream that already produced output is never
-   silently restarted.
-4. **Errors are typed, exactly as in `forward()`.** Pre-stream HTTP failures
-   normalize through the same `LMError` mapping; mid-stream failures raise
-   during iteration.
-
-**Explicitly out of scope, on purpose.** The existing `dspy.streamify` /
-`StreamListener` path — which parses adapter wire formats (`[[ ## ... ## ]]`,
-partial JSON, XML tags) out of raw provider bytes — is untouched and remains
-the way module-level streaming works today. Bridging it onto typed events
-(format-keyed listeners consuming `LMStreamDeltaEvent`s instead of raw bytes,
-so adapter grammars stop being duplicated inside the listener) is the
-intended future step; it is named here so nobody designs against it, but it
-is not part of this contract yet.
-
-### Planned typed LM family and routing
-
-The patterns above were designed to survive the next implementations without
-redesign. The intended sequence and the decisions already made:
-
-1. **`AnthropicLM`, then `OpenAIResponsesLM`, then `GoogleLM`** — one typed LM
-   per PR. The credential rules are placement-agnostic: what varies per
-   provider is only *where* the resolved credential goes (`Authorization:
-   Bearer` for OpenAI-shaped APIs, `x-api-key` plus `anthropic-version` for
-   Anthropic, `x-goog-api-key` for Google API keys, with OAuth tokens using
-   the Bearer slot everywhere). Each typed LM owns its placement; the
-   resolution ladder, callable handles, serialization hygiene, and typed
-   errors are identical.
-2. **Extract the shared credential resolver when the second typed LM lands**
-   (not before): a small helper implementing `explicit key (str or callable)
-   -> named api_key_env -> opt-in ambient env -> None or LMNotConfiguredError`,
-   parameterized only by the provider's ambient env name. Shared helpers are
-   extracted once a second implementation exists, not before: one
-   implementation is a pattern, two are shared code.
-3. **Providers whose API keys live in a non-Bearer header** select placement
-   by credential kind, not by widening the handle: the handle stays a string
-   or zero-argument callable.
-4. **Routing with LiteLLM fallback** (phases 3.4 and 3.5 in the migration
-   table below): a pure-lookup
-   registry mapping model-string prefixes to typed LM classes, consulted by a
-   factory; a miss falls back to the LiteLLM-backed `dspy.LM`. This composes
-   without adapter changes because `BaseLM.__call__` already normalizes both
-   forward contracts, and without serialization changes because saved states
-   record the concrete LM class. Requirements carried forward from the design
-   work: the resolution must be able to name which rung fired (typed class vs
-   LiteLLM fallback) — no silent magic; routing must not cut users off from
-   LiteLLM-only capabilities such as fine-tuning (route those back to
-   LiteLLM or raise `LMUnsupportedFeatureError` naming the fallback); and any
-   registry/catalog metadata used to populate the routing table is advisory
-   only — it may suggest capability flags but never inject credentials or
-   change what is sent on the wire.
-
-## Guide for custom adapter authors
-
-Adapters should call the LM object, not `forward()` directly.
-
-Preferred typed boundary:
+Under the text is the typed event stream, one `.events()` away. Every
+stream reads **start → deltas → end**, on every provider — dialects
+without a native start frame get one synthesized (lm15 mapping rule
+MAP-4), so consumers never branch on the backend:
 
 ```python
-request = dspy.LMRequest.from_call(
-    model=lm.model,
-    messages=messages,
-    **lm_kwargs,
+for event in lm.stream("hi").events():
+    ...   # StreamStartEvent, StreamDeltaEvent(TextDelta...), StreamEndEvent
+```
+
+Streamed and buffered calls are observationally identical afterward:
+history and usage are recorded once, when the stream completes, in the
+same shape as a buffered call. A stream that fails records nothing.
+
+Async streaming (`astream`) is not part of the landed surface yet; see
+the table at the end.
+
+## Model strings and routing
+
+The model string is lm15-native: `provider:model`, or a bare family
+name resolved by built-in rules:
+
+```python
+dspy.LM("openai:gpt-5-nano")           # explicit provider prefix
+dspy.LM("claude-haiku-4-5")            # bare family, rule-resolved
+dspy.LM("openai-codex:gpt-5.6-luna")   # OAuth subscription provider
+dspy.LM("hf:PleIAs/Baguettotron")      # in-process weights, lazy-loaded
+dspy.LM("/path/to/model-dir")          # local directory with config.json
+```
+
+Routing (model string → provider → credential) is lm15's `LMRouter`.
+One shared router serves the process; `router=` overrides it per-LM and
+always wins. Any object with `complete(Request) -> Response` — and
+optionally `stream(Request)` — can stand in as the engine. That
+structural seam **is** the custom-LM contract; there is no base class
+to subclass and no `forward()` to implement.
+
+**Endpoint pinning.** `api_base` moves the endpoint without changing
+the dialect; `api_key` rides along. This is the self-hosted convention
+(vLLM, SGLang, ollama, gateways):
+
+```python
+lm = dspy.LM(
+    "openai-chat:gemma/gemma-4-26b-a4b-it",
+    api_base="http://192.168.2.24:8000/v1",
+    api_key="inktype-local",
 )
-response = lm(request)
 ```
 
-Avoid this in adapters:
+An unresolvable bare model plus `api_base` defaults to the
+OpenAI-compatible chat dialect.
+
+## Credentials
+
+- API-key providers pick up their usual environment variables
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, ...).
+- OAuth subscription providers (`openai-codex:`, `claude-code:`) read
+  the local CLI credential files; no API key exists for them.
+- A per-LM `api_key` (endpoint pinning, above) always beats ambient
+  environment keys.
+- Program export (`dspy.programir`) scans live credential values —
+  environment keys and per-LM `api_key` kwargs — and the writer refuses
+  to serialize an artifact that would leak one.
+
+## Usage and cost: always on, always honest
+
+Every `Response` carries `usage`. Every call — typed, legacy, or
+streamed — appends one history entry:
 
 ```python
-lm.forward(...)
+lm.history[-1]   # {"model", "messages", "kwargs", "outputs", "usage", "cost", "response", "timestamp"}
 ```
 
-`BaseLM.__call__()` is the compatibility boundary. It owns input normalization, choosing the legacy or typed `forward()` path, adapting legacy outputs into `LMResponse`, and preserving public return behavior unless `experimental=True` is enabled.
+`cost` is estimated from the model catalog's per-token prices.
+`None` is an honest answer, not a gap: subscription billing
+(`openai-codex:`, `claude-code:`) and local serving have no per-token
+price. Predictions aggregate through `prediction.get_lm_usage()` and
+`prediction.get_lm_cost()` with no flag to set.
 
-During the transition, adapters may still convert `LMResponse` back to legacy parser inputs. The long-term direction is for adapters to parse `LMResponse` directly.
+## Errors: one typed error, canonical codes
 
-## Version sequence
+Every routing, transport, or provider failure surfaces as
+`dspy.core.errors.LMError` — never a provider-specific exception. The
+message names the model and lm15's canonical error code (`auth`,
+`billing`, `rate_limit`, `invalid_request`, `context_length`,
+`timeout`, `server`, `unsupported_model`, `unsupported_feature`,
+`not_configured`, `transport`, `provider`), and the lm15 exception
+rides as `__cause__` for callers that need structured fields:
 
-| Version | Custom `BaseLM.forward` contract | Public `lm(...)` behavior | LiteLLM role |
-| --- | --- | --- | --- |
-| 3.3 | Missing `forward_contract` is treated as legacy. | Typed returns available only through `experimental=True` or explicit `LMRequest` calls. | Current `dspy.LM` LiteLLM path remains the default. |
-| 3.4 | Missing `forward_contract` is treated as legacy and warns. | Still requires `experimental=True` or explicit `LMRequest` while migration continues. | Native typed LMs become preferred where available; LiteLLM is used as a compatibility fallback. |
-| 3.5 | Require explicit contract or flip default after final review. | Typed path becomes default with a legacy escape hatch. | Native typed LMs remain preferred; LiteLLM is used as a compatibility fallback but may require manual installation. |
-| 3.6 or 4.0 | Remove the legacy `forward(prompt, messages, **kwargs)` implementation contract after final review. | `forward(request: LMRequest) -> LMResponse` is the only supported `BaseLM` implementation contract. | TBD whether the LiteLLM fallback remains. |
+```text
+LMError: LM request to 'openai:gpt-5-nano' failed (billing): You have no credits remaining. ...
+```
 
-The important distinction is that removing the legacy `BaseLM.forward(prompt, messages, **kwargs)` contract does not require removing LiteLLM. LiteLLM can continue as a typed compatibility implementation that accepts `LMRequest` internally and returns `LMResponse`.
+The old plan's named hierarchy (`LMAuthError`, `LMBillingError`, ...)
+collapsed into this single type plus the code table.
 
-Before changing the default, DSPy will give custom LM authors enough time to add one of:
+## Testing your program: the same seam, scripted
+
+`dspy.DummyLM` is an ordinary `dspy.LM` bound to a scripted engine at
+the same `complete(Request) -> Response` seam every real backend uses —
+the two call faces, history, streaming, and error wrapping are the
+production code paths:
 
 ```python
-forward_contract = "legacy"
+lm = dspy.DummyLM(["Paris", "Berlin"])
+lm(prompt="Capital of France?")     # ['Paris']
+lm.calls[0]["messages"]             # recorded for assertions
 ```
 
-or:
+For wire-shape assertions, script full responses with
+`dspy.LM("fake", router=lm15.testing.FakeLM([...]))`.
 
-```python
-forward_contract = "typed_lm"
-```
+## What changed from the plan
+
+| The old plan promised | What shipped |
+| --- | --- |
+| `dspy.LMRequest` / `dspy.LMResponse` wrapper types | lm15's `Request` / `Response` used directly — no second vocabulary |
+| Typed returns behind `dspy.context(experimental=True)` | Typed face is the default; the flag does not exist |
+| `dspy.BaseLM` subclassing with `forward(request)` | The structural engine seam: any `complete(Request) -> Response` object via `router=` |
+| `forward_contract = "legacy" \| "typed_lm"` declarations | Gone — there is no `forward()` to declare a contract for |
+| `LMResponse.from_text` for minimal custom LMs | `dspy.DummyLM` / `lm15.testing.FakeLM` |
+| `dspy.LMStream` / `.result()` | `lm15.ResponseStream` / `.response` |
+| `lm.astream(...)` | Not landed yet — open item |
+| `LMAuthError`, `LMBillingError`, ... hierarchy | One `LMError` carrying lm15's canonical code; cause chained |
+| `_OpenAICompatLM` reference engine | lm15 provider engines (`OpenAIChatLM` and family), outside DSPy |
+| Credential ladder inside each typed LM | lm15 router resolution + per-LM `api_key`; export-time leak refusal |
+| `dspy.streamify` / `StreamListener` bridge | Not landed in the greenfield tree — open item |
+| LiteLLM as routing fallback | LiteLLM is gone; lm15 routes everything |
+
+The old `dspy.core.types` `LM*` vocabulary (`LMRequest`, `LMResponse`,
+`LMTextPart`, ...) still imports for compatibility, but it is not the
+LM path's vocabulary and new code should not build on it.
