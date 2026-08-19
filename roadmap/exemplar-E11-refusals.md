@@ -211,3 +211,12 @@ snippet each, with the expected code asserted.
 // entry grants: []  — but the envelope passes an open TCP fd anyway
 ```
 > `materialize: envelope supplies grant 'fd:tcp:169.254.0.1:80' not present in leaf 'main' grants row — grants are declared in the artifact, never improvised by the envelope`
+
+**R-35 · dangling checkpoint hash** `[E-09; §c1]`
+> `store: checkpoints/step_07 references sha256:e5a8… which is not present in objects/ — a checkpoint that cannot reconstruct is not a checkpoint`
+
+**R-36 · score curve crossing an objective boundary** `[E-09; D-048]`
+> `trajectory: step_09 (objective 0c44…/b201…) compared against step_07's score 0.66 (objective 03fa…/41d9…) — scores attach to configurations; re-read step_07 as 0.63 (rescored) or do not compare`
+
+**R-37 · diff naming a frozen field** `[E-09; §e2 fixed points]`
+> `trajectory: diff at step_04 rewrites '2_signature/draft' (external signature) — not in the optimizable set; structure moves live within the §d grammar, the task's type is a fixed point`

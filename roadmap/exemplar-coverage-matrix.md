@@ -62,7 +62,7 @@ provider market · versions block · semantic ground audit.
 | E-06 | (DONE: exemplar-E06-react.md) ReAct: dynamic tools, Try/Raise/Break, turns, history role, aforward twin | G2, G9, G16 |
 | E-07 | (DONE: exemplar-E07-rlm.md) RLM: interpreter leaf, While, generated code, grants + isolation levels | G1, G13 |
 | E-08 | weight regimes: joint/fork/shared-base+delta as hash facts | G6 |
-| E-09 | the store: content-addressed form + View-3 trajectory + objective boundary | G7, G8 |
+| E-09 | (DONE: exemplar-E09-store-trajectory.md) the store: content-addressed form + View-3 trajectory + objective boundary | G7, G8 |
 | E-10 | streaming: role-typed deltas, per-face grammars | G10 |
 | E-11 | REFUSALS: every named refusal, one snippet + expected error each | G11, G19 |
 | E-12 | MCP tool rung (bytes now, execution with E/F) | G12 |
