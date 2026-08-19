@@ -232,3 +232,27 @@ snippet each, with the expected code asserted.
 
 **R-41 · ambiguous lowering composition** `[E-05; Law 4]`
 > `lowerings 'retry' and 'two_step' both annotate 'answer' with no declared order — composition is nesting, declared; write Retry(TwoStep(p)) or TwoStep(p, extract=Retry(…))`
+
+**R-42 · authored adapter on a foreign profile engine** `[E-03; D-026/D-040]`
+> `load (declared-tier engine, ts): entry 'house_ansi' requires python authored-codec evaluation — outside the declared-tier profile; unmet requirement named, template half remains readable (explain works, format refuses)`
+
+**R-43 · strategy resolution with no admissible rule** `[E-03]`
+> `strategies: role 'reasoning' bound 'auto' — no registered rule's predicate passes for capabilities {instruct: false, completion: true, native_reasoning: false}; refusing (a base model with no reasoning conduct is a configuration, not a fallback)`
+
+**R-44 · constructed object fails the contract probe** `[E-04; D-036]`
+> `admission: 'house' constructor returned an object with no callable 'complete' — authored entries are admitted by implementing the declared contract 'complete(Request)->Response', not by name or base class`
+
+**R-45 · packaged class missing from the env block** `[E-04; §e0-class]`
+> `compile: model entry 'team_lm' declares origin packaged (corp_llm.TeamLM) but no python env-block dependency provides 'corp_llm' — packaged means uv sync reconstructs it; declare the dep or bake the source`
+
+**R-46 · delta outside the face grammar** `[E-10]`
+> `stream (face embed-1): received delta kind 'TextDelta' — embed-1 declares no stream grammar; a streaming embed backend is nonconformant, buffer it`
+
+**R-47 · declared-field delta after end** `[E-10; lm15 grammar]`
+> `stream: ThinkingDelta received after 'end' event — grammar lm15/stream-1 is start delta* end|error; late deltas are a protocol violation, not extra data`
+
+**R-48 · MCP server without return-schema evidence** `[E-12; D-027]`
+> `load: KB_MCP_SERVER lists 'kb_search' without outputSchema — identity verification requires the return leg; name+input alone under-verifies (the known bridge gap D-027 records)`
+
+**R-49 · undeclared sampling request** `[E-12; D-027]`
+> `mcp: server 'kb' issued a sampling request but tool 'kb_search' declares no sampling binding — a sidecar LM call must be a named binding (model + credential_ref) or it is refused`

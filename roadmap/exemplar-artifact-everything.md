@@ -530,3 +530,28 @@ a fixture and the build breaks — before the spec drifts, not after.
 Ratification rule this section implies: **a new manifest name whose
 ground would be "a package's behavior" is refused at review** — it must
 land in a contract, a standard, or the artifact itself first.
+
+## 14. Addenda from the coverage audit (G15, G18)
+
+**G15 — the inputs-bag splat as bytes (D-041):** one §5 call in the
+record-splat convention — key set statically known from the manifest,
+collisions refuse at compile naming the key:
+
+```jsonc
+{"node": "Call", "leaf": "draft",
+ "splat_record": {"node": "Var", "name": "inputs"},        // signature-record spread
+ "kwargs": {"passages": {"node": "Var", "name": "passages"},
+            "priority": {"node": "Attr", "value": {"node": "Var", "name": "pr"}, "attr": "priority"}}}
+```
+
+**G18 — engine system deps declared (ex-08's rule):** the serve-mode
+variant's polisher entry carries its engine needs:
+
+```jsonc
+"engine": "vllm-offline",
+"system_deps": [{"name": "VLLM_USE_FLASHINFER_SAMPLER", "value": "0"},
+                {"name": "VLLM_ENABLE_V1_MULTIPROCESSING", "value": "0"}]
+```
+
+(G3's lowered-node byte shape lives in E-05 §3 — cross-referenced, not
+duplicated.)

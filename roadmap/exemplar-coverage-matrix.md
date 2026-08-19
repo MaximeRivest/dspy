@@ -56,16 +56,16 @@ provider market · versions block · semantic ground audit.
 |---|---|---|
 | E-01 | the no-training author (EX-P §12 extracted, runnable) | done in EX-P |
 | E-02 | minimal-syntax deduction + provenance (§9) | done in EX-P |
-| E-03 | adapters deep: authored entry, strategy flip on capabilities, base-model polyfill | G4, G17 |
-| E-04 | authored LM class + structural admission | G5 |
+| E-03 | (DONE: exemplar-E03-adapters-deep.md) adapters deep: authored entry, strategy flip, base-model polyfill | G4, G17 |
+| E-04 | (DONE: exemplar-E04-authored-lm.md) authored LM class + structural admission | G5 |
 | E-05 | (DONE: exemplar-E05-lowerings.md) lowerings: CoT + parse-fallback, sugar view vs core view | G3 |
 | E-06 | (DONE: exemplar-E06-react.md) ReAct: dynamic tools, Try/Raise/Break, turns, history role, aforward twin | G2, G9, G16 |
 | E-07 | (DONE: exemplar-E07-rlm.md) RLM: interpreter leaf, While, generated code, grants + isolation levels | G1, G13 |
 | E-08 | (DONE: exemplar-E08-weight-regimes.md) weight regimes: joint/fork/shared-base+delta as hash facts | G6 |
 | E-09 | (DONE: exemplar-E09-store-trajectory.md) the store: content-addressed form + View-3 trajectory + objective boundary | G7, G8 |
-| E-10 | streaming: role-typed deltas, per-face grammars | G10 |
+| E-10 | (DONE: exemplar-E10-streaming.md) streaming: role-typed deltas, per-face grammars | G10 |
 | E-11 | REFUSALS: every named refusal, one snippet + expected error each | G11, G19 |
-| E-12 | MCP tool rung (bytes now, execution with E/F) | G12 |
+| E-12 | (DONE: exemplar-E12-mcp-tool.md, DEFER-marked for execution) MCP tool rung | G12 |
 | EX-P/EX-A | the integration pair — every axis once | stays as is |
 
 ## 4. Method note
