@@ -555,3 +555,9 @@ variant's polisher entry carries its engine needs:
 
 (G3's lowered-node byte shape lives in E-05 §3 — cross-referenced, not
 duplicated.)
+
+**Open byte-shape question (f)** (from E-10 §§5–6): per-field
+`field_stream` facts and the `trajectory_stream` grammar version — do
+they live in the manifest (bake-time derivable, hence arguably
+artifact) or in explain-output only (derived views)? The holdback and
+reorder rules need a normative home either way.

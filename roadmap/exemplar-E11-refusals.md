@@ -256,3 +256,9 @@ snippet each, with the expected code asserted.
 
 **R-49 · undeclared sampling request** `[E-12; D-027]`
 > `mcp: server 'kb' issued a sampling request but tool 'kb_search' declares no sampling binding — a sidecar LM call must be a named binding (model + credential_ref) or it is refused`
+
+**R-50 · program consuming its own trajectory** `[E-10 §6]`
+> `forward: call to 'dspy.trajectory' at modules.py:18 — the observability channel is instrumentation-only, never load-bearing; no leaf exposes it to program logic`
+
+**R-51 · trajectory event outside the grammar** `[E-10 §6]`
+> `trajectory stream: event kind 'user_rating' — not in trajectory_stream 0.1; feedback enters through the run-log store's ingestion (D-048), not by extending the live grammar ad hoc`
