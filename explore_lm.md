@@ -225,7 +225,7 @@ prediction.get_lm_usage()
 {'openai-codex:gpt-5.6-luna': Usage(input_tokens=140, output_tokens=41, total_tokens=181, cache_read_tokens=0, cache_write_tokens=None, reasoning_tokens=0, input_audio_tokens=None, output_audio_tokens=None)}
 ```
 
-And `lm.history` remembers every call, so the whole session sums in
+And `lm.history` remembers every call, so the whole session sums inwhat i
 one line:
 
 ```python
