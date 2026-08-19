@@ -287,8 +287,14 @@ min_drafter  = dspy.LM("hf:PleIAs/Baguettotron", device="cuda")
 min_polisher = dspy.LM("openai-chat:gpt-4o-mini", native_fc=True)
 min_embedder = dspy.Model("hf:BAAI/bge-small-en-v1.5")   # ⇒ embed-1
 min_sam      = dspy.Model("hf:facebook/sam3")            # ⇒ segment-1
-min_priority = dspy.Model.authored("leaves/priority_gam.R",  # ⇒ r, fit-1, rds
-                                   effects="pure")           # purity: a CLAIM, never inferred
+min_priority = dspy.Model("leaves/priority_gam.R",       # ⇒ authored (path shape), r (ext),
+                          effects="pure")                 #   fit-1 (structural), rds (default);
+                                                          # purity: a CLAIM, never inferred
+# One argument, four deductions: `hf:`/provider string ⇒ packaged
+# identity; a source-file path ⇒ authored (extension names the
+# language); a directory with config.json ⇒ local weights — the same
+# rule dspy.LM already applies. `.authored(...)` remains only as the
+# explicit spelling and for inline `source=` strings (no path to read).
 
 
 class MinAnswerer(dspy.Module):
