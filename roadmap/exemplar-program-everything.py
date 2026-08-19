@@ -357,3 +357,86 @@ prog = dspy.optim.Train(target=prog.priority,
 dspy.export(prog, "artifacts/answerer.ir", metric=min_metric, devset=min_tickets.dev)
 # Identical artifact class as §7: the terse syntax never produces an
 # implicit manifest — minimal to write, explicit to read.
+
+# ======================================================================
+# 10 · VARIANT A — NO TRAINING: composed from EXISTING ARTIFACTS,
+#      everything runnable locally by the engine (the ship-object pole).
+#      Same program class, same forward, same signatures — only the pool
+#      entries change: each binds an already-made artifact instead of a
+#      trainable source. No §5 metric needed to RUN (kept only if you
+#      want local re-scoring); no §6 at all.
+# ======================================================================
+
+# Entries from artifacts: a path to an artifact/weights dir resolves to
+# local baked weights (the dspy.LM config.json rule, generalized); the
+# face and engine come from the artifact's own manifest — deduction from
+# a source that is already explicit. All frozen: no training statements
+# exist in this variant, so every weight-ref tag is simply never moved.
+art_drafter  = dspy.Model("artifacts/drafter-ft.ir")       # tuned in §6, materialized; ⇒ chat
+art_polisher = dspy.Model("artifacts/polisher-distill.ir", # a distilled small chat model — local now:
+                          engine="vllm-offline")           # §e0-engine: serve-mode switch, a field
+art_embedder = dspy.Model("artifacts/embedder-ft.ir")      # tuned embed-1 entry, safetensors
+art_sam      = dspy.Model("hf:facebook/sam3")              # unchanged — already frozen upstream
+art_priority = dspy.Model("artifacts/priority-gam.ir")     # R source + fitted RDS state inside;
+                                                           # receiver needs the R toolchain (declared
+                                                           # system dep) — or refuses loudly, named
+
+class LocalAnswerer(MinAnswerer):
+    def __init__(self):
+        super().__init__()
+        for leaf, entry in {"draft": art_drafter, "polish": art_polisher,
+                            "embed": art_embedder, "locate": art_sam,
+                            "priority": art_priority}.items():
+            getattr(self, leaf).bind(model=entry)          # binding swap — a recorded deviation
+                                                           # (scores detach; re-score if you kept
+                                                           # the metric; §e0-binding doctrine)
+
+local_prog = LocalAnswerer()
+dspy.export(local_prog, "artifacts/answerer-local.ir")     # no metric=: the lean ship object (§e) —
+                                                           # optimizable tags dropped, yardstick omitted;
+                                                           # fully offline-runnable after uv sync
+
+# ======================================================================
+# 11 · VARIANT B — ALL HOSTED: every entry a provider service. The
+#      declared-tier profile artifact (D-023): no authored code, no
+#      baked weights, no rung-0 anything — loads on ANY conforming
+#      engine (go/ts included) with zero code execution and zero
+#      sidecars. Identity bakes; endpoints/credentials are NAMES.
+# ======================================================================
+
+svc_drafter  = dspy.Model("openai-chat:gpt-4o-mini")               # chat; LM_API_KEY (name only)
+svc_polisher = dspy.Model("claude-sonnet-4-5", native_citations=True)
+svc_embedder = dspy.Model("openai:text-embedding-3-small")         # provider embed face —
+                                                                   # same embed-1 contract, outer rung
+svc_sam      = dspy.Model("replicate:meta/sam-3",                  # hosted segment face
+                          endpoint_ref="SEGMENT_ENDPOINT")         # role-named slot, receiver binds
+svc_priority = dspy.Model.served(                                  # the R GAM deployed as a service
+    contract="predict-1",                                          # (e.g. plumber/vetiver on a box):
+    signature="question, customer_tier -> priority: float",        # no source travels — only the
+    endpoint_ref="PRIORITY_ENDPOINT",                              # contract + identity to verify
+    identity="acme/priority-gam@sha256:9f2c...",                   # against the bound backend
+    credential_ref="PRIORITY_API_KEY")
+
+class HostedAnswerer(MinAnswerer):
+    def __init__(self):
+        super().__init__()
+        for leaf, entry in {"draft": svc_drafter, "polish": svc_polisher,
+                            "embed": svc_embedder, "locate": svc_sam,
+                            "priority": svc_priority}.items():
+            getattr(self, leaf).bind(model=entry)
+
+hosted_prog = HostedAnswerer()
+dspy.export(hosted_prog, "artifacts/answerer-hosted.ir",
+            metric=min_metric, devset=min_tickets.dev)     # metric CAN stay hosted-friendly: the
+                                                           # judge is itself a declared chat entry
+# Export preflight (D-023): "declared-tier profile: YES" — a few hundred
+# KiB, the §e0 trade made visible. Load on the receiver: resolve every
+# endpoint_ref + credential_ref from THEIR environment, verify each
+# backend serves the declared identity (root/alias/hash evidence rule),
+# refuse loudly per unmet binding — then run. Re-binding all five
+# entries to different providers is environment variables, not a rebuild
+# (example-10 doctrine, now across five faces).
+# Training in this variant: possible ONLY where a service exposes a
+# training contract (a Tinker-class sgd-1 binding for svc_drafter, a
+# provider fine-tune API); everything else is frozen-by-placement — the
+# honest statement, never a silent no-op.
