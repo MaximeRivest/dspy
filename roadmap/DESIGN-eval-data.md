@@ -86,6 +86,65 @@ predicate translates mechanically, and the hash catches semantic drift
 on the store's snapshot discipline — which is exactly why `dataset_identity`
 pins a revision (§1): the two rules lock together.
 
+### 2a. The serialized form and the frontend
+
+The pipeline serializes as verbs + expression trees in the node-set JSON
+encoding (the `node` discriminator vocabulary, `schema/node-set.schema.json`)
+plus **one new node: `Col`** — a column reference, the row-scope sibling of
+`Var`. Example step: `{"verb": "filter", "expr": {"node": "Compare", "op":
+"lt", "left": {"node": "Call", "builtin": "len", "args": [{"node": "Col",
+"name": "context"}]}, "right": {"node": "Const", "value": 4000}}}`. The
+grammar is small enough that `explain` renders steps back as readable
+expressions (`answer = answers["text"][0]`) — round-trip legibility.
+
+**The authoring surface is the dpyr chain** (`MaximeRivest/dpyr` — dplyr's
+verb vocabulary as Python method chains over a `col` expression proxy,
+executing on polars or duckdb, semantics differentially verified against
+real dplyr):
+
+```python
+(dspy.Dataset.hf("rajpurkar/squad", revision="5fe9c5f")
+    .mutate(answer=col.answers["text"][0])
+    .filter(col.context.len() < 4000)
+    .select("question", "context", "answer")
+    .slice_sample(n=300, seed=7)
+    .split(train=0.8, dev=0.2, seed=7)
+    .with_inputs("question", "context"))
+```
+
+The `col` proxy is the tree-building primitive (`col.amount > 6` builds a
+`Compare` node); a captured-lambda spelling can arrive later as sugar — the
+D-011 layering (canonical builder + convenient spellings, one object
+underneath). Authored UDF steps use a visibly different spelling
+(`.mutate_with(fn)`) because they are a different tier: captured source,
+provenance, lost static verification. Pushdown has **no syntax at all** —
+it is placement, not authoring: the same tree against a warehouse-bound
+dataset compiles to SQL at the binding.
+
+**The dpyr integration seam.** Three roles, strictly separated: dpyr is a
+*frontend* (the chain builds the tree) and a *grade-2 engine* (polars at
+rung 0, duckdb fused/pushed-down at the outer rung); **the closed IR tree is
+the only serialized truth** — never a pickled chain, never backend
+expressions. What dpyr must expose for this:
+
+1. **Plan export** — a capture seam yielding the logical plan as plain data
+   (the closed tree), not polars/duckdb expression objects; alternatively
+   dspy wraps the proxy and builds the tree itself, using dpyr purely for
+   execution.
+2. **Vocabulary gate** — a chain using verbs outside the ratified ETL
+   vocabulary (`group_by`, `summarize`, joins, windows) still *runs* in
+   dpyr but **refuses loudly at export**, naming the verb and
+   `etl_version`. When a real case forces admission, dpyr's
+   dplyr-verified semantics are the candidate semantics for ratification.
+3. **Semantics pin reference** — two pins must be reconciled at the edges:
+   dpyr/dplyr semantics govern the verb layer (e.g. `filter`'s NA/None row
+   handling), node-set semantics govern scalar arithmetic (exact int64,
+   float repr). Divergences are ruled in the fixture corpus — dpyr's own
+   `SEMANTICS.md` discipline (differential golden files + cross-engine
+   fuzzing, divergences written down) is the instrument, extended to the
+   IR: the same fixtures that hold dpyr to dplyr hold every ETL engine to
+   the contract.
+
 Rules:
 
 - **Determinism.** Every verb is pure and seeded. Therefore
