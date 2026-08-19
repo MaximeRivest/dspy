@@ -136,21 +136,92 @@ Ratified adapter-ir entry shape (D-018/D-031/D-032). Three entries used
 here; `identity` is the degenerate preset (⟂ DRAFT(D-049) as a *named
 builtin*, not a new shape).
 
+Two forms exist and BOTH must be legal bytes: the **reference form**
+(name a builtin preset — the common case) and the **full entry form**
+(the adapter-rfc "Lens" shape: template + derived-or-declared parser +
+strategy RULES as data + codec bindings + `turns`, per-entry versions —
+what `Adapter.dump_entry()` already emits in the greenfield tree).
+
 ```jsonc
     "4_adapter": {
-      "chat":  {"preset": "chat", "adapter_ir_version": "0.2.0"},
+      // —— reference form (builtin presets; the common case) ——
       "json":  {"preset": "json", "adapter_ir_version": "0.2.0",
                 "config": {"response_format_routing": {"resolved": "json_object"}}},
       "identity": {"preset": "identity", "adapter_ir_version": "0.2.0"},   // ⟂ DRAFT(D-049)
-      "sam_points": {                                                      // ⟂ DRAFT(D-049): a preset
-        "preset": "sam_points",                                            //   for the segment face —
-        "adapter_ir_version": "0.2.0",                                     //   same entry record
-        "strategies": {"media": "native_spatial_prompts"},                 //   role → strategy binding
-        "codecs": {"region": {"output_codec": "mask_rle"}},                //   shape codec, named pool
-        "literal_table": {"prompt_point_policy": "center_of_text_match"}   //   text-optimizable literal
+
+      // —— full entry form: the chat entry, dumped (adapter-rfc shape) ——
+      "chat": {
+        "name": "chat",
+        "adapter_ir_version": "0.2.0",
+        "versions": {"strategies": "1.2.0-draft", "codecs": "1.0"},        // per-entry versions (D-024)
+        "template": {                                    // the constrained template language —
+          "messages": [                                  //   slots + for-blocks + directives, NOT Jinja
+            {"role": "system", "content": "Your input fields are:\n{% for f in inputs %}[[ ## {f.name} ## ]]: {f.type}\n{% endfor %}\n{instruction}\n{fragments('system')}"},
+            {"role": "demos"},                           // directive role → expands to message pairs
+            {"role": "user", "content": "{% for f in inputs %}[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}\n{fragments('user')}\nAnswer using exactly this pattern:\n{% for f in outputs %}[[ ## {f.name} ## ]]\n{f.value}\n{% endfor %}\n[[ ## completed ## ]]"}
+          ]
+        },
+        "parser": {"kind": "lens"},                      // DERIVED from the template (the Lens law:
+                                                         //   parse(render(x)) == x; refuses at
+                                                         //   construction naming any non-invertible
+                                                         //   slot — never a weak parser silently)
+        "strategies": {                                  // role → RULE (data), not just a name:
+          "reasoning": {"kind": "rule",
+            "predicate": {"capability": "native_reasoning"},   // over the SIX declared facts only
+            "hides": ["reasoning"],                            // shrink the exchange signature
+            "engine_controls": {"request_patch": {"reasoning": {"effort": "medium"}}},
+            "routings": [{"kind": "channel", "channel": "reasoning", "field": "reasoning"}],
+            "fallback": "prefix_cot"},                         // next rule when predicate fails
+          "tools": {"kind": "rule",
+            "predicate": {"capability": "native_function_calling"},
+            "routings": [{"kind": "channel", "channel": "tool_calls", "field": "tool_calls"}],
+            "turns": {"assistant": {"kind": "native"},         // the render dual of routings:
+                      "result":    {"kind": "native"}}}        //   how past calls/results are spelled
+        },                                                     //   into the next prompt; text-kind
+                                                               //   turns are probe-checked at
+                                                               //   registration: parse(render(call))==call
+        "codecs": {"__default__": {"input_codec": "text_pythonish",
+                                   "output_codec": "text_pythonish"}},
+        "literal_table": {                                     // DERIVED summary view, never authored
+          "input_field_render": "[[ ## {name} ## ]]",
+          "output_field_render": "[[ ## {name} ## ]]",
+          "field_separator": "\n\n",
+          "output_structure": "markers",
+          "completed_marker": "[[ ## completed ## ]]",
+          "output_requirement": "Answer using exactly this pattern.",
+          "parse_pattern": null
+        }
+      },
+
+      // —— full entry form: the spatial preset (segment face) ——
+      "sam_points": {                                    // ⟂ DRAFT(D-049): same record, non-chat face
+        "name": "sam_points",
+        "adapter_ir_version": "0.2.0",
+        "versions": {"strategies": "1.2.0-draft", "codecs": "1.0"},
+        "template": null,                                // no token stream to render — the exchange
+        "parser": {"kind": "pipeline", "steps": []},     //   is typed end-to-end; declared, not lensed
+        "strategies": {"media": {"kind": "rule",
+          "predicate": {"capability": "image_input"},
+          "engine_controls": {"request_patch": {"prompts": {"policy": "center_of_text_match"}}},
+          "routings": [{"kind": "channel", "channel": "masks", "field": "region"}]}},
+        "codecs": {"region": {"output_codec": "mask_rle"},
+                   "screenshot": {"input_codec": "image_part"}},
+        "literal_table": {"prompt_point_policy": "center_of_text_match"}   // text-optimizable literal
       }
     },
 ```
+
+What the full form fixes as bytes (each was prose in the study until
+now): the **lens** is `parser: {"kind": "lens"}` — derivation is a
+construction-time act with loud refusal, so the artifact never carries a
+hand-written parser for lensable templates; a **strategy rule** is five
+faces of plain data (predicate over the closed six-fact capability
+vocabulary · hides · fragments · engine_controls/request_patch ·
+routings) plus the optional **`turns`** face (render-dual of routings,
+probe-gated); **codecs** are per-field render/parse pairs at the type
+boundary; the **literal_table** is derived, never authored. Non-chat
+faces reuse the identical record with `template: null` — the degenerate
+case is the same shape, not a different one.
 
 ## 5. Component 5 — forward AST (ratified node-set 0.5 encoding)
 
@@ -387,7 +458,7 @@ pipeline with node-set expressions + the `Col` node.
 |---|---|
 | module tree + bindings + delta | §2 |
 | roles + shapes + deduction provenance | §3 |
-| adapters: presets, strategies, codecs, literal table (incl. spatial) | §4 |
+| adapters, BOTH forms: reference + full entry (template · lens parser · strategy rules with predicate/hides/fragments/request_patch/routings/`turns` · codecs · derived literal table) | §4 |
 | forward as node-set JSON | §5 |
 | tools + floors + effects | §6 |
 | interpreter structural profile | §7 (fixture note) |
