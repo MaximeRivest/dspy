@@ -425,3 +425,67 @@ dspy.export(hosted_prog, "artifacts/answerer-hosted.ir",
 # Training: only where a provider sells a training contract (Tinker-
 # class sgd-1; provider fine-tune APIs; a serving platform's refit job
 # = hosted fit-1) — otherwise frozen-by-placement, stated.
+
+# ======================================================================
+# 12 · THE WHOLE SCRIPT, NO-TRAINING AUTHOR — a fresh program by a user
+#      who never plans to train or optimize anything. This is the
+#      everyday case, and it must be the SHORTEST path in the system:
+#      no datasets, no ETL, no metric, no trainers, no tags — those
+#      sections simply do not exist here, and nothing below hints at
+#      them. What remains is exactly: models, signatures, one module,
+#      run, save. (Self-contained: this section repeats nothing above.)
+# ======================================================================
+
+# import dspy
+# from my_tools import search_policies          # a plain function
+#
+# gpt   = dspy.Model("openai-chat:gpt-4o-mini", native_fc=True)
+# local = dspy.Model("models/qwen3-4b-q4.gguf")           # laptop model, llama.cpp
+# sam   = dspy.Model("fal:sam-3")                         # hosted segmenter
+# gam   = dspy.Model("models/priority_gam.rds")           # a colleague's fitted R model
+#
+#
+# class Answerer(dspy.Module):
+#     def __init__(self):
+#         self.priority = dspy.Predict(
+#             "question, customer_tier -> priority: float", model=gam)
+#         self.locate = dspy.Predict(
+#             "screenshot: dspy.Image, ui_query -> region: dspy.Mask", model=sam)
+#         self.search = dspy.Tool(search_policies)
+#         self.draft = dspy.Predict(
+#             "question, passages, priority -> answer", model=local)
+#         self.polish = dspy.Predict(
+#             "question, draft_answer -> answer @citations", model=gpt)
+#
+#     def forward(self, inputs):
+#         pr = self.priority(question=inputs.question,
+#                            customer_tier=inputs.customer_tier)
+#         query = inputs.question
+#         if inputs.screenshot is not None:
+#             region = self.locate(screenshot=inputs.screenshot,
+#                                  ui_query=inputs.question)
+#             query = query + " ui:" + region.label
+#         passages = self.search(query=query, k=4)
+#         draft = self.draft(question=inputs.question,
+#                            passages=passages, priority=pr.priority)
+#         if pr.priority > 0.8:
+#             return self.polish(question=inputs.question,
+#                                draft_answer=draft.answer)
+#         return draft
+#
+#
+# prog = Answerer()
+# print(prog(question="Printer flashes red twice, then dies.",
+#            customer_tier="enterprise").answer)
+#
+# dspy.export(prog, "answerer.ir")              # still one line, still the full
+#                                               # artifact — future-you (or Flex)
+#                                               # can train it LATER without any
+#                                               # rewrite: every axis is present
+#                                               # in the IR, just untagged.
+#
+# What the no-training author never typed: dataset, metric, loss, rung,
+# contract, engine, adapter, placement, isolation, credential value.
+# What they still got, for free: pinned identities, resolved faces,
+# declared deps, a shippable artifact, and a program that is ALREADY
+# the search space if anyone ever points an optimizer at it.
