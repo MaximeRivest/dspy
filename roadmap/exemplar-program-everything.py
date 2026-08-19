@@ -51,6 +51,10 @@ embed_pairs = (
 # ----------------------------------------------------------------------
 
 # In-process trainable LM: weights bake at rung 0 (engine: transformers).
+# Chat face. dspy.LM is SUGAR: the same pool-entry object as dspy.Model,
+# with the chat face asserted (refuses if identity resolves elsewhere).
+# Chat-face capability facts (native_fc, ...) are kwargs that REQUIRE the
+# resolved face to be chat. One object, two spellings (D-011 layering).
 drafter_lm = dspy.LM("hf:PleIAs/Baguettotron", device="cuda")     # 8b bake; programir_weight_spec
 
 # Hosted LM, declared tier: identity bakes, endpoint/credential bind.
@@ -131,15 +135,19 @@ def search_policies(query: str, k: int = 4) -> list[str]:
 
 class Answerer(dspy.Module):
     def __init__(self):
+        # ONE binding kwarg for every leaf: model=. (lm= is retired —
+        # under the contract family an LM entry IS a model entry whose
+        # face resolved to chat; two kwargs would force the user to know
+        # the face before binding, which deduction exists to remove.)
         self.draft = dspy.Predict(
             "question, passages, priority -> answer: str, "
             "reasoning: str @reasoning",                          # role marker (D-011); intent, not exhaust
-            lm=drafter_lm,                                        # explicit binding — no ambient settings
+            model=drafter_lm,                                     # explicit binding — no ambient settings
             adapter=dspy.adapters.preset("chat"),                 # adapter = preset entry (D-018)
         )
         self.polish = dspy.Predict(
             "question, draft_answer -> answer: str @citations",
-            lm=polisher_lm,
+            model=polisher_lm,
             adapter=dspy.adapters.preset("json"),
         )
         self.search = dspy.Tool(search_policies)
@@ -164,7 +172,7 @@ class Answerer(dspy.Module):
         # The migration valve (polyfill→native, the roles-governance
         # loop): the SAME intent can bind a chat-face VLM with a textual
         # strategy instead of the native segment face —
-        #   dspy.Predict(..., lm=vlm, adapter=dspy.adapters.preset(
+        #   dspy.Predict(..., model=vlm, adapter=dspy.adapters.preset(
         #       "json", strategies={"media": "textual_mask_coords"}))
         # — one binding swap, a recorded View-3 choice diff. When
         # providers converge on a native mask channel in the chat
@@ -284,8 +292,8 @@ dspy.export(program, "artifacts/answerer.ir",
 #   extension; fit-1 vs sgd-1 structurally (which training verbs the
 #   engine declares); state_format defaulted per language; isolation
 #   floor defaulted from the D-040/D-043 trust profile (authored_by).
-min_drafter  = dspy.LM("hf:PleIAs/Baguettotron", device="cuda")
-min_polisher = dspy.LM("openai-chat:gpt-4o-mini", native_fc=True)
+min_drafter  = dspy.Model("hf:PleIAs/Baguettotron", device="cuda")   # ⇒ chat (causal-LM arch)
+min_polisher = dspy.Model("openai-chat:gpt-4o-mini", native_fc=True) # ⇒ chat (provider string)
 min_embedder = dspy.Model("hf:BAAI/bge-small-en-v1.5")   # ⇒ embed-1
 min_sam      = dspy.Model("hf:facebook/sam3")            # ⇒ segment-1
 min_priority = dspy.Model("leaves/priority_gam.R",       # ⇒ authored (path shape), r (ext),
@@ -305,10 +313,10 @@ class MinAnswerer(dspy.Module):
         # `adapter=` appears only to override.
         self.draft = dspy.Predict(
             "question, passages, priority -> answer, reasoning @reasoning",
-            lm=min_drafter)
+            model=min_drafter)
         self.polish = dspy.Predict(
             "question, draft_answer -> answer @citations",
-            lm=min_polisher, adapter=dspy.adapters.preset("json"))  # explicit: overrides chat default
+            model=min_polisher, adapter=dspy.adapters.preset("json"))  # explicit: overrides chat default
         self.search = dspy.Tool(search_policies)
         self.embed = dspy.Predict("text -> embedding: list[float]",
                                   model=min_embedder)
