@@ -157,9 +157,10 @@ class Answerer(dspy.Module):
             model=priority_model,
             adapter=dspy.adapters.identity())
         self.locate = dspy.Predict(
-            "screenshot @media, ui_query -> region: dspy.Mask",   # media role (component 2)
-            model=sam_model,
-            adapter=dspy.adapters.preset("sam_points"))           # spatial-prompt adapter; optimizable
+            "screenshot: dspy.Image, ui_query -> region: dspy.Mask",  # shape Image ⇒ role media
+            model=sam_model,                                      # (shape/role split: `media` is the
+            adapter=dspy.adapters.preset("sam_points"))           # role, Image the shape — @image
+                                                                  # would be a shape in a role costume)
         # The migration valve (polyfill→native, the roles-governance
         # loop): the SAME intent can bind a chat-face VLM with a textual
         # strategy instead of the native segment face —
@@ -313,8 +314,8 @@ class MinAnswerer(dspy.Module):
                                   model=min_embedder)
         self.priority = dspy.Predict("question, customer_tier -> priority: float",
                                      model=min_priority)
-        self.locate = dspy.Predict("screenshot @media, ui_query -> region: dspy.Mask",
-                                   model=min_sam)
+        self.locate = dspy.Predict("screenshot: dspy.Image, ui_query -> region: dspy.Mask",
+                                   model=min_sam)     # role `media` deduced from shape Image
 
     forward = Answerer.forward                                    # identical logic, verbatim
 
