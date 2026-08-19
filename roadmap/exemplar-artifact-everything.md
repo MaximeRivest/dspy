@@ -478,3 +478,55 @@ name vs reusing `local_rpc`; (d) `Col`'s home (node-set minor bump vs an
 etl-scoped grammar); (e) whether `deductions` live in provenance (here)
 or beside each field (`role_resolved_from` shows the alternative —
 pick ONE at ratification).
+
+## 13. Semantic ground — what pins every name's meaning (the 2036 test)
+
+The artifact/engine/contract split, as one test each:
+
+> **If two different engines must agree on it → contract. If it changes
+> per run → engine. If changing it changes what the program IS →
+> artifact.**
+
+lm15 `Request`/`Response` values are therefore NEVER in the artifact:
+they are per-call engine data. The artifact bakes the *recipe* for them
+(template, strategies, config, bindings) plus the contract name +
+version; the contract pins what the recipe means.
+
+Every name the manifest uses must be pinned by one of exactly three
+acceptable grounds — and by nothing else:
+
+1. **A versioned contract with fixtures** — a paper spec + corpus a
+   stranger implements from, independent of any code. Proven in-house:
+   lm15-go/ts built from 304 fixture vectors, never from reading
+   Python; the node-set interpreter rebuilt in ~60 lines from spec
+   (example 13). Implementations are engines — replaceable; contracts
+   are ground (D-028).
+2. **An industry standard** — pinned by ecosystems larger than us.
+3. **Baked source in the artifact itself** — self-carrying.
+
+The audit of THIS artifact:
+
+| name | ground | verdict |
+|---|---|---|
+| `versions.lm15` · faces · roles · node-set ops · builtins (`len`…) · capability facts | contract repos (lm15-contract, adapter-ir, programir + drafted vocabularies) | ✅ |
+| `preset: "chat"` (reference form) | adapter-ir contract — presets fixtured AS BYTES (byte-reproduce ChatAdapter) | ✅ |
+| full adapter entries (template, rules, turns) | data in the artifact — self-carrying | ✅ |
+| safetensors + tying.json · onnx · gguf · Arrow · PEP 723 · JSON Schema | industry standards | ✅ |
+| authored code (tools, R body, metric, LM classes) + inline deps | baked source + per-language env blocks | ✅ |
+| ETL pipelines (verbs + `Col` trees) + `result_hash` | drafted contract vocabulary + node-set expressions | ✅ (on D-047 ratification) |
+| `engine: "transformers"` · `rebuild_config.json` architectures | ⚠️ HF ecosystem conventions — no contract of ours pins what `LlamaForCausalLM` means mathematically | **honest lean #1** — the industry-wide weights floor; declared in a named field, never implicit |
+| `format: "rds"` (and any declared non-standard state format) | ⚠️ R serialization, unspecified | **honest lean #2** — carried as data: `bit_for_bit: false` |
+
+The two ⚠️ rows are the whole residue, both at the weights/engine
+floor, both shared with the entire industry, and both DECLARED as
+fields rather than hidden. Everything above them passes the stranger
+test: artifact + contract repos + standard formats, zero project code,
+suffices to rebuild an engine.
+
+**The guarantee is operational, not aspirational:** the contract repos
+keep three independent grade-1 readers green on the fixture corpus, so
+the day any artifact needs Python to be interpreted, a Go reader fails
+a fixture and the build breaks — before the spec drifts, not after.
+Ratification rule this section implies: **a new manifest name whose
+ground would be "a package's behavior" is refused at review** — it must
+land in a contract, a standard, or the artifact itself first.
