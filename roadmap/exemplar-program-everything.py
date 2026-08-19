@@ -265,3 +265,80 @@ dspy.export(program, "artifacts/answerer.ir",
 # Each accepted proposal = new devset hash / metric version = an
 # objective-boundary node in the trajectory; historic scores detach and
 # kept checkpoints re-score under the new objective.
+
+# ----------------------------------------------------------------------
+# 9 · THE SAME PROGRAM, MINIMAL SYNTAX — deduction in the frontend,
+#     resolution in the manifest. Rule: declare-don't-discover governs
+#     the ARTIFACT, not the syntax. The compiler may deduce anything
+#     that is (a) deterministic, (b) baked as a resolved decision with
+#     provenance (`explain` shows "contract: embed-1, resolved_from:
+#     hf:pipeline_tag"), (c) a loud refusal on ambiguity. The user's
+#     irreducible statements are exactly the INTENT set: signatures,
+#     roles, objectives, purity claims, trust tightenings.
+# ----------------------------------------------------------------------
+
+# Pool entries — every mechanical fact resolves from identity/shape:
+#   contract faces from HF metadata (pipeline_tag/architectures);
+#   authored-vs-packaged from the call shape; language from the file
+#   extension; fit-1 vs sgd-1 structurally (which training verbs the
+#   engine declares); state_format defaulted per language; isolation
+#   floor defaulted from the D-040/D-043 trust profile (authored_by).
+min_drafter  = dspy.LM("hf:PleIAs/Baguettotron", device="cuda")
+min_polisher = dspy.LM("openai-chat:gpt-4o-mini", native_fc=True)
+min_embedder = dspy.Model("hf:BAAI/bge-small-en-v1.5")   # ⇒ embed-1
+min_sam      = dspy.Model("hf:facebook/sam3")            # ⇒ segment-1
+min_priority = dspy.Model.authored("leaves/priority_gam.R",  # ⇒ r, fit-1, rds
+                                   effects="pure")           # purity: a CLAIM, never inferred
+
+
+class MinAnswerer(dspy.Module):
+    def __init__(self):
+        # Adapters default from the resolved face: chat ⇒ preset chat,
+        # embed/predict ⇒ identity, segment ⇒ the face's preset.
+        # `adapter=` appears only to override.
+        self.draft = dspy.Predict(
+            "question, passages, priority -> answer, reasoning @reasoning",
+            lm=min_drafter)
+        self.polish = dspy.Predict(
+            "question, draft_answer -> answer @citations",
+            lm=min_polisher, adapter=dspy.adapters.preset("json"))  # explicit: overrides chat default
+        self.search = dspy.Tool(search_policies)
+        self.embed = dspy.Predict("text -> embedding: list[float]",
+                                  model=min_embedder)
+        self.priority = dspy.Predict("question, customer_tier -> priority: float",
+                                     model=min_priority)
+        self.locate = dspy.Predict("screenshot @media, ui_query -> region: dspy.Mask",
+                                   model=min_sam)
+
+    forward = Answerer.forward                                    # identical logic, verbatim
+
+
+# Data: omitted revision/snapshot ⇒ resolved NOW and pinned at bake —
+# the manifest always carries the pinned identity; syntax may say "current".
+min_tickets = (dspy.Dataset.hf("acme/support-tickets")            # ⇒ revision pinned at bake
+               .filter(col.language == "en")
+               .mutate(question=col.subject + "\n" + col.body,
+                       answer=col.resolved_answer)
+               .select("question", "answer", "product", "customer_tier")
+               .slice_sample(n=800, seed=7)
+               .split(train=0.7, dev=0.3, seed=7)
+               .with_inputs("question", "product", "customer_tier"))
+
+# Objectives stay DECLARED (fixed point 2 — human-owned; suggestion ok,
+# silent choice never). One trainer surface, contract-dispatched:
+# Train ⇒ sgd-1 (four verbs; loss= required) or fit-1 (no loss) by the
+# target entry's declared training contract.
+min_metric = dspy.Metric(ticket_metric, judge=dspy.LM("claude-sonnet-4-5"),
+                         devset=min_tickets.dev)
+prog = MinAnswerer()
+prog = dspy.optim.BootstrapFewShot(metric=min_metric).compile(prog, trainset=min_tickets.train)
+prog = dspy.optim.Train(target=prog.draft, trainset=min_tickets.train,
+                        loss="cross_entropy", lr=1e-4, rank=32).compile(prog)   # ⇒ sgd-1
+prog = dspy.optim.Train(target=prog.embed, trainset=embed_pairs,
+                        loss="contrastive").compile(prog)                       # ⇒ sgd-1
+prog = dspy.optim.Train(target=prog.priority,
+                        trainset=priority_labels).compile(prog)                 # ⇒ fit-1
+
+dspy.export(prog, "artifacts/answerer.ir", metric=min_metric, devset=min_tickets.dev)
+# Identical artifact class as §7: the terse syntax never produces an
+# implicit manifest — minimal to write, explicit to read.
