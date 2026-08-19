@@ -142,6 +142,54 @@ Derived from the Tinker cookbook — each row is user work there, machinery here
   moves weights on a tiny model (gated, slow); export of a delta-carrying
   artifact round-trips.
 
+## Model leaves and the dataset pool — the generalization
+
+Nothing in the training seam above is LM-specific except the prompt axis.
+The spec already rules that a leaf's interface is a signature (§d); this
+section names the general record:
+
+> **A trainable leaf = signature + implementation + optional objective
+> block `{dataset-pool ref + ETL, metric ref, loss, seed-regime}`.**
+> LM-Predict is the special case with the prompt axis (adapter,
+> instructions, demos); an embedder, reranker, classifier, R GAM, or
+> Julia net is the same record with fewer axes.
+
+What carries over unchanged: the safetensors weights slot + ties +
+`weights_identity`, base ⊕ delta, the placement ladder, the four verbs
+(`sample` → `predict`), `checkpoint = save`, `optimizable ⊆ baked`,
+content-addressed economics, D-013 seed regimes as the leaf's objective
+declaration. What does not: the adapter layer, lm15, roles, demos — a
+plain model's only optimizable kind is `weight-ref`.
+
+**Cross-language model leaves are already governed.** An R or Julia leaf
+is an authored leaf with a `language` tag (D-025; R → `renv.lock`, Julia
+→ `Project.toml`/`Manifest.toml` as new env-block instances), rung-walked
+by a foreign engine (D-022), declaring requirements instead of
+flat-refusing (D-040), crossing the local boundary as sealed Arrow
+(D-042 — R and Julia speak Arrow natively). Honest limit: training a
+foreign leaf happens where its language lives — the verbs cross the
+sidecar wire or the trainer runs on that side; rung 0 is unsatisfiable
+by definition and the ladder answers normally.
+
+**The one new move: datasets become a named pool** (§b-pools shape).
+Both the program-level metric/devset (component 12) and any leaf's
+objective block bind entries from it — each entry carrying its own
+`dataset_identity`, ETL pipeline, and rungs (`DESIGN-eval-data.md`
+applies recursively, per leaf, with zero new machinery). Sharing is
+stated, forks are free at birth, and the outer loop evolves a leaf's
+devset as a recorded diff like any other.
+
+**The recursion is safe** because fixed points are per loop, per level
+(§e2, D-048): a leaf's objective is *means* from the program's viewpoint
+— optimizable, forkable — while the program's metric + devset remain the
+untouchable *ends*; the regress terminates at the human who owns the top
+objective.
+
+**Serialization floor (the honest seam):** tensors bake as safetensors;
+classic-ML inference bakes as ONNX; trainable classic ML is authored
+code + a declared save format, captured-or-refused — it visibly loses
+the bit-for-bit weight story and says so.
+
 ## Non-goals
 
 - No BaseLM-style trainer base class (structural admission only).
