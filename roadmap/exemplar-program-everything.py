@@ -64,11 +64,26 @@ embedder_model = dspy.Model("hf:BAAI/bge-small-en-v1.5")          # weights_iden
 # (the four verbs over the wire), and its BODY is `authored-code` —
 # openable to D-013 seed regimes like any authored leaf.
 priority_model = dspy.Model.authored(
-    path="leaves/priority_gam.R",                                 # captured source, authored_by: human
+    source=r'''
+    # deps: mgcv                                                  # inline deps -> renv.lock env block
+    priority <- function(question, customer_tier) {
+      urgent <- grepl("urgent|outage|down|asap", tolower(question))
+      base   <- ifelse(customer_tier == "enterprise", 0.6, 0.3)
+      min(1.0, base + 0.4 * urgent)
+    }
+    ''',                                                          # baked source, authored_by: human
     language="r",                                                 # D-025 language axis
     effects="pure",                                               # §d effects declaration
     isolation_floor="fork",                                       # D-042 floor bakes; envelope binds
 )
+
+# Promptable vision model (the SAM case): the request contract is richer
+# than tensor-in (point/box/text prompts -> masks), so it binds a REAL
+# adapter — spatial prompts rendered from signature fields — and that
+# adapter's prompt axis (prompt-point strategy, text-prompt literals)
+# opens to optimization exactly like a chat adapter's. Promptability is
+# a gradient: embedder (identity) < SAM (spatial) < LM (chat).
+sam_model = dspy.Model("hf:facebook/sam3")                        # weights_identity; safetensors bake
 # Pool entries end here. The LEAVES that bind them are module state —
 # declared in __init__ with self.…, so each gets a named predictor path
 # in the module tree (per-predictor state, bindings, View-2/3 addressing).
@@ -113,12 +128,21 @@ class Answerer(dspy.Module):
             "question, customer_tier -> priority: float",
             model=priority_model,
             adapter=dspy.adapters.identity())
+        self.locate = dspy.Predict(
+            "screenshot @media, ui_query -> region: dspy.Mask",   # media role (component 2)
+            model=sam_model,
+            adapter=dspy.adapters.preset("sam_points"))           # spatial-prompt adapter; optimizable
 
     def forward(self, inputs):                                    # inputs-bag envelope (D-041 upstream)
         pr = self.priority(question=inputs.question,
                            customer_tier=inputs.customer_tier)
         vec = self.embed(text=inputs.question)
-        passages = self.search(query=inputs.question, k=4)
+        query = inputs.question
+        if inputs.screenshot is not None:                         # ticket carries a UI screenshot
+            region = self.locate(screenshot=inputs.screenshot,    # SAM leaf: spatial prompts
+                                 ui_query=inputs.question)
+            query = query + " ui:" + region.label                 # refine retrieval with the region
+        passages = self.search(query=query, k=4)
         draft = self.draft(question=inputs.question,
                            passages=passages, priority=pr.priority)
         if pr.priority > 0.8:                                     # data-dependent branch — visible AST node
