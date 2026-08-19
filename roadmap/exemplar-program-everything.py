@@ -57,27 +57,21 @@ polisher_lm = dspy.LM("openai-chat:gpt-4o-mini", native_fc=True)  # §e0-binding
 # what training means is bindings + tags, never entry-internal).
 embedder_model = dspy.Model("hf:BAAI/bge-small-en-v1.5")          # weights_identity; safetensors bake
 
-# The leaf = signature + adapter + model binding. An embedder's adapter
-# is the IDENTITY adapter — the degenerate case, same architecture. A
-# promptable vision model (SAM: points/boxes/text -> masks) would bind a
-# spatial-prompt adapter here instead — and its prompt axis would open
-# to optimization exactly like an LM's (the contract decides which axes
-# exist; nothing is LM-special).
-embedder = dspy.Predict("text -> embedding: list[float]",
-                        model=embedder_model,
-                        adapter=dspy.adapters.identity())
-
-# Cross-language model leaf (D-049 + D-022/D-025/D-040/D-042): an R GAM
-# priority scorer. language tag + renv.lock env block; a Python engine
-# rung-walks it to a sidecar; rows cross as sealed Arrow. Training, if
-# any, happens where R lives.
-priority = dspy.ModelLeaf.authored(
+# Authored model entry, cross-language (D-049 + D-022/D-025/D-040/D-042):
+# an R GAM. The analogue of an authored LM class (§e0-class): origin
+# authored, language tag, renv.lock env block; a Python engine rung-walks
+# it to a sidecar; rows cross as sealed Arrow. Trainable where R lives
+# (the four verbs over the wire), and its BODY is `authored-code` —
+# openable to D-013 seed regimes like any authored leaf.
+priority_model = dspy.Model.authored(
     path="leaves/priority_gam.R",                                 # captured source, authored_by: human
     language="r",                                                 # D-025 language axis
-    signature="question, customer_tier -> priority: float",
     effects="pure",                                               # §d effects declaration
     isolation_floor="fork",                                       # D-042 floor bakes; envelope binds
 )
+# Pool entries end here. The LEAVES that bind them are module state —
+# declared in __init__ with self.…, so each gets a named predictor path
+# in the module tree (per-predictor state, bindings, View-2/3 addressing).
 
 # ----------------------------------------------------------------------
 # 3 · TOOLS + INTERPRETER (components 6, 7)
@@ -106,8 +100,19 @@ class Answerer(dspy.Module):
             adapter=dspy.adapters.preset("json"),
         )
         self.search = dspy.Tool(search_policies)
-        self.embed = embedder
-        self.priority = priority
+        # Non-LM leaves: the SAME record — signature + adapter + model
+        # binding. The embedder binds the IDENTITY adapter (degenerate
+        # case); a promptable vision model (SAM: points/boxes/text ->
+        # masks) would bind a spatial-prompt adapter whose prompt axis
+        # opens to optimization exactly like an LM's — the model's
+        # request contract decides which axes exist.
+        self.embed = dspy.Predict("text -> embedding: list[float]",
+                                  model=embedder_model,
+                                  adapter=dspy.adapters.identity())
+        self.priority = dspy.Predict(
+            "question, customer_tier -> priority: float",
+            model=priority_model,
+            adapter=dspy.adapters.identity())
 
     def forward(self, inputs):                                    # inputs-bag envelope (D-041 upstream)
         pr = self.priority(question=inputs.question,
