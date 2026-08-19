@@ -86,7 +86,8 @@ training-set identity (D-046 pins it); a vector DB is a *hosted fitted
 model* (the serving market row). This unification deletes a concept
 rather than adding one — the cheapest kind of ruling.
 
-### F6 — The training family needs a third grain, deferred (Q4)
+### F6 — The training family needs a third grain, deferred (Q4) — and
+its habitat is the outer loop
 
 `online-1` (partial_fit: state mutates per observation) is real (river,
 VW, recommenders) but breaks the current warranty story: serving-time
@@ -95,16 +96,44 @@ training statement. Honest options: (a) defer — schedule online updates
 as outer-loop `fit-1` snapshots (works today, keeps checkpoint = save
 clean); (b) admit `online-1` with `effects: stateful` and an explicitly
 weakened warranty. Recommendation: **(a) now, (b) only when a real
-program forces it** — the ReplaceField discipline.
+program forces it** — the ReplaceField discipline. Note that (a) is not
+a workaround — it IS D-048 at a faster cadence: an hourly recommender
+re-fit is the outer loop with a small period, each update a hashed
+snapshot with a recorded diff. What stays refused is only the
+statement-free version (state mutating per click inside the serving
+loop, no snapshot, no diff, no warranty).
 
 ### F7 — RL policy training is not a trainset contract (Q5, deferred)
+— and D-048 is already its data-collection half
 
 `Train(target, trainset=...)` cannot express env-interaction training;
 the objective there is `(env, reward)` and the env is a *program*. This
 is the D-045 four verbs driven by a rollout loop — the Tinker RL
 recipes' shape — and it belongs to a later decision (`rl-1` training
 grain taking an env-program ref + the metric as reward). Named, not
-designed here.
+designed here. The D-048 connection: the outer loop's intake — user
+feedback, corrections, downstream outcomes mined from production — IS
+reward data; "collect human feedback from prod, train on it" is RLHF,
+which makes the outer loop RL's data-collection half, already designed
+(Tinker's own RLHF recipe is exactly mine-feedback → preference data →
+training run). Only the trainer's side (`rl-1` rollouts) is deferred.
+
+### F6/F7 corollary — the cadence law
+
+The two deferrals share one root — *learning from the running system
+instead of a frozen dataset* — and one resolution:
+
+> **Continuous learning is allowed at any cadence; unrecorded learning
+> is allowed at none.** The outer loop (D-048) is the only door between
+> the live world and the weights; cadence is a dial on that door
+> (weekly metric evolution, hourly recommender snapshot, RLHF batch).
+> Refused forever: state changing with no statement, no snapshot, no
+> diff.
+
+This reframes both rows of the census: recommenders and RL policies are
+not unsupported kinds — they are the two kinds whose natural habitat is
+the outer loop. It also strengthens D-048's *why*: the loop is
+load-bearing for two whole model families, not only for metric hygiene.
 
 ### F8 — Two honest strains, recorded
 
