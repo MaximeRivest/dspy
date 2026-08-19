@@ -148,11 +148,18 @@ Nothing in the training seam above is LM-specific except the prompt axis.
 The spec already rules that a leaf's interface is a signature (§d); this
 section names the general record:
 
-> **A trainable leaf = signature + implementation + optional objective
-> block `{dataset-pool ref + ETL, metric ref, loss, seed-regime}`.**
-> LM-Predict is the special case with the prompt axis (adapter,
-> instructions, demos); an embedder, reranker, classifier, R GAM, or
-> Julia net is the same record with fewer axes.
+> **A leaf = signature + adapter + model binding; a model entry =
+> weights + engine + contract face + placement + training contract —
+> exactly as dumb as an LM entry.** Objectives (dataset ref + ETL,
+> metric, loss, seed-regime) are TRAINING STATEMENTS at the
+> binding/optimizer level, never entry-internal (§b-pools: a shared
+> entry with an inner objective cannot say whose loss trains it).
+> LM-Predict is the special case with the richest request contract
+> (chat); SAM binds a spatial-prompt adapter whose prompt axis
+> optimizes like chat's; an embedder binds the identity adapter — the
+> degenerate case. Promptability is a gradient set by the contract
+> face, not an LM property. (v2 — supersedes this note's earlier
+> objective-block wording; current truth: D-049 draft v4.)
 
 What carries over unchanged: the safetensors weights slot + ties +
 `weights_identity`, base ⊕ delta, the placement ladder, the four verbs
