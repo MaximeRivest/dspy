@@ -42,7 +42,12 @@ embed_pairs = (
 )
 
 # ----------------------------------------------------------------------
-# 2 · LEARNABLE LEAVES — LMs and model leaves (D-045, D-049)
+# 2 · LEARNABLE LEAVES — one entry shape, a FAMILY of declared faces
+#     (D-045, D-049). Everything around the call — identity, weights,
+#     placement rungs, endpoint/credential refs, engine, training — is
+#     IDENTICAL for every entry. The `contract` field declares the typed
+#     face; admission is structural against it (D-036). lm15/chat is one
+#     member of the family — the richest.
 # ----------------------------------------------------------------------
 
 # In-process trainable LM: weights bake at rung 0 (engine: transformers).
@@ -55,26 +60,48 @@ polisher_lm = dspy.LM("openai-chat:gpt-4o-mini", native_fc=True)  # §e0-binding
 # contract + placement + the four training verbs. NO objective inside:
 # identity is the pool entry's; training statements live in §6 (b-pools:
 # what training means is bindings + tags, never entry-internal).
-embedder_model = dspy.Model("hf:BAAI/bge-small-en-v1.5")          # weights_identity; safetensors bake
+# Embed face: no messages, no sampling config, no finish_reason — a
+# smaller honest contract, NOT chat with meaningless fields.
+embedder_model = dspy.Model("hf:BAAI/bge-small-en-v1.5",
+                            contract="embed-1")                   # embed(text|media) -> vector
 
-# Authored model entry, cross-language (D-049 + D-022/D-025/D-040/D-042):
-# an R GAM. The analogue of an authored LM class (§e0-class): origin
-# authored, language tag, renv.lock env block; a Python engine rung-walks
-# it to a sidecar; rows cross as sealed Arrow. Trainable where R lives
-# (the four verbs over the wire), and its BODY is `authored-code` —
-# openable to D-013 seed regimes like any authored leaf.
+# Authored R entry, LEARNABLE (D-049 + D-022/D-025/D-040/D-042): a
+# fitted mgcv GAM. Origin authored, language tag, renv.lock env block; a
+# Python engine rung-walks it to a sidecar; rows cross as sealed Arrow.
+# The learnable state is the FITTED MODEL OBJECT; the training contract
+# is the batch-fit face (`fit-1`: fit(dataset) -> state), not the
+# gradient verbs — classic ML fits, it does not step. State serializes
+# via a DECLARED format (RDS — outside the bit-for-bit safetensors
+# story, and the manifest says so: the serialization floor, honest).
 priority_model = dspy.Model.authored(
     source=r'''
     # deps: mgcv                                                  # inline deps -> renv.lock env block
-    priority <- function(question, customer_tier) {
-      urgent <- grepl("urgent|outage|down|asap", tolower(question))
-      base   <- ifelse(customer_tier == "enterprise", 0.6, 0.3)
-      min(1.0, base + 0.4 * urgent)
+    library(mgcv)
+
+    train <- function(data) {                       # train/fit-1: fit(dataset) -> state
+      gam(priority ~ s(question_len) + s(urgency_score) + customer_tier,
+          data = data, family = betar())
+    }
+
+    predict_fn <- function(state, question, customer_tier) {  # predict-1 face
+      newdata <- featurize(question, customer_tier)
+      as.numeric(predict(state, newdata, type = "response"))
+    }
+
+    featurize <- function(question, customer_tier) {
+      data.frame(
+        question_len  = nchar(question),
+        urgency_score = as.numeric(grepl("urgent|outage|down|asap",
+                                         tolower(question))),
+        customer_tier = customer_tier)
     }
     ''',                                                          # baked source, authored_by: human
     language="r",                                                 # D-025 language axis
     effects="pure",                                               # §d effects declaration
     isolation_floor="fork",                                       # D-042 floor bakes; envelope binds
+    contract="predict-1",                                         # the plain typed-function face
+    training=dspy.Training(contract="fit-1",
+                           state_format="rds"),                   # declared, captured-or-refused
 )
 
 # Promptable vision model (the SAM case): the request contract is richer
@@ -83,7 +110,8 @@ priority_model = dspy.Model.authored(
 # adapter's prompt axis (prompt-point strategy, text-prompt literals)
 # opens to optimization exactly like a chat adapter's. Promptability is
 # a gradient: embedder (identity) < SAM (spatial) < LM (chat).
-sam_model = dspy.Model("hf:facebook/sam3")                        # weights_identity; safetensors bake
+sam_model = dspy.Model("hf:facebook/sam3",
+                       contract="segment-1")                      # segment(media, prompts) -> masks
 # Pool entries end here. The LEAVES that bind them are module state —
 # declared in __init__ with self.…, so each gets a named predictor path
 # in the module tree (per-predictor state, bindings, View-2/3 addressing).
@@ -132,6 +160,16 @@ class Answerer(dspy.Module):
             "screenshot @media, ui_query -> region: dspy.Mask",   # media role (component 2)
             model=sam_model,
             adapter=dspy.adapters.preset("sam_points"))           # spatial-prompt adapter; optimizable
+        # The migration valve (polyfill→native, the roles-governance
+        # loop): the SAME intent can bind a chat-face VLM with a textual
+        # strategy instead of the native segment face —
+        #   dspy.Predict(..., lm=vlm, adapter=dspy.adapters.preset(
+        #       "json", strategies={"media": "textual_mask_coords"}))
+        # — one binding swap, a recorded View-3 choice diff. When
+        # providers converge on a native mask channel in the chat
+        # contract, lm15 grows the part, roles grow in lockstep, and
+        # segment-1 retires for that capability — a vocabulary version
+        # event, not a redesign.
 
     def forward(self, inputs):                                    # inputs-bag envelope (D-041 upstream)
         pr = self.priority(question=inputs.question,
@@ -188,6 +226,17 @@ program = dspy.optim.WeightTune(
 # means; the program metric stays the untouchable end (§e2, D-013 seeds).
 program = dspy.optim.WeightTune(
     target=program.embed, trainset=embed_pairs, loss="contrastive",
+).compile(program)
+
+# Axis 4: the R GAM re-fits on labeled priorities — the batch-fit
+# training face (`fit-1`), executed where R lives (sidecar). The fitted
+# state blob re-hashes; everything else stays shared (§c1). The
+# objective lives HERE, as always — never inside the entry.
+priority_labels = (
+    dspy.Dataset.ref("DW_PRIORITY_LABELS", snapshot="2026-08-15T00:00Z")
+    .select("question", "customer_tier", "priority"))
+program = dspy.optim.Fit(
+    target=program.priority, trainset=priority_labels,
 ).compile(program)
 
 # ----------------------------------------------------------------------
