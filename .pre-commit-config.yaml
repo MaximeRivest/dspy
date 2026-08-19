@@ -2,6 +2,15 @@ default_stages: [pre-commit]
 default_install_hook_types: [pre-commit]
 
 repos:
+  - repo: local
+    hooks:
+      - id: roadmap-sync
+        name: roadmap in sync with programir-main
+        entry: scripts/check_roadmap_sync.sh
+        language: script
+        files: ^roadmap/
+        pass_filenames: false
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.0
     hooks:
