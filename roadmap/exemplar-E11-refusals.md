@@ -223,3 +223,12 @@ snippet each, with the expected code asserted.
 
 **R-38 · training a frozen blob** `[E-08; §b-pools]`
 > `training_run at step_12 names blob sha256:ab3f… which entry 'shared' declares frozen — flip the tag as a recorded diff first, or attach a delta; frozen means the hash may not move`
+
+**R-39 · lowering that adds an external input** `[E-05; Law 1]`
+> `lowering 'hint_injector' on 'answer': expansion adds external input 'hint_' — interface-preserving strictly; added inputs break drop-in substitution (declare an honest program maker instead)`
+
+**R-40 · lowering that smuggles a call** `[E-05; Law 2]`
+> `lowering 'clean_json' on 'answer': expansion performs an LM exchange with no emitted leaf (parser-internal call) — the single-shot law; every exchange is a leaf, authored, lowered, or refused`
+
+**R-41 · ambiguous lowering composition** `[E-05; Law 4]`
+> `lowerings 'retry' and 'two_step' both annotate 'answer' with no declared order — composition is nesting, declared; write Retry(TwoStep(p)) or TwoStep(p, extract=Retry(…))`

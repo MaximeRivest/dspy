@@ -58,7 +58,7 @@ provider market · versions block · semantic ground audit.
 | E-02 | minimal-syntax deduction + provenance (§9) | done in EX-P |
 | E-03 | adapters deep: authored entry, strategy flip on capabilities, base-model polyfill | G4, G17 |
 | E-04 | authored LM class + structural admission | G5 |
-| E-05 | lowerings: CoT + parse-fallback, sugar view vs core view | G3 |
+| E-05 | (DONE: exemplar-E05-lowerings.md) lowerings: CoT + parse-fallback, sugar view vs core view | G3 |
 | E-06 | (DONE: exemplar-E06-react.md) ReAct: dynamic tools, Try/Raise/Break, turns, history role, aforward twin | G2, G9, G16 |
 | E-07 | (DONE: exemplar-E07-rlm.md) RLM: interpreter leaf, While, generated code, grants + isolation levels | G1, G13 |
 | E-08 | (DONE: exemplar-E08-weight-regimes.md) weight regimes: joint/fork/shared-base+delta as hash facts | G6 |
