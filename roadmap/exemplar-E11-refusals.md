@@ -220,3 +220,6 @@ snippet each, with the expected code asserted.
 
 **R-37 · diff naming a frozen field** `[E-09; §e2 fixed points]`
 > `trajectory: diff at step_04 rewrites '2_signature/draft' (external signature) — not in the optimizable set; structure moves live within the §d grammar, the task's type is a fixed point`
+
+**R-38 · training a frozen blob** `[E-08; §b-pools]`
+> `training_run at step_12 names blob sha256:ab3f… which entry 'shared' declares frozen — flip the tag as a recorded diff first, or attach a delta; frozen means the hash may not move`
