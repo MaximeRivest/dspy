@@ -359,84 +359,61 @@ dspy.export(prog, "artifacts/answerer.ir", metric=min_metric, devset=min_tickets
 # implicit manifest — minimal to write, explicit to read.
 
 # ======================================================================
-# 10 · VARIANT A — NO TRAINING: composed from EXISTING ARTIFACTS,
-#      everything runnable locally by the engine (the ship-object pole).
-#      Same program class, same forward, same signatures — only the pool
-#      entries change: each binds an already-made artifact instead of a
-#      trainable source. No §5 metric needed to RUN (kept only if you
-#      want local re-scoring); no §6 at all.
+# 10 · VARIANT A — NO TRAINING, ALL LOCAL: you do not write a program,
+#      you LOAD one. The §7 artifact already contains everything —
+#      tuned weights, fitted GAM state + R env block, tools, adapters.
+#      The frontend classes above do not exist at the receiver.
 # ======================================================================
 
-# Entries from artifacts: a path to an artifact/weights dir resolves to
-# local baked weights (the dspy.LM config.json rule, generalized); the
-# face and engine come from the artifact's own manifest — deduction from
-# a source that is already explicit. All frozen: no training statements
-# exist in this variant, so every weight-ref tag is simply never moved.
-art_drafter  = dspy.Model("artifacts/drafter-ft.ir")       # tuned in §6, materialized; ⇒ chat
-art_polisher = dspy.Model("artifacts/polisher-distill.ir", # a distilled small chat model — local now:
-                          engine="vllm-offline")           # §e0-engine: serve-mode switch, a field
-art_embedder = dspy.Model("artifacts/embedder-ft.ir")      # tuned embed-1 entry, safetensors
-art_sam      = dspy.Model("hf:facebook/sam3")              # unchanged — already frozen upstream
-art_priority = dspy.Model("artifacts/priority-gam.ir")     # R source + fitted RDS state inside;
-                                                           # receiver needs the R toolchain (declared
-                                                           # system dep) — or refuses loudly, named
+prog = dspy.load("artifacts/answerer.ir")     # uv sync → link → verify → runnable, offline
+answer = prog(question="Printer flashes red twice, then nothing.",
+              product="LX-300", customer_tier="enterprise")
 
-class LocalAnswerer(MinAnswerer):
-    def __init__(self):
-        super().__init__()
-        for leaf, entry in {"draft": art_drafter, "polish": art_polisher,
-                            "embed": art_embedder, "locate": art_sam,
-                            "priority": art_priority}.items():
-            getattr(self, leaf).bind(model=entry)          # binding swap — a recorded deviation
-                                                           # (scores detach; re-score if you kept
-                                                           # the metric; §e0-binding doctrine)
+# A local deviation, if wanted — swap ONE entry for another artifact
+# (e.g. a distilled polisher). On the loaded program, one call: an
+# identity change, recorded as a View-3 deviation; scores detach; the
+# baked metric re-warrants locally.
+prog = prog.rebind(polish=dspy.Model("artifacts/polisher-distill.ir",
+                                     engine="vllm-offline"))   # §e0-engine: serve-mode field
+score = prog.rescore()                        # baked metric + pinned devset — offline
 
-local_prog = LocalAnswerer()
-dspy.export(local_prog, "artifacts/answerer-local.ir")     # no metric=: the lean ship object (§e) —
-                                                           # optimizable tags dropped, yardstick omitted;
-                                                           # fully offline-runnable after uv sync
+dspy.export(prog, "artifacts/answerer-local.ir")   # lean ship object: no metric=,
+                                                   # optimizable tags dropped (§e)
 
 # ======================================================================
-# 11 · VARIANT B — ALL HOSTED: every entry a provider service. The
-#      declared-tier profile artifact (D-023): no authored code, no
-#      baked weights, no rung-0 anything — loads on ANY conforming
-#      engine (go/ts included) with zero code execution and zero
-#      sidecars. Identity bakes; endpoints/credentials are NAMES.
+# 11 · VARIANT B — ALL HOSTED. Two moves, sharply distinct:
+#      (1) SAME identity, different place = a BINDING — env vars, no
+#          rebind, scores stay warranted (PIR-010).
+#      (2) DIFFERENT identity (a provider model instead of the baked
+#          one) = a REBIND — recorded deviation, scores detach,
+#          re-warrant with the baked metric.
 # ======================================================================
 
-svc_drafter  = dspy.Model("openai-chat:gpt-4o-mini")               # chat; LM_API_KEY (name only)
-svc_polisher = dspy.Model("claude-sonnet-4-5", native_citations=True)
-svc_embedder = dspy.Model("openai:text-embedding-3-small")         # provider embed face —
-                                                                   # same embed-1 contract, outer rung
-svc_sam      = dspy.Model("replicate:meta/sam-3",                  # hosted segment face
-                          endpoint_ref="SEGMENT_ENDPOINT")         # role-named slot, receiver binds
-svc_priority = dspy.Model.served(                                  # the R GAM deployed as a service
-    contract="predict-1",                                          # (e.g. plumber/vetiver on a box):
-    signature="question, customer_tier -> priority: float",        # no source travels — only the
-    endpoint_ref="PRIORITY_ENDPOINT",                              # contract + identity to verify
-    identity="acme/priority-gam@sha256:9f2c...",                   # against the bound backend
-    credential_ref="PRIORITY_API_KEY")
+# Move 1 — re-placement only. The drafter's own tuned weights served
+# from your vLLM box; the R GAM served from your plumber box. Identity
+# verified against each bound backend (root/alias/hash evidence rule).
+# NOT a rebind. NOT a code change. Nothing detaches.
+#   export DRAFTER_ENDPOINT=https://gpu.lab:8000/v1
+#   export PRIORITY_ENDPOINT=https://r.lab:9200
+prog = dspy.load("artifacts/answerer.ir",
+                 place={"draft": "DRAFTER_ENDPOINT",           # rung walk outward,
+                        "priority": "PRIORITY_ENDPOINT"})      # contract unchanged
 
-class HostedAnswerer(MinAnswerer):
-    def __init__(self):
-        super().__init__()
-        for leaf, entry in {"draft": svc_drafter, "polish": svc_polisher,
-                            "embed": svc_embedder, "locate": svc_sam,
-                            "priority": svc_priority}.items():
-            getattr(self, leaf).bind(model=entry)
+# Move 2 — provider substitution: hosted models instead of the baked
+# ones. Honest identity deviations, one call, each labeled:
+prog = prog.rebind(
+    draft=dspy.Model("openai-chat:gpt-4o-mini"),               # chat; LM_API_KEY (name)
+    polish=dspy.Model("claude-sonnet-4-5", native_citations=True),
+    embed=dspy.Model("openai:text-embedding-3-small"),         # embed-1, outer rung
+    locate=dspy.Model("replicate:meta/sam-3"),                 # segment-1, outer rung
+)
+score = prog.rescore()                                         # new warranted numbers
 
-hosted_prog = HostedAnswerer()
-dspy.export(hosted_prog, "artifacts/answerer-hosted.ir",
-            metric=min_metric, devset=min_tickets.dev)     # metric CAN stay hosted-friendly: the
-                                                           # judge is itself a declared chat entry
-# Export preflight (D-023): "declared-tier profile: YES" — a few hundred
-# KiB, the §e0 trade made visible. Load on the receiver: resolve every
-# endpoint_ref + credential_ref from THEIR environment, verify each
-# backend serves the declared identity (root/alias/hash evidence rule),
-# refuse loudly per unmet binding — then run. Re-binding all five
-# entries to different providers is environment variables, not a rebuild
-# (example-10 doctrine, now across five faces).
-# Training in this variant: possible ONLY where a service exposes a
-# training contract (a Tinker-class sgd-1 binding for svc_drafter, a
-# provider fine-tune API); everything else is frozen-by-placement — the
-# honest statement, never a silent no-op.
+dspy.export(prog, "artifacts/answerer-hosted.ir")
+# Preflight (D-023): "declared-tier profile: YES" — a few hundred KiB,
+# zero authored code, zero baked weights; loads on any conforming
+# engine (go/ts) with no code execution. Re-binding to yet another
+# provider later: environment variables, not a rebuild (example-10
+# doctrine). Training here exists only where a service exposes a
+# training contract (Tinker-class sgd-1); otherwise frozen-by-placement
+# — stated, never a silent no-op.
