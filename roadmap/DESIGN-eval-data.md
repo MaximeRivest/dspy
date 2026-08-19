@@ -37,19 +37,54 @@ source, not what the metric actually consumed). The house pattern applies: a
 adapter field transforms, at the data layer), a dplyr-shaped pipeline as
 plain data:
 
+**Naming rule: dplyr names wherever dplyr semantics apply; explicit dspy
+names for what dplyr never covered.** dplyr is the gold-standard verb
+vocabulary for tabular transformation (and §e1 already cites it as prior
+art); inventing synonyms would break one-word-one-meaning against the
+strongest precedent. The one deliberate departure: dplyr's expression slots
+are the whole host language (NSE over R); ours are closed grammars — the
+very thing that makes the pipeline data (see below).
+
 | verb | meaning | notes |
 |---|---|---|
-| `rename` | source column → signature field | the common case |
-| `select` | keep only named fields | |
-| `filter` | keep rows matching a predicate | closed predicate grammar (compare/boolop over fields — the §d expression discipline) |
-| `map_field` | coerce one field's representation | named codec/format coercions, never arbitrary code |
-| `derive` | new field from existing ones | restricted expression grammar, same admission style as the node set |
-| `sample` / `shuffle` | seeded subset / order | seed is data |
-| `split` | train/dev/test partition | seeded, fractions as data |
-| `designate_inputs` | declare `input_keys[]` | the `with_inputs` fact, explicit |
+| `rename` | source column → signature field | dplyr name |
+| `select` | keep only named fields | dplyr name |
+| `filter` | keep rows matching a predicate | dplyr name; closed predicate grammar (below) |
+| `mutate` | new/changed field from existing ones | dplyr name (was `derive`); restricted expression grammar (below) + the named coercion-function table (absorbs the earlier `map_field`) |
+| `slice_sample` | seeded subset | dplyr's exact name |
+| `shuffle` | seeded reorder | dspy name — dplyr spells this `arrange(sample(...))`, which needs expressions we refuse; an explicit seeded verb is more honest |
+| `split` | train/dev/test partition | dspy name — rsample territory, outside dplyr's scope; seeded, fractions as data |
+| `designate_inputs` | declare `input_keys[]` | dspy name — the `with_inputs` fact, explicit |
 
 Deferred (the `ReplaceField` discipline — absent until a real case forces
-ratification): `join`, `group`/aggregate.
+ratification): joins, `group_by`/`summarise` (aggregation also breaks
+single-row provenance, which the result-hash story leans on).
+
+**The expression slots reuse the node-set expression grammar — no second
+grammar.** `filter`'s predicate and `mutate`'s expression are the ratified
+node-set **expression subset** (D-034/D-037: `Compare` orderings +
+membership, `BoolOp`, `UnaryOp`, `BinOp` under exact-int64, `Format`, the
+pinned float repr, the closed builtin/value-method tables) — no statements,
+no leaf calls — plus column references and the coercion table. One grammar,
+one meaning: a predicate means the same thing in a forward `If` and in an
+ETL `filter`, and the existing Go/TS node-set interpreters already implement
+it, so cross-language ETL verification is reuse, not new work.
+
+**The expression slots have their own 3-rung ladder** (contract invariant
+across rungs, as everywhere):
+
+| rung | expression form | verification |
+|---|---|---|
+| 0 — bake | the closed grammar above, pure + seeded | `result_hash`, checkable by any grade-2 reader |
+| middle — authored | a UDF step: captured source + deps + `effects: pure` + `authored_by`; in-process or rung-walked sidecar (D-022; D-040 requirements gradient) | `result_hash` holds; static cross-language verification lost, stated visibly |
+| outer — pushdown | the rung-0 expression compiled to the store's language (SQL on a warehouse, HF datasets filter) — execution moves to where the data lives | `result_hash` remains the oracle: the pushdown must reproduce rung-0 semantics or load refuses |
+
+The outer rung is what makes §1's referenced datasets usable: a warehouse
+cannot be pulled to the client to run rung-0 verbs, but a closed-grammar
+predicate translates mechanically, and the hash catches semantic drift
+(SQL null handling, collation) loudly. Determinism at the outer rung leans
+on the store's snapshot discipline — which is exactly why `dataset_identity`
+pins a revision (§1): the two rules lock together.
 
 Rules:
 
