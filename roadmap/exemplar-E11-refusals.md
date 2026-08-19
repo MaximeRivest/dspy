@@ -205,3 +205,9 @@ snippet each, with the expected code asserted.
     obs = self.helpers[pred.name](**pred.args)   # helpers is not a declared tool map
 ```
 > `forward: dynamic call at modules.py:31 dispatches over 'self.helpers' which is not a declared tool pool — model-dispatched calls resolve only within declared leaves`
+
+**R-34 · undeclared grant use** `[E-07; D-042/D-043]`
+```jsonc
+// entry grants: []  — but the envelope passes an open TCP fd anyway
+```
+> `materialize: envelope supplies grant 'fd:tcp:169.254.0.1:80' not present in leaf 'main' grants row — grants are declared in the artifact, never improvised by the envelope`
