@@ -51,14 +51,21 @@ drafter_lm = dspy.LM("hf:PleIAs/Baguettotron", device="cuda")     # 8b bake; pro
 # Hosted LM, declared tier: identity bakes, endpoint/credential bind.
 polisher_lm = dspy.LM("openai-chat:gpt-4o-mini", native_fc=True)  # §e0-binding; credential = name only
 
-# Model leaf (D-049): an embedder — same record as a Predict, minus the
-# prompt axis. Its objective block binds a dataset-pool entry + loss.
-embedder = dspy.Model(
-    "hf:BAAI/bge-small-en-v1.5",                                  # weights_identity; safetensors bake
-    signature="text -> embedding: list[float]",                   # leaves are signatures (§d)
-    objective=dspy.Objective(dataset=embed_pairs,                 # leaf-local devset (dataset pool ref)
-                             loss="contrastive"),                 # closed loss vocabulary (D-045)
-)
+# Model entry (D-049 v2): exactly as dumb as an LM — weights + engine +
+# contract + placement + the four training verbs. NO objective inside:
+# identity is the pool entry's; training statements live in §6 (b-pools:
+# what training means is bindings + tags, never entry-internal).
+embedder_model = dspy.Model("hf:BAAI/bge-small-en-v1.5")          # weights_identity; safetensors bake
+
+# The leaf = signature + adapter + model binding. An embedder's adapter
+# is the IDENTITY adapter — the degenerate case, same architecture. A
+# promptable vision model (SAM: points/boxes/text -> masks) would bind a
+# spatial-prompt adapter here instead — and its prompt axis would open
+# to optimization exactly like an LM's (the contract decides which axes
+# exist; nothing is LM-special).
+embedder = dspy.Predict("text -> embedding: list[float]",
+                        model=embedder_model,
+                        adapter=dspy.adapters.identity())
 
 # Cross-language model leaf (D-049 + D-022/D-025/D-040/D-042): an R GAM
 # priority scorer. language tag + renv.lock env block; a Python engine
@@ -146,9 +153,13 @@ program = dspy.optim.WeightTune(
     metric=metric, loss="cross_entropy", lr=1e-4, rank=32,        # rank>0 ⇒ LoRA delta (base ⊕ delta)
 ).compile(program, trainset=tickets.train)
 
-# Axis 3: the embedder model leaf trains against ITS OWN objective block
-# (leaf-local means; the program metric stays the untouchable end, §e2).
-program = dspy.optim.WeightTune(target=program.embed).compile(program)
+# Axis 3: the embedder entry trains — the objective (dataset + loss) is
+# stated HERE, in the training statement, referencing a dataset-pool
+# entry; it is never a property of the model entry itself. Leaf-local
+# means; the program metric stays the untouchable end (§e2, D-013 seeds).
+program = dspy.optim.WeightTune(
+    target=program.embed, trainset=embed_pairs, loss="contrastive",
+).compile(program)
 
 # ----------------------------------------------------------------------
 # 7 · EXPORT — one artifact, everything above inside it (D-039)
