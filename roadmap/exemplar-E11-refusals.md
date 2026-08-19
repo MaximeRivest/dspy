@@ -199,3 +199,9 @@ error code in the contract's error table; a code no fixture fires is
 dead spec (FIXTURE-PLAN rule). Gaps G11/G19 close with this file;
 per-refusal fixture vectors are this file sliced, one artifact or
 snippet each, with the expected code asserted.
+
+**R-33 · dynamic dispatch outside the declared pool** `[E-06]`
+```python
+    obs = self.helpers[pred.name](**pred.args)   # helpers is not a declared tool map
+```
+> `forward: dynamic call at modules.py:31 dispatches over 'self.helpers' which is not a declared tool pool — model-dispatched calls resolve only within declared leaves`

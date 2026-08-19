@@ -59,7 +59,7 @@ provider market · versions block · semantic ground audit.
 | E-03 | adapters deep: authored entry, strategy flip on capabilities, base-model polyfill | G4, G17 |
 | E-04 | authored LM class + structural admission | G5 |
 | E-05 | lowerings: CoT + parse-fallback, sugar view vs core view | G3 |
-| E-06 | ReAct: dynamic tools, Try/Raise/Break, turns, history role, aforward twin | G2, G9, G16 |
+| E-06 | (DONE: exemplar-E06-react.md) ReAct: dynamic tools, Try/Raise/Break, turns, history role, aforward twin | G2, G9, G16 |
 | E-07 | RLM: interpreter leaf, While, generated code, grants + isolation levels | G1, G13 |
 | E-08 | weight regimes: joint/fork/shared-base+delta as hash facts | G6 |
 | E-09 | the store: content-addressed form + View-3 trajectory + objective boundary | G7, G8 |
