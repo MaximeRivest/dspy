@@ -225,7 +225,7 @@ Target shapes are the D-029-migrated forms in
 | # | source in the live program | emitted | refuses when |
 |---|---|---|---|
 | 1 | `named_sub_modules()` walk | `{kind, name, children, forward_ref}`; Predict leaves carry `bindings: {adapter, lm, delta: null}` by pool name | unresolvable LM (rule above) |
-| 2 | each predictor's signature | per field: `{name, direction, prefix, desc, shape (JSON Schema), semantic_role}`; role via `_engine/roles.resolve_semantic_role` (derivation table). Legacy fused types split into shape ⊕ role — `dspy.Citations` ⇒ its serialized shape + `semantic_role: "citations"`; no Python identity leaks into `shape` | a field whose shape has no JSON Schema |
+| 2 | each predictor's signature | per field: `{name, direction, desc, shape (JSON Schema, declared constraints included), semantic_role}` (`prefix` deprecated out, D-051); role via `_engine/roles.resolve_semantic_role` (derivation table). Legacy fused types split into shape ⊕ role — `dspy.Citations` ⇒ its serialized shape + `semantic_role: "citations"`; no Python identity leaks into `shape` | a field whose shape has no JSON Schema |
 | 3a | `signature.instructions` | single-homed here — never restated in template or config | — |
 | 3b | `predictor.demos` | values + `input_keys[]` (from `Example._input_keys`) | non-serializable demo value, naming predictor + field |
 | 3c | `predictor.config` | as-is | non-JSON value |

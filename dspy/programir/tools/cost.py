@@ -13,7 +13,7 @@ Two estimates come out, both pure over the manifest:
   midpoint as "expected"; loops with an early `break` may exit after one
   pass, so their minimum is one pass, not the cap.
 - **prompt tokens** per call: rendered from the instruction, signature
-  field names/prefixes/descs, and baked demos with the chars/4 heuristic
+  field names/descs, and baked demos with the chars/4 heuristic
   (the adapter preview machinery needs live adapter objects, which a
   manifest does not hold — so this is a labeled approximation, not the
   adapter's exact bytes). Output tokens are read from the predictor's
@@ -249,7 +249,6 @@ def _prompt_tokens(components: Mapping[str, Any], predictor: str) -> dict[str, A
     signature = components.get("2_signature", {}).get(predictor) or {}
     for field in signature.get("fields", []):
         characters += len(str(field.get("name", "")))
-        characters += len(str(field.get("prefix") or ""))
         characters += len(str(field.get("desc") or ""))
     instruction = components.get("3a_instructions", {}).get(predictor) or ""
     characters += len(instruction)
@@ -294,7 +293,7 @@ def build_text(source: Any) -> str:
     out.append(rule("BASIS"))
     out.append("  calls: loop caps read statically (For range, While break-guard);")
     out.append("  branches take min/max over arms, midpoint as expected.")
-    out.append("  tokens: instruction + field prefixes/descs + baked demos, chars/4,")
+    out.append("  tokens: instruction + field names/descs + baked demos, chars/4,")
     out.append(f"  plus {_OVERHEAD_TOKENS}-token scaffold; runtime inputs excluded. Heuristic only.")
     out.append("=" * WIDTH)
     return "\n".join(out)

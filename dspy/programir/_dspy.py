@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import inspect
 from copy import deepcopy
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import TypeAdapter
 
@@ -315,14 +315,24 @@ class _DSPyCompiler:
 
 def _field_record(name: str, field: Any) -> dict[str, Any]:
     extra = field.json_schema_extra or {}
+    # The shape must carry the field's declared constraints (ge, le,
+    # min_length, pattern, ...): they live in `field.metadata`, not in the
+    # bare annotation, and the contract rules them ordinary JSON Schema
+    # keywords inside `shape` (D-051). Annotation-only derivation was a
+    # constraint-dropping exporter bug.
+    annotation = field.annotation
+    if field.metadata:
+        annotation = Annotated[tuple([annotation, *field.metadata])]
     try:
-        shape = TypeAdapter(field.annotation).json_schema()
+        shape = TypeAdapter(annotation).json_schema()
     except Exception as error:  # Pydantic exposes several schema refusal types.
         raise ValueError(f"ProgramIR cannot derive JSON Schema for field {name!r}: {error}") from error
+    # No `prefix` key: deprecated out of the signature record (D-051) --
+    # rendering prefixes derive from the field name in component-4
+    # templates, never signature identity.
     return {
         "name": name,
         "direction": extra["__dspy_field_type"],
-        "prefix": extra.get("prefix"),
         "desc": extra.get("desc"),
         "shape": shape,
         "semantic_role": resolve_semantic_role(field, field_name=name),
