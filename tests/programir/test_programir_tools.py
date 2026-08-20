@@ -116,7 +116,7 @@ def test_lint_clean_program_has_no_findings():
 def test_lint_unused_input_field():
     manifest = _manifest(TwoStage)
     manifest["components"]["2_signature"]["finish"]["fields"].insert(
-        0, {"name": "context", "direction": "input", "prefix": "Context:",
+        0, {"name": "context", "direction": "input",
             "desc": None, "shape": {"type": "string"}, "semantic_role": None},
     )
     findings = lint.lint(manifest)

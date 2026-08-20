@@ -11,8 +11,8 @@ one-box shape (spec/manifest.md D-029 rulings):
 - named pools everywhere: `4_adapter`, `6_tools`, `7_interpreter`,
   `8_lm` (one object per LM, nested weights when baked — no 8a/8b),
   `12_metric`;
-- signature fields carry {name, direction, prefix, desc, shape,
-  semantic_role}; instructions render from 3a only;
+- signature fields carry {name, direction, desc, shape, semantic_role}
+  (`prefix` deprecated out, D-051); instructions render from 3a only;
 - placement lines use the ratified endpoint_ref/default_endpoint keys;
 - forwards render the SEM-8 v0 encoding (kwargs-only calls, range loops,
   dynamic tool dispatch, interpreter leaves with a pool ref).
@@ -238,7 +238,7 @@ def build_text(manifest: dict) -> str:
                 out.append(_kv(
                     f"  .{f['name']}",
                     f"{f.get('direction')}  role={f.get('semantic_role')}  "
-                    f"prefix={f.get('prefix')!r}  desc={f.get('desc')!r}", 4))
+                    f"desc={f.get('desc')!r}", 4))
         instruction = instructions.get(path)
         if instruction is None or instruction == "":
             out.append(_kv("instructions (3a)", "(none)", 4))

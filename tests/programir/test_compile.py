@@ -28,7 +28,6 @@ def test_compile_bare_predict_produces_programir_directly():
         {
             "name": "question",
             "direction": "input",
-            "prefix": "Question:",
             "desc": "${question}",
             "shape": {"type": "string"},
             "semantic_role": "plain",
@@ -36,7 +35,6 @@ def test_compile_bare_predict_produces_programir_directly():
         {
             "name": "answer",
             "direction": "output",
-            "prefix": "Answer:",
             "desc": "${answer}",
             "shape": {"type": "string"},
             "semantic_role": "plain",

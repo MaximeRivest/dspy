@@ -226,7 +226,7 @@
     },
     "signature_field": {
       "type": "object",
-      "description": "One signature field, spec/manifest.md component 2: {name, direction, prefix, desc, shape, semantic_role}. This is the RATIFIED shape -- the examples' {role, description, annotation} keys are pre-ratification and fail here (migrator renames; see schema/README.md).",
+      "description": "One signature field, spec/manifest.md component 2: {name, direction, desc, shape, semantic_role} plus optional DEPRECATED prefix (amended 2026-08-20, D-051). This is the RATIFIED shape -- the examples' {role, description, annotation} keys are pre-ratification and fail here (migrator renames; see schema/README.md). Value constraints ride inside shape as ordinary JSON Schema keywords; there is no separate constraint slot.",
       "properties": {
         "name": {
           "$ref": "#/$defs/identifier",
@@ -238,7 +238,7 @@
         },
         "prefix": {
           "type": ["string", "null"],
-          "description": "Rendering prefix, nullable (adapter-ir SignatureCore: prefix: str | null)."
+          "description": "DEPRECATED (spec/manifest.md amendment 2026-08-20, D-051): dspy deprecated the live argument; rendering prefixes derive from the field name in component-4 templates and are not signature identity. Writers must not emit; readers ignore. Admissible only so pre-amendment bytes keep validating."
         },
         "desc": {
           "type": ["string", "null"],
@@ -253,7 +253,7 @@
           "description": "The field's relationship to the exchange, spec/manifest.md component 2. Intent, frozen; the strategy answering it is component-4 mechanism."
         }
       },
-      "required": ["name", "direction", "prefix", "desc", "shape", "semantic_role"],
+      "required": ["name", "direction", "desc", "shape", "semantic_role"],
       "additionalProperties": false
     },
     "signature": {

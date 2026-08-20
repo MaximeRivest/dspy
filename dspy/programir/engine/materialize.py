@@ -263,8 +263,9 @@ def _build_predictor(path: str, components: dict[str, Any], lm: BaseLM, adapter:
     fields: dict[str, tuple[type, Any]] = {}
     for record in signature_entry["fields"]:
         annotation = _shape_type(record, path=path)
-        # The manifest carries `prefix` for rendering fidelity; the live
-        # field API deprecated the argument, so only `desc` maps back.
+        # The record carries no `prefix` (deprecated out, D-051): the live
+        # field API deprecated the argument, and SignatureMeta regenerates
+        # rendering prefixes from field names. Only `desc` maps back.
         keywords: dict[str, Any] = {}
         if record.get("desc") is not None:
             keywords["desc"] = record["desc"]
