@@ -56,6 +56,7 @@ answerer.ir/
     "node_set": "0.5", "adapter_ir": "0.2.0", "lm15": "1.0",
     "interpreter_profile": "1.0",
     "faces": "0.1",              // ⟂ DRAFT(D-049): request-face vocabulary
+    "module_signatures": "0.1",  // ⟂ DRAFT(D-036): inferred return unions
     "training": "0.1",           // ⟂ DRAFT(D-045/D-049): sgd-1 | fit-1
     "loss_vocabulary": "0.1",    // ⟂ DRAFT(D-045)
     "etl": "0.1",                // ⟂ DRAFT(D-047)
@@ -65,21 +66,55 @@ answerer.ir/
 
 ## 2. Component 1 — module tree: nodes, external signatures, bindings
 
-Ratified shape (`tree_node`/`predict_leaf`, D-029/D-036). Leaf bindings
-name pool entries; `delta` rides the binding, never the entry.
+The tree and field-record base is ratified (D-029/D-036); the inferred
+return-union wrapper below is drafted. Leaf bindings name pool entries;
+`delta` rides the binding, never the entry.
+
+Field-record bytes (D-051): the record is `{name, direction, desc,
+shape, semantic_role}` — no `prefix` (deprecated out; rendering prefixes
+derive from field names in component-4 templates), and any declared
+value constraint rides inside `shape` as ordinary JSON Schema keywords
+(`minimum`, `minLength`, …). The snippets below elide the required
+nullable `desc` key for page width; real bytes always carry it.
+
+The compiler needs no new author syntax here. It can infer a module
+signature bottom-up from facts it already has: each leaf call has a
+component-2 signature; assignment propagates that record type; each
+`Return` contributes one result variant; and `inputs.<field>` uses gain
+types from the leaf parameters and operations they feed. Equal return
+records collapse to one variant. Different records remain a sum type —
+never an intersection that silently drops fields. Changing a child
+signature or a return path therefore changes the containing program's
+inferred signature and identity.
+
+For this source, `polish` returns `{answer: citations[str]}` and `draft`
+returns `{answer: str, reasoning: reasoning[str]}`. Both are preserved.
+The root forward uses `question`, `customer_tier`, and nullable
+`screenshot`; it never reads `product`, so `product` cannot appear in a
+signature inferred from this forward (the dataset/program mismatch must
+be fixed separately). The current compiler does not yet run this type
+flow, but all required information is present.
 
 ```jsonc
   "components": {
     "1_module_tree": {
       "kind": "module", "name": "Answerer",
-      "signature": {                       // D-036: external signature per node
-        "fields": [
-          {"name": "question",      "direction": "input",  "shape": {"type": "string"}, "semantic_role": "plain"},
-          {"name": "product",       "direction": "input",  "shape": {"type": "string"}, "semantic_role": "plain"},
-          {"name": "customer_tier", "direction": "input",  "shape": {"type": "string"}, "semantic_role": "plain"},
-          {"name": "screenshot",    "direction": "input",  "shape": {"$ref": "#/shapes/image"}, "semantic_role": "media"},
-          {"name": "answer",        "direction": "output", "shape": {"type": "string"}, "semantic_role": "citations"}
-        ]
+      "signature": {                       // ⟂ DRAFT(D-036): inferred return-union byte shape
+        "inputs": {"fields": [
+          {"name": "question",      "direction": "input", "shape": {"type": "string"}, "semantic_role": "plain"},
+          {"name": "customer_tier", "direction": "input", "shape": {"type": "string"}, "semantic_role": "plain"},
+          {"name": "screenshot",    "direction": "input",
+           "shape": {"oneOf": [{"$ref": "#/shapes/image"}, {"type": "null"}]}, "semantic_role": "media"}
+        ]},
+        "returns": {"one_of": [
+          {"fields": [
+            {"name": "answer", "direction": "output", "shape": {"type": "string"}, "semantic_role": "citations"}
+          ]},
+          {"fields": [
+            {"name": "answer",    "direction": "output", "shape": {"type": "string"}, "semantic_role": "plain"},
+            {"name": "reasoning", "direction": "output", "shape": {"type": "string"}, "semantic_role": "reasoning"}
+          ]}
+        ]}
       },
       "forward_ref": "Answerer.forward",
       "children": [
@@ -250,11 +285,30 @@ mechanical. `Col` exists only in ETL (§9); forwards use `Var`/`Attr`.
                                "left": {"node": "Var", "name": "query"},
                                "right": {"node": "Const", "value": " ui:"}},
                       "right": {"node": "Attr", "value": {"node": "Var", "name": "region"}, "attr": "label"}}}],
-         "orelse": []}
-        // … search / draft / If(priority>0.8) / polish / Return — same vocabulary
+         "orelse": []},
+        // … embed / search assignments use the same vocabulary
+        {"node": "Assign", "target": "draft",
+         "value": {"node": "Call", "leaf": "draft", "kwargs": {"…": "…"}}},
+        {"node": "If",
+         "test": {"node": "Compare", "op": "gt",
+                  "left": {"node": "Attr", "value": {"node": "Var", "name": "pr"}, "attr": "priority"},
+                  "right": {"node": "Const", "value": 0.8}},
+         "body": [
+           {"node": "Return", "value": {"node": "Call", "leaf": "polish", "kwargs": {
+             "question": {"node": "Attr", "value": {"node": "Var", "name": "inputs"}, "attr": "question"},
+             "draft_answer": {"node": "Attr", "value": {"node": "Var", "name": "draft"}, "attr": "answer"}}}}],
+         "orelse": []},
+        {"node": "Return", "value": {"node": "Var", "name": "draft"}}
       ]}
     },
 ```
+
+The two `Return` nodes are the byte-level source of the two result
+variants in §2. A compiler resolves the `polish` call and `draft`
+variable through their leaf signatures, then records their sum as the
+root forward's output type. No explicit module-signature syntax is
+needed. The remaining contract work is to ratify the union's byte shape
+(`returns.one_of` above) and add this type-flow pass to the frontend.
 
 ## 6. Component 6 — tools (ratified `tool_entry`, D-042 floors)
 
@@ -434,6 +488,10 @@ pipeline with node-set expressions + the `Col` node.
 ```jsonc
   "provenance": {
     "deductions": [                                // ⟂ DRAFT(D-050): every inferred fact, sourced
+      {"field": "1_module_tree.signature.inputs", "value": "question,customer_tier,screenshot?",
+       "resolved_from": "static:5_forward input uses + child signatures"},
+      {"field": "1_module_tree.signature.returns", "value": "polish|draft",
+       "resolved_from": "static:5_forward Return values + child signatures"},
       {"field": "8_model.embedder.face", "value": "embed-1", "resolved_from": "hf:pipeline_tag"},
       {"field": "8_model.priority_gam.class.language", "value": "r", "resolved_from": "path:.R"},
       {"field": "8_model.priority_gam.training.contract", "value": "fit-1", "resolved_from": "structural:train()"},
@@ -456,7 +514,7 @@ pipeline with node-set expressions + the `Col` node.
 
 | discussed concept | where it landed as bytes |
 |---|---|
-| module tree + bindings + delta | §2 |
+| module tree + bindings + delta + inferred root return union | §2/§5 |
 | roles + shapes + deduction provenance | §3 |
 | adapters, BOTH forms: reference + full entry (template · lens parser · strategy rules with predicate/hides/fragments/request_patch/routings/`turns` · codecs · derived literal table) | §4 |
 | forward as node-set JSON | §5 |
@@ -477,7 +535,8 @@ answered at ratification, none silently): (a) `8_model` vs `8_lm` key;
 name vs reusing `local_rpc`; (d) `Col`'s home (node-set minor bump vs an
 etl-scoped grammar); (e) whether `deductions` live in provenance (here)
 or beside each field (`role_resolved_from` shows the alternative —
-pick ONE at ratification).
+pick ONE at ratification); (f) the inferred module-return union shape
+(`returns.one_of` here) and its deterministic variant ordering.
 
 ## 13. Semantic ground — what pins every name's meaning (the 2036 test)
 
@@ -556,7 +615,7 @@ variant's polisher entry carries its engine needs:
 (G3's lowered-node byte shape lives in E-05 §3 — cross-referenced, not
 duplicated.)
 
-**Open byte-shape question (f)** (from E-10 §§5–6): per-field
+**Open byte-shape question (g)** (from E-10 §§5–6): per-field
 `field_stream` facts and the `trajectory_stream` grammar version — do
 they live in the manifest (bake-time derivable, hence arguably
 artifact) or in explain-output only (derived views)? The holdback and
