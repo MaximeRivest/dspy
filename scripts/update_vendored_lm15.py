@@ -60,10 +60,17 @@ def main() -> int:
                 print("lm15 is already at this source commit.")
                 return 0
         elif (REPO_ROOT / PREFIX).exists():
-            if not (REPO_ROOT / PREFIX / "VENDORED").exists():
-                parser.error("Existing package has no legacy VENDORED record; refusing to replace it.")
-            git("rm", "-r", PREFIX)
-            git("commit", "-m", "Remove copied lm15 before establishing its subtree")
+            if git("ls-files", "--", PREFIX):
+                if not (REPO_ROOT / PREFIX / "VENDORED").exists():
+                    parser.error("Existing package has no legacy VENDORED record; refusing to replace it.")
+                git("rm", "-r", PREFIX)
+                git("commit", "-m", "Remove copied lm15 before establishing its subtree")
+            # Git leaves ignored files (such as bytecode) behind. Preserve them
+            # outside the prefix, which subtree add requires to be absent.
+            if (REPO_ROOT / PREFIX).exists():
+                backup = Path(tempfile.mkdtemp(prefix="dspy-lm15-leftovers-")) / "lm15"
+                (REPO_ROOT / PREFIX).rename(backup)
+                print(f"Preserved untracked package leftovers at {backup}")
 
         message = (
             f"{'Update' if initialized else 'Vendor'} lm15 package subtree\n\n"
