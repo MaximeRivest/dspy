@@ -1,147 +1,91 @@
 #!/usr/bin/env python3
-"""Refresh the vendored copy of lm15 under ``dspy/_vendor/lm15``.
+"""Import/update lm15 using a package-only, squashed Git subtree.
 
-lm15 (https://github.com/cmpnd-ai/lm15-python) is not on PyPI, so its ``lm15/``
-package is copied into the dspy tree and ships in the dspy wheel. This script is
-the only supported way to change those files.
-
-Usage:
-    python scripts/update_vendored_lm15.py [REF] [--source URL] [--force]
-
-REF is any git ref of the source repository (default: main). The script fetches
-that ref, replaces ``dspy/_vendor/lm15`` with its ``lm15/`` package plus the
-LICENSE, and writes ``dspy/_vendor/lm15/VENDORED`` recording the source, the
-exact commit, and a digest of the copied files.
-
-If the current vendored tree does not match its recorded digest, someone edited
-it by hand; the script stops so those edits are not silently thrown away. Use
---force to overwrite anyway.
+Run from any directory: python scripts/update_vendored_lm15.py [REF]
+Defaults to main from cmpnd-ai/lm15-python. Requires a clean checkout and
+creates local commits, but never pushes. --source overrides the source URL.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import shutil
 import subprocess
-import sys
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TARGET = REPO_ROOT / "dspy" / "_vendor" / "lm15"
+PREFIX = "dspy/_vendor/lm15"
 DEFAULT_SOURCE = "https://github.com/cmpnd-ai/lm15-python.git"
-MARKER = "VENDORED"
-
-# Only these files are copied; anything else in the package is reported and skipped,
-# so a stray editor or cache file upstream never ends up in the dspy wheel.
-KEEP_SUFFIXES = {".py"}
-KEEP_NAMES = {"py.typed"}
+RECORD = REPO_ROOT / "dspy/_vendor/lm15-provenance.txt"
+LICENSE = REPO_ROOT / "dspy/_vendor/lm15-LICENSE"
 
 
-def digest(root: Path) -> str:
-    """Stable digest of every vendored file except the marker itself."""
-    h = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*") if p.is_file() and p.name != MARKER):
-        h.update(path.relative_to(root).as_posix().encode())
-        h.update(b"\0")
-        h.update(path.read_bytes())
-        h.update(b"\0")
-    return h.hexdigest()
-
-
-def recorded_digest() -> str | None:
-    marker = TARGET / MARKER
-    if not marker.exists():
-        return None
-    for line in marker.read_text().splitlines():
-        if line.startswith("digest="):
-            return line.partition("=")[2].strip()
-    return None
-
-
-def fetch(source: str, ref: str, into: Path) -> str:
-    def run(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["git", *args], cwd=into, check=True, capture_output=True, text=True)
-
-    run("init", "-q")
-    run("fetch", "-q", "--depth", "1", source, ref)
-    run("checkout", "-q", "FETCH_HEAD")
-    return run("rev-parse", "HEAD").stdout.strip()
-
-
-def copy_package(src_pkg: Path, license_file: Path) -> list[Path]:
-    skipped = []
-    if TARGET.exists():
-        shutil.rmtree(TARGET)
-    for path in sorted(src_pkg.rglob("*")):
-        rel = path.relative_to(src_pkg)
-        if path.is_dir():
-            continue
-        if "__pycache__" in rel.parts:
-            continue
-        if path.suffix not in KEEP_SUFFIXES and path.name not in KEEP_NAMES:
-            skipped.append(rel)
-            continue
-        dest = TARGET / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, dest)
-    shutil.copyfile(license_file, TARGET / "LICENSE")
-    return skipped
+def git(*args: str, cwd: Path = REPO_ROOT) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, text=True, stdout=subprocess.PIPE
+    ).stdout.strip()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("ref", nargs="?", default="main", help="git ref in the source repo (default: main)")
-    parser.add_argument("--source", default=DEFAULT_SOURCE, help=f"source repository (default: {DEFAULT_SOURCE})")
-    parser.add_argument("--force", action="store_true", help="overwrite even if the vendored tree was edited by hand")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("ref", nargs="?", default="main")
+    parser.add_argument("--source", default=DEFAULT_SOURCE)
     args = parser.parse_args()
+    if git("status", "--porcelain", "--untracked-files=all"):
+        parser.error("Commit or stash all changes first. This command creates local commits.")
+    git("symbolic-ref", "--quiet", "HEAD")
+    git("var", "GIT_AUTHOR_IDENT")
+    git("var", "GIT_COMMITTER_IDENT")
+    before = git("rev-parse", "HEAD")
 
-    if TARGET.exists():
-        expected = recorded_digest()
-        if expected is None and not args.force:
-            print(f"{TARGET} exists but has no {MARKER} file; refusing to overwrite. Use --force.", file=sys.stderr)
-            return 1
-        if expected is not None and digest(TARGET) != expected and not args.force:
-            print(
-                f"{TARGET} differs from its recorded digest: it was edited by hand.\n"
-                "Move those changes to the lm15 repository first, or re-run with --force to discard them.",
-                file=sys.stderr,
+    # Full history is necessary: split commit identities must remain stable
+    # between updates so subtree merge can find its previous imported ancestor.
+    with tempfile.TemporaryDirectory(prefix="dspy-lm15-") as tmp:
+        checkout = Path(tmp) / "source"
+        git("clone", "--no-checkout", args.source, str(checkout))
+        git("fetch", "origin", args.ref, cwd=checkout)
+        source_commit = git("rev-parse", "FETCH_HEAD", cwd=checkout)
+        contract = git("show", f"{source_commit}:CONTRACT_PIN", cwd=checkout)
+        license_text = git("show", f"{source_commit}:LICENSE", cwd=checkout)
+        git("cat-file", "-e", f"{source_commit}:lm15/__init__.py", cwd=checkout)
+        split = git("subtree", "split", "--prefix=lm15", source_commit, cwd=checkout)
+        git("fetch", str(checkout), split)
+
+        initialized = RECORD.exists()
+        if initialized:
+            fields = dict(
+                line.split("=", 1) for line in RECORD.read_text().splitlines() if "=" in line
             )
-            return 1
+            if fields.get("split") == split and fields.get("commit") == source_commit:
+                print("lm15 is already at this source commit.")
+                return 0
+        elif (REPO_ROOT / PREFIX).exists():
+            if not (REPO_ROOT / PREFIX / "VENDORED").exists():
+                parser.error("Existing package has no legacy VENDORED record; refusing to replace it.")
+            git("rm", "-r", PREFIX)
+            git("commit", "-m", "Remove copied lm15 before establishing its subtree")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        checkout = Path(tmp)
-        commit = fetch(args.source, args.ref, checkout)
-        src_pkg = checkout / "lm15"
-        license_file = checkout / "LICENSE"
-        if not (src_pkg / "__init__.py").exists() or not license_file.exists():
-            print(
-                f"{args.source}@{args.ref} does not look like lm15-python (no lm15/__init__.py or LICENSE)",
-                file=sys.stderr,
+        message = (
+            f"{'Update' if initialized else 'Vendor'} lm15 package subtree\n\n"
+            f"Source: {args.source}\nPython commit: {source_commit}\n"
+            f"Contract: {contract}\nPackage split: {split}"
+        )
+        try:
+            git("subtree", "merge" if initialized else "add", f"--prefix={PREFIX}",
+                "--squash", "-m", message, split)
+            RECORD.write_text(
+                f"source={args.source}\ncommit={source_commit}\ncontract={contract}\nsplit={split}\n"
             )
-            return 1
-        skipped = copy_package(src_pkg, license_file)
-
-    marker_body = "\n".join(
-        [
-            "# Written by scripts/update_vendored_lm15.py. Do not edit files in this directory by hand.",
-            f"source={args.source}",
-            f"ref={args.ref}",
-            f"commit={commit}",
-            f"updated={datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
-            f"digest={digest(TARGET)}",
-            "",
-        ]
-    )
-    (TARGET / MARKER).write_text(marker_body)
-
-    print(f"vendored lm15 {commit[:12]} ({args.ref}) from {args.source} into {TARGET.relative_to(REPO_ROOT)}")
-    for rel in skipped:
-        print(f"  skipped non-source file: {rel}")
+            LICENSE.write_text(license_text + "\n")
+            git("add", str(RECORD), str(LICENSE))
+            if git("diff", "--cached", "--name-only"):
+                git("commit", "-m", f"Record lm15 source and contract for {source_commit[:12]}")
+        except subprocess.CalledProcessError:
+            print(f"Update stopped. Inspect git status before continuing. Previous HEAD: {before}")
+            raise
+    print(f"Imported lm15 {source_commit} (contract {contract}). Local commits only; review before pushing.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

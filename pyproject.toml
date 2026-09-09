@@ -78,6 +78,7 @@ exclude = ["tests", "tests.*"]
 
 [tool.setuptools.package-data]
 dspy = ["primitives/*.js"]
+"dspy._vendor" = ["lm15-LICENSE", "lm15-provenance.txt"]
 "dspy._vendor.lm15" = ["py.typed", "LICENSE", "VENDORED"]
 
 [project.urls]
