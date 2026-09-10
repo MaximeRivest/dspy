@@ -31,6 +31,12 @@ DOCS_ROOT = CHECKOUT / "docs" / "docs"
 print("Optional paid experiments enabled:", RUN_ALL)
 ```
 
+```output
+DSPy version: 3.3.1
+Loaded from: /home/maxime/Projects/dspy-rc/dspy/__init__.py
+Optional paid experiments enabled: False
+```
+
 **Recorded output**
 
 ```text
