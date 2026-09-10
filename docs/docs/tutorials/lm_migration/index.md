@@ -1,5 +1,41 @@
-# Moving to lm15: a worked DSPy migration
+# DSPy 3.4 is moving to lm15
 
+## Start with a familiar DSPy program
+
+Our program answers a question about a short passage. `Predict` describes the task; the adapter formats the prompt and reads the answer; the LM engine talks to the provider.
+
+We explicitly choose LiteLLM for our starting point. Caching is off so this comparison actually calls the provider. Retries are off so a failure is visible immediately. These are learning settings, not a recommendation for every application.
+
+```python
+class AnswerFromPassage(dspy.Signature):
+    """Answer using only the passage. Say 'Not stated' when it does not contain the answer."""
+
+    passage: str = dspy.InputField()
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField(desc="A short, factual answer.")
+
+
+program = dspy.Predict(AnswerFromPassage)
+example = {
+    "passage": "The community garden opens at 9 am on Saturdays. Entry is free.",
+    "question": "When does the garden open on Saturdays?",
+}
+
+legacy_lm = dspy.LM(MODEL, engine="litellm", cache=False, num_retries=0, max_tokens=256)
+with dspy.context(lm=legacy_lm):
+    before = program(**example)
+before
+```
+
+**Recorded output**
+
+```text
+Prediction(
+    answer='The garden opens at 9 am on Saturdays.'
+)
+```
+
+##
 ## Prepare the Python session
 
 Use a Python session with this development build of DSPy installed. For a local checkout, install it into that environment with `uv pip install -e /path/to/dspy`. The side-by-side comparison also needs `litellm` installed in the same environment.
@@ -55,41 +91,6 @@ MODEL = "openai/gpt-4.1-mini"
 ```
 
 *Executed successfully; this cell produces no displayed output.*
-
-## Start with a familiar DSPy program
-
-Our program answers a question about a short passage. `Predict` describes the task; the adapter formats the prompt and reads the answer; the LM engine talks to the provider.
-
-We explicitly choose LiteLLM for our starting point. Caching is off so this comparison actually calls the provider. Retries are off so a failure is visible immediately. These are learning settings, not a recommendation for every application.
-
-```python
-class AnswerFromPassage(dspy.Signature):
-    """Answer using only the passage. Say 'Not stated' when it does not contain the answer."""
-
-    passage: str = dspy.InputField()
-    question: str = dspy.InputField()
-    answer: str = dspy.OutputField(desc="A short, factual answer.")
-
-
-program = dspy.Predict(AnswerFromPassage)
-example = {
-    "passage": "The community garden opens at 9 am on Saturdays. Entry is free.",
-    "question": "When does the garden open on Saturdays?",
-}
-
-legacy_lm = dspy.LM(MODEL, engine="litellm", cache=False, num_retries=0, max_tokens=256)
-with dspy.context(lm=legacy_lm):
-    before = program(**example)
-before
-```
-
-**Recorded output**
-
-```text
-Prediction(
-    answer='The garden opens at 9 am on Saturdays.'
-)
-```
 
 ## Change the engine, not the program
 
