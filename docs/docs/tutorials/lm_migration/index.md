@@ -1,6 +1,6 @@
 # DSPy 3.4 is moving to lm15
 
-Behing every dspy program there is at least 1 call to a language model (lm). For a while dspy, has been depending on litellm for orchestrating and fulfilling this `lm` call
+Behind every dspy program there is at least 1 call to a language model (lm). For a while dspy, has been depending on litellm for orchestrating and fulfilling this `lm` call. 
 ## Start with a familiar DSPy program
 
 Our program answers a question about a short passage. `Predict` describes the task; the adapter formats the prompt and reads the answer; the LM engine talks to the provider.
