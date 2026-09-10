@@ -12,19 +12,15 @@ lm('just say hi')
 ['hi']
 ```
 
+
+
 ```py
-lm.history
+from dspy.clients.backend_selection import select_backend
+select_backend(lm)
 ```
 
 ```output
-[{'prompt': 'just say hi', 'messages': None, 'kwargs': {}, 'response': Response(
-    text='hi',
-    model='gpt-5.6-luna',
-    finish_reason='stop',
-    usage=Usage(input_tokens=9, output_tokens=4, total_tokens=13, cache_read_tokens=0, cache_write_tokens=0, reasoning_tokens=0, input_audio_tokens=0, output_audio_tokens=0),
-    id='chatcmpl-EMgf8vOLSl964I2ZLBmX7ZnZPL3MJ',
-    provider_data=<dict: 8 keys>,
-), 'outputs': ['hi'], 'usage': {'prompt_tokens': 9, 'completion_tokens': 4, 'total_tokens': 13, 'prompt_tokens_details': {'cached_tokens': 0, 'cache_creation_tokens': 0, 'audio_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 0, 'audio_tokens': 0}}, 'cost': 6.5999999999999995e-06, 'timestamp': '2026-09-10T17:31:59.270517', 'uuid': 'fcf2fc2a-d57d-4085-a454-608689474b8c', 'model': 'openai/gpt-5.6-luna', 'response_model': 'gpt-5.6-luna', 'model_type': 'chat', 'cost_details': {'kind': 'estimate', 'currency': 'USD', 'provider': 'openai-chat', 'model': 'gpt-5.6-luna', 'metadata': {'source': 'remote', 'is_env_forced': False, 'fallback_reason': None, 'snapshot_version': '1.96.0'}}}]
+BackendSelection(native=True, resolution=Resolution(requested='openai-chat:gpt-5.6-luna', model='gpt-5.6-luna', provider='openai-chat', adapter='OpenAIChatLM', source='prefix', rule=None, env_key='OPENAI_API_KEY', model_info=None, compat=None))
 ```
 
 ## Start with a familiar DSPy program
