@@ -2,6 +2,8 @@
 
 Behind every dspy program there is at least 1 call to a language model (lm). For a while dspy, has been depending on litellm for orchestrating and fulfilling this `lm` call. Litellm had this very nice idea of letting you write a openai like call in python and have it work of any llm providers (including anthropic and gemini which don't tend to support openai compatible endpoints). 
 
+Litellm as a backend definitely contributed to such a simple api being possible:
+
 ```py
 import dspy
 lm = dspy.LM('openai/gpt-5.6-luna')
@@ -11,7 +13,16 @@ lm('just say hi')
 ['hi']
 ```
 
+Where that path can be pretty much any provider and models. For instance here just changing it to anthropic:
 
+```py
+lm = dspy.LM('anthropic/claude-sonnet-5')
+lm('just say hi')
+```
+
+```output
+['Hi! 😊']
+```
 
 ```py
 from dspy.clients.backend_selection import select_backend
