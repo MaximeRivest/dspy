@@ -7,7 +7,6 @@ import dspy
 lm = dspy.LM('openai/gpt-5.6-luna')
 lm('just say hi')
 ```
-
 ```output
 ['hi']
 ```
