@@ -1,6 +1,17 @@
 # DSPy 3.4 is moving to lm15
 
-Behind every dspy program there is at least 1 call to a language model (lm). For a while dspy, has been depending on litellm for orchestrating and fulfilling this `lm` call. 
+Behind every dspy program there is at least 1 call to a language model (lm). For a while dspy, has been depending on litellm for orchestrating and fulfilling this `lm` call. Litellm had this very nice idea of letting you write a openai like call in python and have it work of any llm providers (including anthropic and gemini which don't tend to support openai compatible endpoints). 
+
+```py
+import dspy
+lm = dspy.LM('openai/gpt-5.6-luna')
+lm('just say hi')
+```
+
+```output
+['hi']
+```
+
 ## Start with a familiar DSPy program
 
 Our program answers a question about a short passage. `Predict` describes the task; the adapter formats the prompt and reads the answer; the LM engine talks to the provider.
