@@ -24,6 +24,8 @@ lm('just say hi')
 ['Hi! 😊']
 ```
 
+While that was awesome, `Litellm` has tradeoffs, among others it has a lot of dependencies, which can cause supply chains risks and also is slow to import, making dspy itself slow to import. For these reasons, but also to have a better seperation of concerns between dspy and the lm backend the dspy community invested effort in an alternative, namely: `lm15`. It has no dependencies, and loads much faster and is a universal typed Request and Response contract that has been implemented in many languages.
+
 ```py
 from dspy.clients.backend_selection import select_backend
 select_backend(lm)
