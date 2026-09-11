@@ -4,6 +4,9 @@ This section covers essential DSPy features and best practices for professional 
 
 ## Integration and Tooling
 
+### [Moving to lm15: a worked migration](../lm_migration/index.md)
+Compare LiteLLM and lm15 with a runnable DSPy program, then explore subscriptions, Azure Entra, AWS, async calls, raw streaming, typed tools, and custom engines. Includes executable Python cells, captured outputs, and cost/startup/prompt-cache comparisons for the DSPy 3.4 development API.
+
 ### [Custom LM Engines](../custom_lm_engines/index.md)
 Connect a custom backend through the lm15 request/response contract. The worked example runs the Pi CLI and its tools from a DSPy program.
 

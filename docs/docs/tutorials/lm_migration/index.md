@@ -10,7 +10,12 @@ lm = dspy.LM('openai/gpt-5.6-luna')
 lm('just say hi')
 ```
 ```output
-['hi']
+Traceback (most recent call last):
+  File "/home/maxime/.cache/rat/kernels/py@docs/python-kernel.py", line 798, in run_code
+    exec(compile(module, "<rat>", "exec"), namespace, namespace)
+     ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<rat>", line 1, in <module>
+ModuleNotFoundError: No module named 'dspy'
 ```
 
 Where that path can be pretty much any provider and models. For instance here just changing it to anthropic:
@@ -32,7 +37,12 @@ select_backend(lm)
 ```
 
 ```output
-BackendSelection(native=True, resolution=Resolution(requested='openai-chat:gpt-5.6-luna', model='gpt-5.6-luna', provider='openai-chat', adapter='OpenAIChatLM', source='prefix', rule=None, env_key='OPENAI_API_KEY', model_info=None, compat=None))
+Traceback (most recent call last):
+  File "/home/maxime/.cache/rat/kernels/py@docs/python-kernel.py", line 798, in run_code
+    exec(compile(module, "<rat>", "exec"), namespace, namespace)
+     ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<rat>", line 1, in <module>
+ModuleNotFoundError: No module named 'dspy'
 ```
 
 ## Start with a familiar DSPy program

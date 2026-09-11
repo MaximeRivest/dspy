@@ -1,5 +1,8 @@
 # DSPy 3.4 LM migration
 
+For a runnable, cell-by-cell walkthrough, see [Moving to lm15: a worked migration](../tutorials/lm_migration/index.md).
+This page is the migration reference; the tutorial includes side-by-side authentication, streaming, cost, and prompt-cache examples with executable Python cells and captured outputs.
+
 DSPy's LM layer now uses the lm15 objects bundled inside DSPy. Import them from
 `dspy.lm15`; no separate installation is needed. They are the original lm15
 classes, not DSPy wrappers or subclasses.
