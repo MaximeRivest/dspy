@@ -9,9 +9,14 @@ consulted here; what runs is the artifact plus the bindings you pass.
 
 Resolution per pool:
 
-- **LMs** (component 8): receiver bindings only. An LM entry declares
-  its credential as a name, never a value, so the caller must supply the
-  live LM under the entry's pool name.
+- **LMs** (component 8): a receiver binding wins. Without one, an
+  http_remote entry self-binds from its own declared facts: the model is
+  `weights_identity`, the capability facts ride in `config`, and the
+  endpoint and credential VALUES come from the environment variables the
+  entry's `endpoint_ref`/`credential_ref` NAME. The artifact still never
+  carries key bytes — the refs are the receiver's contract. If neither a
+  binding nor the named environment values exist, resolution refuses by
+  name.
 - **Adapters** (component 4): receiver binding, else
   `dspy.adapters.load_entry` on the carried entry.
 - **Tools** (component 6): receiver binding, else the carried source
@@ -24,6 +29,7 @@ Resolution per pool:
 from __future__ import annotations
 
 import ast
+import os
 from copy import deepcopy
 from typing import Any, Callable
 
@@ -352,17 +358,68 @@ def _resolve_grants(
 def _resolve_lms(pool: dict[str, Any], bound: dict[str, Any]) -> dict[str, LM]:
     _check_bound_names("lm", pool, bound)
     resolved: dict[str, LM] = {}
-    for name in pool:
+    for name, entry in pool.items():
         lm = bound.get(name)
         if lm is None:
+            lm = _lm_from_entry(entry)
+        if lm is None:
+            refs = _lm_entry_refs(entry)
             raise ValueError(
                 f"programir.materialize() cannot resolve LM pool entry {name!r}: the artifact declares "
-                "credentials by name only; pass bindings={'lm': {" + repr(name) + ": <dspy.LM>}}"
+                "credentials by name only. Either pass bindings={'lm': {" + repr(name) + ": <dspy.LM>}} "
+                f"or set the declared environment values ({refs})"
             )
         if not isinstance(lm, LM):
             raise ValueError(f"binding for LM pool entry {name!r} must be a dspy.LM, got {type(lm).__name__}")
         resolved[name] = lm
     return resolved
+
+
+def _lm_entry_refs(entry: dict[str, Any]) -> str:
+    placement = entry.get("placement") or {}
+    parts = []
+    if placement.get("credential_ref"):
+        parts.append(f"credential {placement['credential_ref']}")
+    if placement.get("endpoint_ref"):
+        parts.append(f"endpoint {placement['endpoint_ref']}")
+    return ", ".join(parts) if parts else "no refs declared"
+
+
+def _lm_from_entry(entry: dict[str, Any]) -> LM | None:
+    """Self-bind an http_remote LM entry from its declared facts.
+
+    The entry names its endpoint and credential (`endpoint_ref`,
+    `credential_ref`); the environment supplies the values under exactly
+    those names. No key bytes ride in the artifact, and nothing ambient
+    is consulted — only the names the artifact itself declares.
+    """
+    placement = entry.get("placement") or {}
+    if entry.get("forward_contract") != "typed_lm" or placement.get("rung") != "http_remote":
+        return None
+    model = entry.get("weights_identity")
+    if not isinstance(model, str) or not model:
+        return None
+    credential_ref = placement.get("credential_ref")
+    endpoint_ref = placement.get("endpoint_ref")
+    api_key = os.environ.get(credential_ref) if credential_ref else None
+    api_base = os.environ.get(endpoint_ref) if endpoint_ref else None
+    if api_key is None and api_base is None:
+        return None
+    caps = (entry.get("config") or {}).get("lm_capabilities") or {}
+    kwargs: dict[str, Any] = {}
+    if api_key is not None:
+        kwargs["api_key"] = api_key
+    if api_base is not None:
+        kwargs["api_base"] = api_base
+    return LM(
+        model,
+        instruct=caps.get("instruct", True),
+        native_reasoning=caps.get("native_reasoning", False),
+        native_fc=caps.get("native_fc", False),
+        native_citations=caps.get("native_citations", False),
+        image_input=caps.get("image_input", False),
+        **kwargs,
+    )
 
 
 def _resolve_adapters(pool: dict[str, Any], bound: dict[str, Any]) -> dict[str, Adapter]:
