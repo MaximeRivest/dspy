@@ -224,6 +224,40 @@ changing the interpreter profile — full Python fidelity, true multi-tenant
 credibility, paid in RPC latency and infrastructure. That, not Wasm, is the
 lawful answer to "I need more than `sandbox`."
 
+### componentize-py — the interpreter half solved, the platform half not
+
+[componentize-py](https://github.com/bytecodealliance/componentize-py)
+(Bytecode Alliance; actively maintained, 0.24.0 targeting WASI 0.3.0 as of
+mid-2026) bundles a **real CPython** compiled to wasm32-WASI together with the
+application and its dependencies into one WebAssembly component. This splits
+the Wasm column's "Python realness" cell in two:
+
+- **Interpreter fidelity: solved.** The language semantics are genuine CPython,
+  not a reimplementation.
+- **Platform/ecosystem fidelity: unsolved, partly by design.** Native
+  extensions must be cross-compiled to WASI (the `wasi-wheels` efforts are
+  experimental; the original is unmaintained), and the Wasm security model
+  forbids exactly what the heavy libraries need — threads, subprocess, GPU,
+  JIT codegen, mmap. Concretely: pillow is plausible (small C, self-built),
+  numpy experimental and slow, scikit-learn practically out (scipy/OpenMP),
+  duckdb/pytorch/jax/vllm/spark categorically out.
+
+So componentize-py moves Wasm from "poor" to "Pyodide-class with a stricter
+build discipline" — and that build discipline is the interesting part for the
+IR: **imports resolve at componentize (build) time**, so the dependency set is
+closed when the artifact is built. That is the bake-everything philosophy
+enforced by the runtime itself.
+
+**For users who want it, the lawful path exists today** (spec §e0-isolation,
+"the lawful wasm path"): declare a D-033 structural profile — `runtime:
+wasi-cpython/componentize-py`, the closed package set, the platform limits —
+and author the program's interpreter and tool leaves against it. Scores attach
+to that profile; any wasm host (server pool, edge, browser) satisfies it
+honestly; verification is the ordinary profile check. What stays forbidden is
+only the *substitution*: running a CPython-scored leaf on wasm as if nothing
+changed. Authored-for-wasm is a different program, and the profile is how the
+artifact says so.
+
 ### Where Wasm/Pyodide DO fit the ProgramIR
 
 Not nowhere — just not as isolation levels:

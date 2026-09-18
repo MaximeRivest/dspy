@@ -132,7 +132,7 @@ choices → tiny requirement set → runs pure-Go anywhere. An authored
 Python strategy → the set includes "python≥3.x sidecar for component
 X" — a legitimate portability statement, refused by receivers who
 don't meet it, *naming the requirement*, never moralized as
-"unportable." Consequence for **D-026 (amendment pending)**: authored
+"unportable." **D-052 supersedes D-026's no-placement rule**: authored
 adapter code stops being flat-refused and instead **declares its
 requirements like every other component** — language env block
 (D-025), isolation floor (pairing rule), hence a placement, hence
@@ -141,6 +141,12 @@ data needs none; templates/parse-data are the *zero-requirement floor*
 of the gradient, not the definition of portability. Target error
 shape: "requires python≥3.12 sidecar for `4_adapter/my_parser` —
 unbound; refuse or bind one."
+
+D-052 authorizes this placement principle, not every D-040 proposal or the
+example error/sidecar API above. Pure transformations may carry executable
+code, but never hidden LM calls or effects. Hosts bind execution without
+exposing credential values to adapter code. Data-only declared-tier limits
+remain; code/placement schema and executor protocols still need separate gates.
 
 ## Status honesty
 

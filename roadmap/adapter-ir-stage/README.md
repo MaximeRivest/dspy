@@ -215,16 +215,14 @@ sandbox-requirement conduct).
    names. This is probably the deepest structural question in the
    package.
 
-10. **Placement in adapter entries.** Spec section 9: adapter entries
-    carry no placement and no credential, so authored adapter code
-    never rung-walks. The leaf-codec rule (12) and the interpreter
-    materialization (10) both want a placement/rung-walk. Resolution
-    options: the leaf is NOT part of the adapter entry (it lives in
-    the ProgramIR leaf table; the codec only references it — making 12
-    consistent with the no-placement law), or the law relaxes for
-    leaf-referencing codecs. The first reading is cleaner and D-022
-    already covers it; the entries here draw the fault line on
-    purpose.
+10. **Placement in adapter entries — principle resolved by D-052.**
+    The old universal no-placement rule in spec §9 is superseded.
+    Executable formats can declare placement requirements; hosts supply
+    compatible bindings without exposing credentials or permitting LM calls.
+    The code/placement byte shape and executor ABI remain open. These staged
+    examples are design probes, not execution fixtures or approved schemas.
+    Their notes about D-026's ban or a pending amendment are historical;
+    D-052 now governs the principle. No example proves executor support.
 
 11. **Is the lens the DEFAULT for authored templates?** Example 03
     omits `parser` at the authoring surface and gets the lens. Silent

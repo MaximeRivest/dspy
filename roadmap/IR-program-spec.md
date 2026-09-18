@@ -508,11 +508,26 @@ optimizable data. Consequences:
   makes the optimizable surface of a prompt *visibly declared* instead of
   buried in method bodies.
 
-**Adapters are pure — the TwoStep test, and the single-shot law.** `format`
-and `parse` are functions over data; nothing in component 4 may call an LM,
-hold a credential, or carry a placement of its own. That purity is what makes
-an adapter a shareable pool entry (§b-pools) and keeps every LM binding
-visible in the census. Anything that *needs* an LM inside its parse path —
+**Adapters are pure transformations, not code-free entries (D-052).**
+Adapters are where program code meets the LM; formats can carry executable
+code. `format` and `parse` remain declared transformations over data.
+Nothing in component 4 may call an LM, hold credential values, or hide effects.
+Purity does not prohibit code or its execution placement. Host-mediated
+transport to a declared executor is not an LM call or ambient network access
+by the transformation. Transport credentials stay with the host, outside
+adapter code; the artifact carries names only (component 10).
+
+Executable entries declare code identity, dependencies, language and execution
+requirements, plus enough placement information for a host to bind them
+honestly (§e0-lang). Their typed interface and transformation behavior stay
+invariant across local, sandboxed, and remote execution. Data-only templates
+need no code placement. Code-aware placement does not admit authored code
+into the declared-tier profile. The code/placement byte shape and executor
+protocol remain follow-up design gates, not a new supported ABI.
+
+This preserves shareable pool entries (§b-pools) and keeps every LM binding
+visible in the census. **The TwoStep test and single-shot law still apply.**
+Anything that *needs* an LM inside its parse path —
 TwoStep being the canonical case — is not an adapter but a **lowering**
 (§d-lowering) and must ship as its expanded form. The §c **single-shot
 invariant** generalizes the test, and it names the residue still living in
@@ -1872,6 +1887,31 @@ refusal naming the mismatch), and a receiver who accepts it anyway records a
 profile deviation, detaching shipped scores (D-033). `remote` means the same
 profile satisfied elsewhere, never "any remote runtime."
 
+**The lawful wasm path: authored-for-wasm is a declared profile, not a
+substitution.** The boundary above forbids *swapping* a CPython-scored leaf
+onto a wasm runtime; it does not forbid a user *choosing* wasm as the leaf's
+home. D-033's structural profiles already admit this with no new mechanism: an
+interpreter entry declares `{language: python, runtime: {identity:
+"wasi-cpython/componentize-py", version: …}, packages: [<the closed,
+build-time-compiled set>], resource_limits, isolation_floor: sandbox-class,
+…}` and authored tool bodies bind to it like any other entry — then scores
+attach to *that* profile, verification checks *that* runtime, and every
+receiver with a wasm host (including a browser or edge runtime) satisfies it
+honestly. Two honest bounds travel with the choice: the package world is the
+profile's own closed set (pure-Python plus self-built WASI wheels — no
+native-extension ecosystem: no torch/duckdb/jax-class leaves), and
+platform semantics differ (no threads, no subprocess, restricted sockets), so
+an authored-for-wasm program is a *different program* from its CPython
+sibling, which is exactly what the profile records. One property of the
+componentize-py toolchain is actively congenial to this spec: imports resolve
+at **componentize (build) time**, so the dependency set is closed when the
+artifact is built — the bake-everything discipline enforced by the runtime
+itself. And the in-process wasm guest remains available one level down:
+an engine may host a wasm interpreter *inside* any gradient level for defense
+in depth — an implementation detail below the manifest's visibility, distinct
+from the declared-profile path, which is the only one that changes what the
+artifact says.
+
 **The isolation-invariance law (the leaf-purity corollary).** A forked leaf's
 writes to inherited state die with the child — which enforces mechanically
 what the IR wants philosophically: leaves communicate through their typed
@@ -1933,8 +1973,9 @@ their text is deferred to Epics E/F.
 **The declared-tier profile.** L5 forbids silent partial support, so a
 foreign engine's honest subset must be a *named* one. The **declared-tier
 profile** is defined by binding mode, not rung arithmetic: every LM entry at
-a receiver-bound endpoint rung (lm15 contract), builtin
-presets/codecs/strategies only, templates as data, no authored-origin code,
+a receiver-bound endpoint rung (lm15 contract), data-only adapter entries
+(builtin preset references or full canonical entries with template, parser,
+codec/strategy bindings, config, and versions), no authored-origin code,
 no rung-0 weights, and interpreter and tools **at receiver-bound endpoint
 rungs (an `endpoint_ref` the receiver binds — never in-process, never
 loader-materialized) or absent**. An artifact inside the profile loads on
@@ -1954,12 +1995,28 @@ foreign engine never claims completeness, it claims a profile plus a walk
 policy. The same predicate, run at *export* time, is the portability
 preflight an author sees before shipping.
 
-One component class cannot walk: authored adapter code (codecs, strategies,
-parsers) — component 4 carries no placement by law (§Adapter-notes purity).
-The portable customization path is templates/presets-as-data (adapter-ir-spec
-§9); an engine MAY evaluate foreign authored adapter code out-of-process as
-an internal upgrade (ADP-002 purity is what makes that sound), but the
-artifact can never require it (D-026).
+**Executable adapter/format placement (D-052, superseding D-026's ban).**
+Authored adapter code is no longer excluded from the rung-walk by component
+class. An artifact can require execution of declared format code. It must
+state code identity, dependencies, language, execution requirements, and
+placement needs; the host supplies a compatible binding or refuses loudly.
+The receiver's existing binding wins before sidecar materialization, under
+its claimed profile and walk policy. A declared-tier engine still refuses
+authored-origin code; placement is not an escape from that profile.
+Templates/presets-as-data remain the data-only customization path.
+
+The typed transformation contract stays fixed across placement. Code identity
+is distinct from location; identity deviations detach scores, while recorded
+re-placement does not. Isolation remains a separate axis: floors bake,
+envelopes bind, and no host may silently weaken a floor. This does not grant
+adapter code the tool/interpreter leaf's permission to call an LM.
+
+D-052 authorizes the principle, not a particular backend or protocol. The
+adapter code/placement byte shape, host binding API, value marshaling, and
+sidecar lifecycle require separate specification and fixtures before execution
+support can be claimed. Existing tool/interpreter transports do not establish
+an adapter ABI. (LMCC's shipped formats are the motivating case; see
+programir-contract `changes/2026-09-07-adapter-code-placement.md`.)
 
 **The IR is the product (ratified 2026-08-06, D-028).** This section reads
 as if engines were the port; they are grade 2 of two. **Grade 1 — hold the
@@ -2114,8 +2171,9 @@ their authored form is a declared toolchain build or a future portable target
 (WASM is the candidate, deliberately not yet ratified); until then
 authored-Go entries are packaged-or-refused. The tag applies wherever
 authored code lives: tools (6), LM classes (8a), metric bodies (12), and
-adapter pool entries (adapter-ir-spec §9 — which carry the tag for
-refusal/profile decisions but never rung-walk, D-026).
+executable adapter pool entries (adapter-ir-spec §9 — language supports
+profile admission and declared execution placement; D-052 supersedes D-026's
+adapter exception, without changing D-025's compiled-language deferral).
 
 **Compile-time rule:** if the LM is a non-builtin `BaseLM` subclass, the IR *must*
 resolve an `origin`. A packaged class with no matching manifest entry, or an

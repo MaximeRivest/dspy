@@ -105,3 +105,28 @@ dialects · FC-5 input_keys derivation · FC-6 desugar-table adherence as
 a conformance surface (frontend fixtures: same source → same tree) ·
 FC-7 lazy resources · kwargs-splat and parameter-default encodings
 (filed contract-side, spec/node-set.md open encoding questions).
+
+## The inputs-bag frontend recognition rule (D-041, dspy-side; needs cross-frontend ratification)
+
+The contract (node-set 0.4) pins how a *compiled* record envelope validates
+(`args[0].record == "self"`, the splat call form, the refusal codes) but NOT
+how a source frontend RECOGNIZES the two authoring doors. dspy-Python resolved
+it as follows; FunctAI/dict frontends must agree or artifacts diverge:
+
+- **Door (a) explicit** `def forward(self, inputs)`: fires iff the module has a
+  declared signature AND exactly one non-self positional whose name is not a
+  declared input field AND that parameter is *used as a record* (appears as a
+  `**name` splat in the body). The record binds under **that parameter's own
+  name**. A lone positional that names a declared field stays the plain v0.1
+  form (byte-identical).
+- **Door (b) desugar** `def forward(self, **kwargs)`: fires iff the module has a
+  declared signature AND the parameter list is a bare `**kwargs` (no positionals,
+  no `*args`). Binds under the `**kwargs` name. Without a signature, `**kwargs`
+  keeps the v0.3 envelope refusal.
+- **Mixed forms** (e.g. ProgramOfThought's `interpreter=None, /, **kwargs`) are
+  NOT the admitted envelope and refuse PIR-E-NODE-001 — the contract admits only
+  the bare `**kwargs` / single-record-positional shapes.
+
+Open: promote this to a ratified frontend-contract clause so every source
+frontend recognizes the doors identically. (Hit during the dspy compiler 0.4
+lift, 2026-08-11; also logged as a contract-hardening signal.)

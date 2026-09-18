@@ -364,8 +364,13 @@ must change how the exchange is conducted; codecs: must be shape-generic).
 - **ADP-001 (single-shot):** nothing in render or parse calls an LM. One
   preset application = one exchange.
 - **ADP-002 (purity):** rendering is a pure function of (plan, values);
-  planning is a pure function of (core, capabilities, preset). No ambient
-  reads, no clock, no network.
+  planning is a pure function of (core, capabilities, preset). Parsing
+  likewise transforms the declared response data. No ambient reads, clock
+  reads, hidden effects, or LM calls. Executable formats may have declared
+  placement (D-052); host-mediated execution transport is not ambient
+  network access by the transformation. Adapter code holds no credential
+  values. The host owns transport authentication; artifacts carry names only.
+  The typed interface and behavior stay invariant across placement.
 - **ADP-003 (carry your parser):** every rendering decision ships with the
   parser that inverts it; round-trip `parse(render(x)) = x` on adversarial
   probes gates admissibility.
@@ -413,10 +418,12 @@ depends on the library, not the reverse.
 Third parties extend the system at the pools; what ships depends on what
 the extension *is*:
 
-- **Templates/presets are pure data — always baked, never trusted-code.**
+- **Data-only templates/presets are baked data, not trusted code.**
   The constrained language means a custom template serializes into the
   artifact as JSON and loads with no exec and no flags. Programs may carry
-  prompt shapes that do not exist in the host implementation.
+  prompt shapes that do not exist in the host implementation. A preset that
+  includes executable format code has declared execution requirements; JSON
+  serialization alone does not make such an entry data-only.
 - **Codecs, strategies, and authored parsers are code — three-origin rule**
   (mirrors ProgramIR §e0-class / tool bodies):
   `builtin` (named ref, resolved internally) · `packaged` (import path +
@@ -440,18 +447,21 @@ the extension *is*:
   optimizer-discovered template or codec ships identically with
   `authored_by: optimizer` — a search result becomes a distributable
   artifact through the same door.
-- **Cross-language receivers (ratified 2026-08-06, D-025/D-026):**
-  `packaged`/`authored` entries carry `language`; `builtin` needs none. To a
-  receiving engine in another language, `builtin` resolves internally (same
-  behavior, its own implementation, corpus-conformant);
-  `packaged`/`authored` entries in a foreign language are refusable at the
-  profile level (ProgramIR §e0-lang's declared-tier profile).
-  Templates/presets-as-data are the portable customization path: a program
-  restricted to them plus builtin codecs/strategies loads on any conforming
-  engine with no code execution. An engine MAY evaluate foreign authored
-  codecs/strategies out-of-process — ADP-002 purity is what makes that
-  sound — but that is an engine quality upgrade, invisible to the artifact,
-  never a requirement: adapter entries carry no placement and no credential
-  (ProgramIR §Adapter-notes — a law to absorb into ADP-002 at graduation),
-  so authored adapter code is the one authored-code class that does not
-  rung-walk.
+- **Cross-language receivers (D-025; D-052 supersedes D-026's ban):**
+  `packaged`/`authored` entries carry `language`; `builtin` needs none.
+  Builtins resolve to corpus-conformant behavior in the receiving engine.
+  Data-only templates/presets remain the declared-tier customization path;
+  authored-origin code remains outside that profile, even at a remote rung.
+  Outside that profile, artifacts may require executable format code and
+  declare its identity, dependencies, language, execution requirements, and
+  placement needs. Hosts supply compatible bindings or refuse loudly.
+  ProgramIR §e0-lang applies the receiver-binding-first rung-walk; isolation
+  floors bake, envelopes bind, and re-placement preserves the typed contract.
+  Purity forbids hidden effects and LM calls, not declared code placement.
+  Code never holds credential values, including executor transport secrets.
+- **Execution boundary still to specify:** the namespace-at-load behavior
+  above describes the existing Python path, not a portable execution ABI.
+  Holding or linking code declarations must not itself authorize execution.
+  The code/placement byte shape, binding API, marshaling, and lifecycle need
+  separate specification and fixtures. D-052 does not ratify these details
+  or claim the current exporter and engines implement them.

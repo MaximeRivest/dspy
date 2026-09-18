@@ -1,6 +1,6 @@
 # State Map
 
-What exists right now and its load-bearing status. **Regenerate this page at the end of every epic.** Last updated: 2026-08-10. Position: **Epic D complete** (C1 closed, D-031/D-032 incl. D-δ); **Epic I (exporter) shipped locally v4**; **Epic E SHELVED** (current LM stack assumed as-is; lm15 was inspiration only); **Epic F started** (parallel bootstrap); flow/trust/adapter-north-star doc arc landed 2026-08-10. Sequencing: see 03-campaign's 2026-08-10 rewrite block.
+What exists right now and its load-bearing status. **Regenerate this page at the end of every epic.** Last updated: 2026-08-11. Position: **Epic D complete** (C1 closed, D-031/D-032 incl. D-δ); **Epic I (exporter) shipped locally v4**; **Epic E SHELVED** (current LM stack assumed as-is; lm15 was inspiration only); **Epic F started** (engine bootstrap on programir-main + the full greenfield rebuild on branch `greenfield-ir` at `/home/maxime/Projects/dspy-greenfield` — engine-default execution, adapters v2, IR builder+printer, macros; 301+ tests); **D-041 ratified 2026-08-11**: the inputs-bag admission, `node_set` 0.4 (record envelope + signature-record splat; LM-decided kwargs stay refused; program makers REMAIN classes — makers-as-functions deferred, its own decision). Propagation running: contract spec/schema/reference/fixtures → go/ts → dspy compiler → greenfield modules become hand-written forwards. Flex redo direction set (2026-08-11): the reflection LM rewrites the IR itself incl. replace-predict-with-generated-code leaves; the old string-substrate flex dies. Sequencing: see 03-campaign's 2026-08-10 rewrite block.
 
 ## Shipped on `programir-main`
 
@@ -61,8 +61,8 @@ What exists right now and its load-bearing status. **Regenerate this page at the
 - Media-as-output roles; `Video` shape; `refusal` role (vocabulary-ready).
 - ReAct-family `_trajectory` key unification (v1 `trajectory` vs v2 `history`/`termination_reason`).
 - Guillemet list-in-str quirk (pinned); the codec admission battery excludes bare `(Optional[T], None)` probes for the same pinned quirk.
-- Refine/BestOfN redo; optimizers over the new axes — blocked on Epic F substrate; **do not start**.
-- Flex redo on the IR (F-γ; scope negotiated with Maxime).
+- ~~Refine/BestOfN redo~~ — **built on greenfield as IR macros** (2026-08-11, builder-made loop+metric-leaf trees); mainline adoption follows the greenfield review.
+- Flex redo on the IR — **in motion** (2026-08-11): study workflow over the experimental string-substrate flex → FlexIR-v2 brief (closed edit vocabulary incl. replace_predict_with_code, partial code-fast-path/LM-fallback); implements on greenfield after the macros stage.
 
 ## Checkpoint C1 (closed — D-031)
 

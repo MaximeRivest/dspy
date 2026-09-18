@@ -60,8 +60,10 @@ conformant adapter library = grade 2's middle layer; (3) authoring framework
 - D-023: the declared-tier profile is a named conformance class.
 - D-024: `ir_version` + vocabulary versions block in artifacts and presets.
 - D-025: `language` tag on authored code; per-language env blocks.
-- D-026: authored adapter code does not rung-walk; templates-as-data are the
-  portable customization path.
+- D-052 supersedes D-026's adapter exception: executable formats may declare
+  placement requirements and use the rung-walk. Data-only templates remain
+  the declared-tier path; authored-origin code stays outside that profile.
+  The code/placement ABI and executor support remain separate gates.
 - D-027: sidecar wire-contract candidates (rat kernel protocol; MCP with
   outputSchema; bearer_env≡credential_ref); text deferred to E/F.
 - D-028: the IR is the product — two grades per language, programir-contract
